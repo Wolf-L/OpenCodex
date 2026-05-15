@@ -201,3 +201,7 @@ CODEX_WEB_OFFICIAL_BUNDLE_DIR="./cache/official-bundle" npm run web:dev
 ```bash
 tail -f reports/unknown-ipc.jsonl
 ```
+
+### 友链
+
+[LinuxDo](https://linux.do/)
