@@ -34,12 +34,7 @@
   function storedGatewayAuthToken() {
     try {
       const token = sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "";
-      const expiresAtMs = Number(sessionStorage.getItem(AUTH_EXPIRES_STORAGE_KEY) || 0);
-      if (token && expiresAtMs && expiresAtMs <= Date.now()) {
-        sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-        sessionStorage.removeItem(AUTH_EXPIRES_STORAGE_KEY);
-        return "";
-      }
+      sessionStorage.removeItem(AUTH_EXPIRES_STORAGE_KEY);
       return token;
     } catch {
       return "";

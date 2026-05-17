@@ -188,6 +188,7 @@ function makeAuthStore() {
         tokens.delete(hash);
         return null;
       }
+      entry.expiresAtMs = Date.now() + AUTH_TOKEN_TTL_MS;
       return entry;
     },
     revoke(token) {
@@ -252,6 +253,11 @@ function authCookieHeader(token, expiresAtMs) {
 
 function clearAuthCookieHeader() {
   return `${COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+}
+
+function authRefreshHeaders(auth) {
+  if (!PERSIST_AUTH_TOKEN || !auth || !auth.authenticated || !auth.token || !auth.expiresAtMs) return {};
+  return { "set-cookie": authCookieHeader(auth.token, auth.expiresAtMs) };
 }
 
 /** 发送原始 HTTP 响应。 */
@@ -546,7 +552,7 @@ function handleAuthStatus(req, res, url) {
       ttlMs: PASSWORD ? AUTH_TOKEN_TTL_MS : null,
       persistAuthToken: PERSIST_AUTH_TOKEN,
     },
-    { "cache-control": "no-store" }
+    { "cache-control": "no-store", ...authRefreshHeaders(auth) }
   );
 }
 
@@ -930,17 +936,26 @@ async function createGateway() {
       return serveWebShellIndex(res);
     }
 
-    if (PASSWORD && !isAuthed(req, url)) return sendUnauthorized(req, res);
+    const requestAuthForRefresh = PASSWORD ? authResultForRequest(req, url) : null;
+    if (PASSWORD && !requestAuthForRefresh.authenticated) return sendUnauthorized(req, res);
+    const requestAuthRefreshHeaders = authRefreshHeaders(requestAuthForRefresh);
+    for (const [name, value] of Object.entries(requestAuthRefreshHeaders)) {
+      res.setHeader(name, value);
+    }
 
     if (pathname === "/codex-web-config.js") {
       // 这个配置必须 no-store，因为模型缓存、workspaceRoots、app-server 状态都可能变化。
       await ensureAppServerStarted();
       const gatewayConfig = buildGatewayConfig();
-      const requestAuth = authResultForRequest(req, url);
+      const requestAuth = requestAuthForRefresh || authResultForRequest(req, url);
       return send(
         res,
         200,
-        { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" },
+        {
+          "content-type": "application/javascript; charset=utf-8",
+          "cache-control": "no-store",
+          ...requestAuthRefreshHeaders,
+        },
         `(() => {
   const tokenKey = "codex_web_auth_token";
   const expiresKey = "codex_web_auth_expires_at";
@@ -951,13 +966,7 @@ async function createGateway() {
   try {
     if (persistAuthToken) {
       authToken = sessionStorage.getItem(tokenKey) || "";
-      authExpiresAtMs = Number(sessionStorage.getItem(expiresKey) || 0);
-      if (authExpiresAtMs && authExpiresAtMs <= Date.now()) {
-        sessionStorage.removeItem(tokenKey);
-        sessionStorage.removeItem(expiresKey);
-        authToken = "";
-        authExpiresAtMs = 0;
-      }
+      sessionStorage.removeItem(expiresKey);
     }
   } catch {}
   if (!authToken && requestAuthToken) authToken = requestAuthToken;

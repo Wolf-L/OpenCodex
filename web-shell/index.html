@@ -379,7 +379,6 @@
           persistAuthToken: false,
         };
         let runtimeAuthToken = "";
-        let runtimeAuthExpiresAtMs = 0;
         const root = document.getElementById("root");
         const status = document.getElementById("status");
         const hint = document.getElementById("hint");
@@ -459,36 +458,27 @@
 
         function storedToken() {
           if (runtimeAuthToken) {
-            if (runtimeAuthExpiresAtMs && runtimeAuthExpiresAtMs <= Date.now()) {
-              clearToken();
-              return "";
-            }
             return runtimeAuthToken;
           }
           if (!shouldPersistAuthToken()) return "";
           try {
             const token = sessionStorage.getItem(tokenKey) || "";
-            const expiresAtMs = Number(sessionStorage.getItem(expiresKey) || 0);
-            if (token && expiresAtMs && expiresAtMs <= Date.now()) {
-              clearToken();
-              return "";
-            }
+            sessionStorage.removeItem(expiresKey);
             return token;
           } catch {
             return "";
           }
         }
 
-        function storeToken(token, expiresAtMs) {
+        function storeToken(token) {
           runtimeAuthToken = token || "";
-          runtimeAuthExpiresAtMs = Number(expiresAtMs || 0);
           if (!shouldPersistAuthToken()) {
             clearPersistedToken();
             return;
           }
           try {
             if (token) sessionStorage.setItem(tokenKey, token);
-            if (expiresAtMs) sessionStorage.setItem(expiresKey, String(expiresAtMs));
+            sessionStorage.removeItem(expiresKey);
           } catch {}
         }
 
@@ -501,7 +491,6 @@
 
         function clearToken() {
           runtimeAuthToken = "";
-          runtimeAuthExpiresAtMs = 0;
           clearPersistedToken();
         }
 
@@ -585,7 +574,7 @@
           if (!res.ok || !body || body.ok === false) {
             throw new Error((body && body.error) || `登录失败：HTTP ${res.status}`);
           }
-          if (body.token) storeToken(body.token, body.expiresAtMs);
+          if (body.token) storeToken(body.token);
         }
 
         form.addEventListener("submit", async (event) => {
