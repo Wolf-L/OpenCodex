@@ -930,7 +930,6 @@ async function createGateway() {
       // 这个配置必须 no-store，因为模型缓存、workspaceRoots、app-server 状态都可能变化。
       await ensureAppServerStarted();
       const gatewayConfig = buildGatewayConfig();
-      const requestAuth = requestAuthForRefresh || authResultForRequest(req, url);
       return send(
         res,
         200,
@@ -940,31 +939,17 @@ async function createGateway() {
           ...requestAuthRefreshHeaders,
         },
         `(() => {
-  const tokenKey = "codex_web_auth_token";
-  const expiresKey = "codex_web_auth_expires_at";
   const persistAuthToken = ${JSON.stringify(PERSIST_AUTH_TOKEN)};
-  const requestAuthToken = ${JSON.stringify(requestAuth.token || "")};
-  let authToken = "";
-  let authExpiresAtMs = 0;
-  try {
-    if (persistAuthToken) {
-      authToken = sessionStorage.getItem(tokenKey) || "";
-      sessionStorage.removeItem(expiresKey);
-    }
-  } catch {}
-  if (!authToken && requestAuthToken) authToken = requestAuthToken;
   window.__CODEX_WEB_CONFIG__ = {
-  gatewayBaseUrl: location.origin,
-  gatewayWsUrl: location.origin.replace(/^http/, "ws") + "/ws",
-  authToken,
-  authExpiresAtMs,
-  persistAuthToken,
-	  workspaceRoots: ${JSON.stringify(gatewayConfig.workspaceRoots)},
-	  homeDir: ${JSON.stringify(gatewayConfig.homeDir)},
-	  appServer: ${JSON.stringify(appServer.getMode())},
-	  modelList: ${JSON.stringify(cachedModelListForWebConfig(appServer))},
-	  sharedObjectSnapshot: ${JSON.stringify(gatewayConfig.sharedObjectSnapshot || {})}
-	};
+    gatewayBaseUrl: location.origin,
+    gatewayWsUrl: location.origin.replace(/^http/, "ws") + "/ws",
+    persistAuthToken,
+    workspaceRoots: ${JSON.stringify(gatewayConfig.workspaceRoots)},
+    homeDir: ${JSON.stringify(gatewayConfig.homeDir)},
+    appServer: ${JSON.stringify(appServer.getMode())},
+    modelList: ${JSON.stringify(cachedModelListForWebConfig(appServer))},
+    sharedObjectSnapshot: ${JSON.stringify(gatewayConfig.sharedObjectSnapshot || {})}
+  };
 })();`
       );
     }

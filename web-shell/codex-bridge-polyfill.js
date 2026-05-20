@@ -54,7 +54,7 @@
   }
 
   function gatewayAuthToken() {
-    return (typeof cfg.authToken === "string" && cfg.authToken) || storedGatewayAuthToken();
+    return storedGatewayAuthToken();
   }
 
   function gatewayAuthHeaders(headers) {
@@ -68,10 +68,6 @@
   }
 
   function clearGatewayAuthToken() {
-    try {
-      cfg.authToken = "";
-      cfg.authExpiresAtMs = 0;
-    } catch {}
     try {
       sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
       sessionStorage.removeItem(AUTH_EXPIRES_STORAGE_KEY);
