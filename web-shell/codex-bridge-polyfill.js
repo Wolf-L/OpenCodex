@@ -24,6 +24,10 @@
     mobileKeyboardOptimization: true,
     mobileSidebarAutoCollapse: true,
   };
+  const SIDEBAR_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
+  const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
+  const SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME = "sidebar-trigger";
 
   function opencodexSettings() {
     try {
@@ -347,11 +351,16 @@
     return !style || (style.display !== "none" && style.visibility !== "hidden");
   }
 
+  function sidebarPanelElement() {
+    return document.querySelector(".app-shell-left-panel");
+  }
+
   function sidebarNavigationElement() {
-    return (
-      document.querySelector("nav[aria-label='自动化操作文件夹']") ||
-      document.querySelector(".app-shell-left-panel nav")
-    );
+    const panel = sidebarPanelElement();
+    if (panel) {
+      return panel.querySelector(SIDEBAR_SCROLL_SELECTOR) || panel.querySelector("nav") || panel;
+    }
+    return document.querySelector(SIDEBAR_SCROLL_SELECTOR) || document.querySelector("nav");
   }
 
   function elementTextLabel(element) {
@@ -572,19 +581,44 @@
     }
   }
 
-  function isSidebarInlineActionButton(button) {
-    const label = elementTextLabel(button);
-    return /^(归档对话|置顶对话|全部收起|筛选侧边栏对话|添加新项目)$/.test(label) ||
-      /^(在 .+ 中开始新对话|.+ 的项目操作|展开显示)$/.test(label);
+  function isNestedSidebarInteractiveElement(element) {
+    if (!element || typeof element.matches !== "function") return false;
+    const role = String(element.getAttribute?.("role") || "").toLowerCase();
+    return (
+      element.matches("button,a[href],input,select,textarea,summary,[contenteditable='true']") ||
+      role === "button" ||
+      role === "menuitem" ||
+      role === "menuitemcheckbox" ||
+      role === "menuitemradio" ||
+      role === "checkbox" ||
+      role === "switch" ||
+      role === "tab"
+    );
+  }
+
+  function nestedSidebarInteractiveFromTarget(target, row) {
+    for (let node = target; node && node !== row; node = node.parentElement) {
+      if (isNestedSidebarInteractiveElement(node)) return node;
+    }
+    return null;
   }
 
   function isSidebarConversationRow(element) {
     if (!element || typeof element.matches !== "function") return false;
-    if (!element.matches("[role='button']")) return false;
-    if (!element.querySelector("button[aria-label='归档对话']")) return false;
-    if (!element.querySelector("button[aria-label='置顶对话']")) return false;
+    const officialThreadRow = element.matches(SIDEBAR_THREAD_ROW_SELECTOR);
+    const legacyThreadRow =
+      element.matches("[role='button'].h-token-nav-row") &&
+      !element.matches(SIDEBAR_NON_THREAD_ROW_SELECTOR) &&
+      !!element.querySelector("[data-thread-title]");
+    if (!officialThreadRow && !legacyThreadRow) return false;
+    if (!visibleElement(element)) return false;
+    if (officialThreadRow) {
+      const id = element.getAttribute("data-app-action-sidebar-thread-id");
+      const kind = element.getAttribute("data-app-action-sidebar-thread-kind");
+      if (!id || !/^(local|remote|pending-worktree)$/.test(kind || "")) return false;
+    }
     const rect = element.getBoundingClientRect();
-    return rect.width >= 80 && rect.height >= 20 && rect.height <= 48;
+    return rect.width >= 80 && rect.height >= 20 && rect.height <= 64;
   }
 
   function sidebarConversationRowFromTarget(target) {
@@ -592,31 +626,59 @@
     if (!element || typeof element.closest !== "function") return null;
     const nav = sidebarNavigationElement();
     if (!nav || !nav.contains(element)) return null;
-    const inlineAction = element.closest("button");
-    if (inlineAction && nav.contains(inlineAction) && isSidebarInlineActionButton(inlineAction)) {
-      return null;
+    const officialRow = element.closest(SIDEBAR_THREAD_ROW_SELECTOR);
+    if (officialRow && nav.contains(officialRow) && isSidebarConversationRow(officialRow)) {
+      return nestedSidebarInteractiveFromTarget(element, officialRow) ? null : officialRow;
     }
     const tokenRow = element.closest("[role='button'].h-token-nav-row");
-    if (tokenRow && nav.contains(tokenRow) && isSidebarConversationRow(tokenRow)) return tokenRow;
+    if (tokenRow && nav.contains(tokenRow) && isSidebarConversationRow(tokenRow)) {
+      return nestedSidebarInteractiveFromTarget(element, tokenRow) ? null : tokenRow;
+    }
     for (let node = element; node && node !== nav; node = node.parentElement) {
-      if (isSidebarConversationRow(node)) return node;
+      if (isSidebarConversationRow(node)) {
+        return nestedSidebarInteractiveFromTarget(element, node) ? null : node;
+      }
     }
     return null;
   }
 
-  function findSidebarCollapseButton() {
+  function sidebarToggleViewTransitionName(button) {
+    const inlineName =
+      button.style?.viewTransitionName || button.style?.getPropertyValue?.("view-transition-name") || "";
+    if (inlineName) return String(inlineName).trim();
+    try {
+      const style = w.getComputedStyle ? w.getComputedStyle(button) : null;
+      return String(style?.viewTransitionName || style?.getPropertyValue?.("view-transition-name") || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function findSidebarToggleButton() {
     return Array.from(document.querySelectorAll("button")).find((button) => {
       if (!visibleElement(button)) return false;
-      return /^(隐藏边栏|隐藏侧边栏|Hide sidebar)$/i.test(elementTextLabel(button));
+      return sidebarToggleViewTransitionName(button) === SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME;
     });
+  }
+
+  function postSidebarToggleMessage() {
+    try {
+      w.postMessage({ type: "toggle-sidebar" }, w.location.origin || "*");
+    } catch {}
   }
 
   function collapseMobileSidebarAfterSelection() {
     if (mobileSidebarCollapseTimer) w.clearTimeout(mobileSidebarCollapseTimer);
     mobileSidebarCollapseTimer = w.setTimeout(() => {
       mobileSidebarCollapseTimer = null;
-      const collapseButton = findSidebarCollapseButton();
-      if (collapseButton && typeof collapseButton.click === "function") collapseButton.click();
+      const panel = sidebarPanelElement();
+      if (!panel || !visibleElement(panel)) return;
+      const toggleButton = findSidebarToggleButton();
+      if (toggleButton && typeof toggleButton.click === "function") {
+        toggleButton.click();
+        return;
+      }
+      postSidebarToggleMessage();
     }, MOBILE_SIDEBAR_AUTO_COLLAPSE_DELAY_MS);
   }
 
