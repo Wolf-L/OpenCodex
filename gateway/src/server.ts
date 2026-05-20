@@ -444,6 +444,7 @@ function transformOfficialHtml(rawHtml) {
     '<base href="/official/">',
     '<script src="/codex-web-config.js"></script>',
     '<script src="/codex-bridge-polyfill.js"></script>',
+    '<script src="/codex-tooltip-dismiss-guard.js"></script>',
   ].join("\n    ");
   if (/<head[^>]*>/i.test(html)) {
     html = html.replace(/<head([^>]*)>/i, `<head$1>\n    ${base}`);
@@ -581,6 +582,7 @@ function patchOfficialAsset(reqPath, data) {
 /** 将 URL path 映射到 web-shell 或官方 asset 的真实文件。 */
 function staticFile(reqPath) {
   if (reqPath === "/codex-bridge-polyfill.js") return path.join(WEB_SHELL_DIR, "codex-bridge-polyfill.js");
+  if (reqPath === "/codex-tooltip-dismiss-guard.js") return path.join(WEB_SHELL_DIR, "codex-tooltip-dismiss-guard.js");
   if (reqPath.startsWith(PATCHED_OFFICIAL_PREFIX)) {
     const rel = reqPath.slice(PATCHED_OFFICIAL_PREFIX.length);
     return locateOfficialAsset(rel);
