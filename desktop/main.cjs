@@ -8,7 +8,7 @@ const { spawn } = require("child_process");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const DEFAULT_HOST = process.env.OPENCODEX_HOST || "127.0.0.1";
-const DEFAULT_PORT = Number(process.env.OPENCODEX_PORT || 3737);
+const DEFAULT_PORT = normalizePort(process.env.OPENCODEX_PORT);
 
 let mainWindow = null;
 let statusTimer = null;
@@ -17,7 +17,7 @@ let isQuitting = false;
 const gatewayState = {
   child: null,
   host: DEFAULT_HOST,
-  port: DEFAULT_PORT,
+  port: DEFAULT_PORT || 0,
   listenUrl: "",
   localUrl: "",
   primaryUrl: "",
@@ -75,9 +75,16 @@ function normalizeHostMode(value) {
   return value === "lan" ? "lan" : "local";
 }
 
+function normalizePort(value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port;
+}
+
 function defaultSettings() {
   return {
     hostMode: DEFAULT_HOST === "0.0.0.0" ? "lan" : "local",
+    port: DEFAULT_PORT,
   };
 }
 
@@ -88,6 +95,7 @@ function loadLauncherSettings(paths) {
       ...defaultSettings(),
       ...parsed,
       hostMode: normalizeHostMode(parsed.hostMode),
+      port: normalizePort(parsed.port),
     };
   } catch {
     return defaultSettings();
@@ -99,6 +107,7 @@ function saveLauncherSettings(paths, settings) {
     ...defaultSettings(),
     ...settings,
     hostMode: normalizeHostMode(settings && settings.hostMode),
+    port: normalizePort(settings && settings.port),
   };
   fs.writeFileSync(paths.settingsPath, `${JSON.stringify(nextSettings, null, 2)}\n`, "utf8");
   return nextSettings;
@@ -216,6 +225,26 @@ function findFreePort(startPort, host) {
   });
 }
 
+async function findRandomFreePort(host) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const candidate = 20000 + Math.floor(Math.random() * 30000);
+    try {
+      return await findFreePort(candidate, host);
+    } catch {}
+  }
+  return findFreePort(3737, host);
+}
+
+async function ensurePortSetting(paths, settings) {
+  const port = normalizePort(settings && settings.port);
+  if (port) return settings;
+  const host = hostForMode(settings && settings.hostMode);
+  return saveLauncherSettings(paths, {
+    ...settings,
+    port: await findRandomFreePort(host),
+  });
+}
+
 function buildState() {
   return {
     running: !!gatewayState.child && !gatewayState.child.killed,
@@ -278,7 +307,7 @@ async function startGateway() {
   const paths = runtimePaths();
   gatewayState.paths = paths;
   ensureRuntimeLayout(paths);
-  gatewayState.settings = loadLauncherSettings(paths);
+  gatewayState.settings = await ensurePortSetting(paths, loadLauncherSettings(paths));
   gatewayState.host = hostForMode(gatewayState.settings.hostMode);
 
   if (!fs.existsSync(paths.gatewayScriptPath)) {
@@ -287,7 +316,7 @@ async function startGateway() {
     return buildState();
   }
 
-  gatewayState.port = await findFreePort(DEFAULT_PORT, gatewayState.host);
+  gatewayState.port = await findFreePort(gatewayState.settings.port, gatewayState.host);
   updateGatewayUrls();
   gatewayState.status = null;
   gatewayState.lastError = "";
@@ -425,6 +454,22 @@ ipcMain.handle("launcher:update-host-mode", async (_event, hostMode) => {
   gatewayState.settings = saveLauncherSettings(paths, {
     ...(gatewayState.settings || loadLauncherSettings(paths)),
     hostMode: normalizeHostMode(hostMode),
+  });
+  return restartGateway();
+});
+ipcMain.handle("launcher:update-port", async (_event, port) => {
+  const nextPort = normalizePort(port);
+  if (!nextPort) {
+    gatewayState.lastError = "端口必须是 1 到 65535 之间的整数";
+    broadcastState();
+    return buildState();
+  }
+  const paths = runtimePaths();
+  ensureRuntimeLayout(paths);
+  gatewayState.paths = paths;
+  gatewayState.settings = saveLauncherSettings(paths, {
+    ...(gatewayState.settings || loadLauncherSettings(paths)),
+    port: nextPort,
   });
   return restartGateway();
 });

@@ -40,7 +40,8 @@ button {
   cursor: pointer;
 }
 
-input[type="password"] {
+input[type="password"],
+input[type="number"] {
   width: 100%;
   min-width: 0;
   height: 34px;
@@ -53,7 +54,8 @@ input[type="password"] {
   font-size: 13px;
 }
 
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="number"]:focus {
   border-color: var(--accent);
   outline: 2px solid rgba(15, 123, 99, 0.14);
 }
@@ -220,7 +222,7 @@ h2 {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(220px, 0.75fr) minmax(210px, 0.65fr) minmax(0, 1.2fr);
   gap: 18px;
 }
 
@@ -269,6 +271,12 @@ h2 {
 .password-row {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 8px;
+}
+
+.port-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
   gap: 8px;
 }
 
@@ -360,7 +368,8 @@ h2 {
   }
 
   .settings-grid,
-  .password-row {
+  .password-row,
+  .port-row {
     grid-template-columns: 1fr;
   }
 

@@ -109,6 +109,7 @@ pnpm install
 - app-server 当前连接状态。
 - 访问密码设置；密码为空时不启用认证。
 - 启动地址设置；本机模式监听 `127.0.0.1`，局域网模式监听 `0.0.0.0` 并展示可访问的局域网地址。
+- 端口设置；首次启动会随机选择一个可用端口并持久化，后续可手动指定端口。
 
 安装依赖并构建后，可以本地调试 Launcher：
 
@@ -122,7 +123,7 @@ pnpm run desktop:dev
 pnpm run desktop:dist:mac
 ```
 
-产物会输出到 `release/`。Launcher 默认只监听 `127.0.0.1`，运行时数据放在系统用户数据目录中，不再写入安装目录。修改监听地址或访问密码后，Launcher 会重启 gateway 让配置生效。
+产物会输出到 `release/`。Launcher 默认只监听 `127.0.0.1`，首次启动会随机选择一个可用端口，运行时数据放在系统用户数据目录中，不再写入安装目录。修改监听地址、端口或访问密码后，Launcher 会重启 gateway 让配置生效。
 
 > 打包前仍需要本机已安装 Codex Desktop。Launcher 会复用本机 Codex Desktop 的 official renderer 和 app-server 能力。
 

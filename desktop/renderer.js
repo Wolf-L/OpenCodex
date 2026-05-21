@@ -48,6 +48,12 @@ function renderHostMode(hostMode) {
   }
 }
 
+function renderPort(port) {
+  const input = $("portInput");
+  if (!input || document.activeElement === input) return;
+  input.value = port ? String(port) : "";
+}
+
 function renderUrls(state) {
   const urls = state.urls || {};
   const primary = urls.primary || state.url || "";
@@ -100,6 +106,7 @@ function render(state) {
   renderUrls(state);
   if (pendingHostMode && settings.hostMode === pendingHostMode) pendingHostMode = "";
   renderHostMode(settings.hostMode);
+  renderPort(settings.port || state.port);
   text("serviceTitle", settings.hostMode === "lan" ? "局域网服务" : "本机服务");
 
   text("codexVersion", official.version || "未知");
@@ -158,6 +165,11 @@ document.addEventListener("click", async (event) => {
     render(await launcher.restart());
     return;
   }
+  if (target.id === "savePort") {
+    const input = $("portInput");
+    render(await launcher.updatePort(input ? input.value : ""));
+    return;
+  }
   if (target.id === "savePassword") {
     const input = $("passwordInput");
     render(await launcher.updatePassword(input ? input.value : ""));
@@ -178,6 +190,13 @@ document.addEventListener("click", async (event) => {
     const targetPath = target.dataset.path;
     if (targetPath) await launcher.revealPath(targetPath);
   }
+});
+
+document.addEventListener("keydown", async (event) => {
+  const target = event.target;
+  if (!target || target.id !== "portInput" || event.key !== "Enter") return;
+  event.preventDefault();
+  render(await launcher.updatePort(target.value));
 });
 
 document.addEventListener("change", async (event) => {

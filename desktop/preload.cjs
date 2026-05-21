@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("openCodexLauncher", {
   revealPath: (targetPath) => ipcRenderer.invoke("launcher:reveal-path", targetPath),
   copy: (value) => ipcRenderer.invoke("launcher:copy", value),
   updateHostMode: (hostMode) => ipcRenderer.invoke("launcher:update-host-mode", hostMode),
+  updatePort: (port) => ipcRenderer.invoke("launcher:update-port", port),
   updatePassword: (password) => ipcRenderer.invoke("launcher:update-password", password),
   onState: (callback) => {
     const listener = (_event, state) => callback(state);
