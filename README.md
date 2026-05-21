@@ -99,6 +99,70 @@ pnpm install
 
 ## 如何使用
 
+### macOS 一键启动包
+
+当前已提供 macOS Launcher 打包入口。它会在启动时自动拉起 gateway，并在窗口里展示：
+
+- 本机访问地址、gateway 进程和监听端口。
+- 当前使用的 Codex 版本、build、Codex 安装路径、`app.asar` 路径和 CLI 路径。
+- 配置文件、日志、报告和 official renderer 缓存目录。
+- app-server 当前连接状态。
+- 访问密码设置；密码为空时不启用认证。
+- 启动地址设置；本机模式监听 `127.0.0.1`，局域网模式监听 `0.0.0.0` 并展示可访问的局域网地址。
+
+安装依赖并构建后，可以本地调试 Launcher：
+
+```bash
+pnpm run desktop:dev
+```
+
+生成 macOS 安装产物：
+
+```bash
+pnpm run desktop:dist:mac
+```
+
+产物会输出到 `release/`。Launcher 默认只监听 `127.0.0.1`，运行时数据放在系统用户数据目录中，不再写入安装目录。修改监听地址或访问密码后，Launcher 会重启 gateway 让配置生效。
+
+> 打包前仍需要本机已安装 Codex Desktop。Launcher 会复用本机 Codex Desktop 的 official renderer 和 app-server 能力。
+
+#### 构建 macOS 安装包
+
+从干净仓库构建 macOS 产物：
+
+```bash
+git clone --recursive xxx
+cd OpenCodex
+pnpm install
+pnpm run build
+pnpm run desktop:dist:mac
+```
+
+`desktop:dist:mac` 会先编译 `vendor/electron-to-web` 和 `gateway`，再通过 `electron-builder` 生成 `.dmg` 和 `.zip`。产物位于 `release/`：
+
+```text
+release/OpenCodex-<version>-arm64.dmg
+release/OpenCodex-<version>-arm64-mac.zip
+```
+
+本机只验证当前架构时，可以直接指定架构，例如 Apple Silicon：
+
+```bash
+pnpm run build
+pnpm exec electron-builder --mac dmg zip --arm64
+```
+
+调试未压缩 `.app`：
+
+```bash
+pnpm run build
+pnpm exec electron-builder --mac --dir --arm64
+```
+
+生成的 `.app` 会在启动时创建用户数据目录，保存 Launcher 设置、访问密码配置、gateway 日志和 official renderer 缓存。
+
+### 命令行启动
+
 先编译
 
 ```bash
@@ -152,7 +216,10 @@ curl http://127.0.0.1:3737/api/health
 | `CODEX_WEB_SLOW_LOG_MS` | `750` | IPC 慢调用日志阈值。 |
 | `CODEX_WEB_LOCAL_FILE_TOKEN_TTL_MS` | `300000` | 本地文件预览 URL token 有效期。 |
 | `CODEX_DESKTOP_APP_PATH` | 自动扫描 | 指定 Codex Desktop 安装路径或 `app.asar` 所在路径。 |
-| `CODEX_WEB_OFFICIAL_BUNDLE_DIR` | `cache/official-bundle` | 指定官方 webview 解包缓存目录。 |
+| `CODEX_WEB_RUNTIME_DIR` | 项目目录 | 指定 gateway 运行时目录；Launcher 会设置到用户数据目录。 |
+| `CODEX_WEB_CONFIG_PATH` | `config.yaml` | 指定访问密码配置文件路径。 |
+| `CODEX_WEB_REPORTS_DIR` | `reports` | 指定诊断报告目录。 |
+| `CODEX_WEB_OFFICIAL_BUNDLE_DIR` | `cache/codex-official-bundle` | 指定官方 webview 解包缓存目录。 |
 | `CODEX_WEB_IPC_IMPL` | `electron-to-web` | 设为 `direct` 可使用 direct IPC 兜底实现。 |
 
 
@@ -176,6 +243,9 @@ curl http://127.0.0.1:3737/api/health
 | `pnpm run web:dev` | 启动已编译的 gateway。 |
 | `pnpm run build:vendor` | 编译 `vendor/electron-to-web`。 |
 | `pnpm run test:vendor` | 运行 `vendor/electron-to-web` 测试。 |
+| `pnpm run desktop:dev` | 编译后启动 macOS Launcher 调试。 |
+| `pnpm run desktop:pack:mac` | 生成未压缩的 macOS `.app`。 |
+| `pnpm run desktop:dist:mac` | 生成 macOS `.dmg` 和 `.zip` 产物。 |
 
 ## 排障
 

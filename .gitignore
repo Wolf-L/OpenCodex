@@ -9,6 +9,7 @@ node_modules/
 out/
 dist/
 cache/
+release/
 
 # Upstream ASAR extracts and build-time copies (all generated)
 src/

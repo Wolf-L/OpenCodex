@@ -8,6 +8,10 @@ const os = require("os");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
 
+if (process.versions && process.versions.electron) {
+  process.noAsar = true;
+}
+
 let express = null;
 try {
   express = require("express");
@@ -31,14 +35,26 @@ const { ensureOfficialBundle } = require("./official/LocalCodexBundleProvider");
 
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const WEB_SHELL_DIR = path.join(PROJECT_ROOT, "web-shell");
-const REPORTS_DIR = path.join(PROJECT_ROOT, "reports");
+const RUNTIME_DIR = process.env.CODEX_WEB_RUNTIME_DIR
+  ? path.resolve(process.env.CODEX_WEB_RUNTIME_DIR)
+  : PROJECT_ROOT;
+const REPORTS_DIR = process.env.CODEX_WEB_REPORTS_DIR
+  ? path.resolve(process.env.CODEX_WEB_REPORTS_DIR)
+  : process.env.CODEX_WEB_RUNTIME_DIR
+    ? path.join(RUNTIME_DIR, "reports")
+    : path.join(PROJECT_ROOT, "reports");
 const UNKNOWN_IPC_PATH = path.join(REPORTS_DIR, "unknown-ipc.jsonl");
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_GENERATED_IMAGES_DIR = path.join(CODEX_HOME, "generated_images");
 const CODEX_WEB_PICKED_FILES_DIR = path.join(CODEX_HOME, ".tmp", "web-picked-files");
 const PORT = Number(process.env.PORT || 3737);
 const HOST = process.env.HOST || "0.0.0.0";
-const AUTH_CONFIG_PATH = path.join(process.cwd(), "config.yaml");
+const AUTH_CONFIG_PATH = process.env.CODEX_WEB_CONFIG_PATH
+  ? path.resolve(process.env.CODEX_WEB_CONFIG_PATH)
+  : process.env.CODEX_WEB_RUNTIME_DIR
+    ? path.join(RUNTIME_DIR, "config.yaml")
+    : path.join(process.cwd(), "config.yaml");
+const LAUNCHER_TOKEN = process.env.CODEX_WEB_LAUNCHER_TOKEN || "";
 const PASSWORD_HASH_PREFIX = "sha256-v1:";
 const AUTH_PASSWORD_HASH = loadAuthPasswordHashFromConfig();
 const COOKIE_NAME = "codex_web_auth";
@@ -423,6 +439,12 @@ function headerValue(headers, name) {
     if (key.toLowerCase() === normalized) return value;
   }
   return undefined;
+}
+
+function isLauncherRequest(req) {
+  if (!LAUNCHER_TOKEN) return false;
+  const value = headerValue(req.headers, "x-opencodex-launcher-token");
+  return typeof value === "string" && value === LAUNCHER_TOKEN;
 }
 
 /** 读取完整请求体，用于 JSON POST 和登录表单。 */
@@ -923,6 +945,45 @@ function broadcastToWebClients(gatewayIpcPort, msg) {
   gatewayIpcPort.broadcastGatewayIpc(msg);
 }
 
+function buildGatewayStatus(appServer) {
+  const listenUrl = `http://${HOST}:${PORT}`;
+  const localUrl = `http://127.0.0.1:${PORT}`;
+  return {
+    ok: true,
+    gateway: {
+      host: HOST,
+      port: PORT,
+      listenUrl,
+      localUrl,
+      pid: process.pid,
+      projectRoot: PROJECT_ROOT,
+      webShellDir: WEB_SHELL_DIR,
+      nodeVersion: process.version,
+      electronVersion: process.versions && process.versions.electron ? process.versions.electron : null,
+    },
+    runtime: {
+      runtimeDir: RUNTIME_DIR,
+      configPath: AUTH_CONFIG_PATH,
+      reportsDir: REPORTS_DIR,
+      unknownIpcPath: UNKNOWN_IPC_PATH,
+    },
+    officialBundle: officialBundle
+      ? {
+          version: officialBundle.version,
+          build: officialBundle.build,
+          sourceAppPath: officialBundle.sourceAppPath,
+          sourceAsarPath: officialBundle.sourceAsarPath,
+          codexBinaryPath: officialBundle.codexBinaryPath,
+          bundleDir: officialBundle.bundleDir,
+          webviewDir: officialBundle.webviewDir,
+          cacheProcessedAt: officialBundle.manifest && officialBundle.manifest.processedAt ? officialBundle.manifest.processedAt : null,
+        }
+      : null,
+    appServer: appServer && appServer.getHealth ? appServer.getHealth() : null,
+    workspaceRoots: process.env.CODEX_WEB_WORKSPACE_ROOTS ? process.env.CODEX_WEB_WORKSPACE_ROOTS.split(",").filter(Boolean) : [],
+  };
+}
+
 /** gateway 启动入口：组装 app-server、Electron IPC、Codex 业务 IPC、HTTP/WS 服务。 */
 async function createGateway() {
   ensureDir(REPORTS_DIR);
@@ -1045,6 +1106,12 @@ async function createGateway() {
     if (pathname === "/api/auth/login") return handleAuthLogin(req, res);
     if (pathname === "/api/auth/logout") return handleAuthLogout(req, res, url);
     if (pathname === "/login") return send(res, 302, { location: "/" }, "");
+    if (pathname === "/api/launcher/status") {
+      if (!isLauncherRequest(req)) {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized" }, { "cache-control": "no-store" });
+      }
+      return sendJson(res, 200, buildGatewayStatus(appServer), { "cache-control": "no-store" });
+    }
 
     if (isPublicOfficialAsset(pathname)) {
       const file = staticFile(pathname);
@@ -1090,11 +1157,7 @@ async function createGateway() {
     }
 
     if (pathname === "/api/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        appServer: appServer.getHealth(),
-        workspaceRoots: process.env.CODEX_WEB_WORKSPACE_ROOTS ? process.env.CODEX_WEB_WORKSPACE_ROOTS.split(",").filter(Boolean) : [],
-      });
+      return sendJson(res, 200, buildGatewayStatus(appServer));
     }
 
     if (pathname.startsWith("/api/app-fs/@fs/") && req.method === "GET") {

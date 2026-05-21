@@ -50,7 +50,12 @@ class LocalCodexBundleProvider {
     const fileSystem = options.fileSystem || new OfficialBundleFileSystem();
     const archive = new AsarArchiveReader();
     this.defaultBundleDir = options.defaultBundleDir || DEFAULT_BUNDLE_DIR;
-    this.bundleDirEnv = options.bundleDirEnv || process.env.CODEX_WEB_OFFICIAL_BUNDLE_DIR || "";
+    this.bundleDirEnv =
+      options.bundleDirEnv ||
+      process.env.CODEX_WEB_OFFICIAL_BUNDLE_DIR ||
+      (process.env.CODEX_WEB_RUNTIME_DIR
+        ? path.join(process.env.CODEX_WEB_RUNTIME_DIR, "cache", "codex-official-bundle")
+        : "");
     this.logger = options.logger || new OfficialBundleLogger();
     this.fileSystem = fileSystem;
     this.scanner = new CodexAsarScanner({

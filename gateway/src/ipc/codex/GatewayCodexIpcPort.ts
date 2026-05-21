@@ -39,7 +39,14 @@ const { buildLocaleInfo, buildOsInfo, chroniclePermissionsStatus } = require("./
 const { createCodexDiagnostics } = require("./diagnostics");
 
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
-const REPORTS_DIR = path.join(PROJECT_ROOT, "reports");
+const RUNTIME_DIR = process.env.CODEX_WEB_RUNTIME_DIR
+  ? path.resolve(process.env.CODEX_WEB_RUNTIME_DIR)
+  : PROJECT_ROOT;
+const REPORTS_DIR = process.env.CODEX_WEB_REPORTS_DIR
+  ? path.resolve(process.env.CODEX_WEB_REPORTS_DIR)
+  : process.env.CODEX_WEB_RUNTIME_DIR
+    ? path.join(RUNTIME_DIR, "reports")
+    : path.join(PROJECT_ROOT, "reports");
 const DOCS_DIR = path.join(PROJECT_ROOT, "docs");
 const UNKNOWN_IPC_PATH = path.join(REPORTS_DIR, "unknown-ipc.jsonl");
 const CODEX_BRIDGE_MAP_PATH = path.join(DOCS_DIR, "codex-bridge-map.md");
@@ -150,8 +157,11 @@ function shouldPatchStatsigInitialize(urlObject) {
 /** 生成注入到 web-shell 的运行时配置。 */
 function buildGatewayConfig() {
   const workspaceRoots = workspaceIpc.parseWorkspaceRoots();
+  const gatewayBaseUrl =
+    process.env.CODEX_WEB_GATEWAY_BASE_URL ||
+    `http://127.0.0.1:${Number(process.env.PORT || 3737)}`;
   return {
-    gatewayBaseUrl: "http://127.0.0.1:3737",
+    gatewayBaseUrl,
     workspaceRoots,
     homeDir: os.homedir(),
     appServer: process.env.CODEX_APP_SERVER_URL ? "remote" : "local",
