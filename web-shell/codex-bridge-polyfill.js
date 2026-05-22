@@ -268,8 +268,20 @@
   const MODEL_LIST_CACHE_KEY = "__codex_web_model_list_cache_v1__";
   const MODEL_LIST_FRESH_MS = 5 * 60 * 1000;
   const MODEL_LIST_STALE_MS = 60 * 60 * 1000;
+  const MCP_REQUEST_TIMEOUTS_MS = new Map([
+    ["thread/read", 20 * 1000],
+    ["thread/turns/list", 20 * 1000],
+    ["thread/goal/get", 15 * 1000],
+    ["thread/resume", 35 * 1000],
+  ]);
+  const MCP_REQUEST_RETRYABLE_METHODS = new Set([
+    "thread/read",
+    "thread/turns/list",
+    "thread/goal/get",
+  ]);
   const modelListRequests = new Map();
   const modelListCache = new Map();
+  const pendingMcpRequests = new Map();
   let mobileComposerFocusBlockedUntilMs = 0;
   let lastManualComposerFocusIntentAtMs = 0;
   let mobileSidebarCollapseTimer = null;
@@ -995,6 +1007,7 @@
     try {
       if (channel === "mcp-response" && payload && typeof payload === "object") {
         const normalizedMessage = payload.message || payload.response || payload;
+        clearPendingMcpRequest(normalizedMessage && normalizedMessage.id);
         const data = {
           type: channel,
           ...payload,
@@ -1017,6 +1030,80 @@
     } catch (error) {
       console.warn("[codex-web] failed to emit window message", channel, error);
     }
+  }
+
+  function mcpRequestDetails(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    if (payload.type !== "mcp-request" && payload.type !== "thread-prewarm-start") return null;
+    const request = payload.request;
+    if (!request || typeof request !== "object") return null;
+    const id = request.id == null ? "" : String(request.id);
+    const method =
+      payload.type === "thread-prewarm-start"
+        ? "thread/start"
+        : String(request.method || "");
+    if (!id || !method) return null;
+    const timeoutMs = MCP_REQUEST_TIMEOUTS_MS.get(method) || 0;
+    if (!timeoutMs) return null;
+    return {
+      id,
+      method,
+      timeoutMs,
+      hostId: payload.hostId ?? null,
+    };
+  }
+
+  function clearPendingMcpRequest(id) {
+    const requestId = id == null ? "" : String(id);
+    if (!requestId) return;
+    const pending = pendingMcpRequests.get(requestId);
+    if (!pending) return;
+    pendingMcpRequests.delete(requestId);
+    if (pending.retryTimer) clearTimeout(pending.retryTimer);
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+  }
+
+  function trackPendingMcpRequest(payload) {
+    const details = mcpRequestDetails(payload);
+    if (!details) return;
+    clearPendingMcpRequest(details.id);
+    const entry = {
+      id: details.id,
+      method: details.method,
+      hostId: details.hostId,
+      retryTimer: null,
+      timeoutTimer: null,
+    };
+    if (MCP_REQUEST_RETRYABLE_METHODS.has(details.method)) {
+      const retryDelayMs = Math.min(5 * 1000, Math.max(1 * 1000, Math.floor(details.timeoutMs / 2)));
+      entry.retryTimer = setTimeout(() => {
+        const current = pendingMcpRequests.get(details.id);
+        if (current !== entry) return;
+        invoke("codex_desktop:message-from-view", payload).catch((error) => {
+          console.warn("[codex-web] failed to retry mcp request", details.method, error);
+        });
+      }, retryDelayMs);
+    }
+    entry.timeoutTimer = setTimeout(() => {
+      const current = pendingMcpRequests.get(details.id);
+      if (current !== entry) return;
+      pendingMcpRequests.delete(details.id);
+      if (entry.retryTimer) clearTimeout(entry.retryTimer);
+      console.warn("[codex-web] mcp request timed out", {
+        id: details.id,
+        method: details.method,
+        timeoutMs: details.timeoutMs,
+      });
+      emitWindowMessage("mcp-response", {
+        hostId: details.hostId,
+        message: {
+          id: details.id,
+          error: {
+            message: `OpenCodex timed out waiting for ${details.method}`,
+          },
+        },
+      });
+    }, details.timeoutMs);
   }
 
   /** 调试用 payload 形状摘要，不输出完整敏感数据。 */
@@ -1396,6 +1483,7 @@
         if (!isTransientGatewayFetchError(error) || attempt === retryDelays.length - 1) throw error;
       }
     }
+
     if (!res) throw lastFetchError || new Error("IPC invoke failed before request was sent");
     const json = await res.json().catch(() => null);
     if (!res.ok || (json && typeof json === "object" && json.ok === false)) {
@@ -1718,6 +1806,7 @@
         if (handleModelListMcpRequest(payload)) {
           return true;
         }
+        trackPendingMcpRequest(payload);
         if (handlePickFilesFetchMessage(payload)) {
           return true;
         }
