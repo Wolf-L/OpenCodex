@@ -49,9 +49,11 @@ class AsarWebviewExtractor {
     let byteCount = 0;
 
     for (const rawEntry of entries) {
-      const entry = String(rawEntry).replace(/^\/+/, "");
-      if (!entry.startsWith("webview/")) continue;
-      const rel = entry.slice("webview/".length);
+      const entry = String(rawEntry).replace(/^[\\/]+/, "");
+      // Windows 下 @electron/asar 会返回反斜杠路径；统一成 POSIX 形式后再判断 webview 前缀。
+      const normalizedEntry = entry.replace(/\\/g, "/");
+      if (!normalizedEntry.startsWith("webview/")) continue;
+      const rel = normalizedEntry.slice("webview/".length);
       if (!rel) continue;
 
       const stat = this.archive.statFile(asarPath, entry);
