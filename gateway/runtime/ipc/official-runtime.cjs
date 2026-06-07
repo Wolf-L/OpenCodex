@@ -27,6 +27,7 @@ const {
 } = require("../core/config.cjs");
 const { persistedAtomSnapshotForRenderer } = require("../state/desktop-state.cjs");
 const { diagnosticLog, diagnosticWarn, shortId } = require("../core/diagnostics.cjs");
+const { resolveOpenCodexI18n } = require("../../../shared/i18n/index.cjs");
 
 const { app, ipcMain } = electron;
 
@@ -1315,13 +1316,18 @@ function buildGatewayStatus() {
 
 function webConfigScript() {
   // 这个脚本由浏览器入口动态加载，避免把本机路径和端口写死到 web-shell 构建产物里。
+  const i18n = resolveOpenCodexI18n({
+    codexHome: CODEX_HOME,
+    systemLocales: [app && typeof app.getLocale === "function" ? app.getLocale() : ""],
+  });
   return `(() => {
   window.__CODEX_WEB_CONFIG__ = {
     gatewayBaseUrl: location.origin,
     gatewayWsUrl: location.origin.replace(/^http/, "ws") + "/ws",
     workspaceRoots: ${JSON.stringify(workspaceRootsFromEnv())},
     homeDir: ${JSON.stringify(os.homedir())},
-    locale: ${JSON.stringify(process.env.CODEX_WEB_LOCALE || "zh-CN")},
+    locale: ${JSON.stringify(i18n.locale)},
+    messages: ${JSON.stringify(i18n.messages)},
     // debugWs 只控制浏览器侧诊断采集，不控制 WS 压缩；压缩属于 gateway 传输层优化。
     // OPENCODEX_DEBUG_WS=1 时才开启 WS 大包/慢解析诊断，平时不采集。
     debugWs: ${JSON.stringify(process.env.OPENCODEX_DEBUG_WS === "1")},

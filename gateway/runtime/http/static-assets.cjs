@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const {
+  CODEX_HOME,
   PATCHED_OFFICIAL_PREFIX,
   WEB_SHELL_ASSETS_PREFIX,
   WEB_SHELL_DIR,
@@ -10,6 +11,7 @@ const {
   readText,
 } = require("../core/config.cjs");
 const { gzipIfUseful, send } = require("./http-utils.cjs");
+const { resolveOpenCodexI18n } = require("../../../shared/i18n/index.cjs");
 
 // 静态资源层把官方 renderer/web-shell 的路径差异统一隐藏起来，server 只需要按 URL 取文件。
 function createStaticAssetService({ getOfficialBundle }) {
@@ -44,10 +46,7 @@ function createStaticAssetService({ getOfficialBundle }) {
      */
     let html = rawHtml;
     // 官方 HTML 是 Electron renderer 用的，浏览器里需要补 locale、移动端 viewport 和站点图标。
-    html = html.replace(/<html([^>]*)\blang=["'][^"']*["']([^>]*)>/i, '<html$1lang="zh-CN"$2>');
-    if (!/<html[^>]*\blang=/i.test(html)) {
-      html = html.replace(/<html([^>]*)>/i, '<html$1 lang="zh-CN">');
-    }
+    html = patchHtmlLang(html, currentI18n().locale);
     html = html.replace(
       /<meta([^>]*\bname=["']viewport["'][^>]*)>/i,
       '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />'
@@ -134,9 +133,31 @@ function createStaticAssetService({ getOfficialBundle }) {
       .join("\n    ");
   }
 
+  function currentI18n() {
+    // web-shell 登录页在未认证时也需要知道语言；这里只注入语言和文案，不暴露路径、token 等运行时状态。
+    return resolveOpenCodexI18n({ codexHome: CODEX_HOME });
+  }
+
+  function patchHtmlLang(rawHtml, locale) {
+    let html = rawHtml.replace(/<html([^>]*)\blang=["'][^"']*["']([^>]*)>/i, `<html$1lang="${locale}"$2>`);
+    if (!/<html[^>]*\blang=/i.test(html)) {
+      html = html.replace(/<html([^>]*)>/i, `<html$1 lang="${locale}">`);
+    }
+    return html;
+  }
+
+  function webShellBootstrapScript(i18n) {
+    const publicConfig = {
+      locale: i18n.locale,
+      messages: i18n.messages,
+    };
+    return `<script>window.__CODEX_WEB_CONFIG__=Object.assign(window.__CODEX_WEB_CONFIG__||{},${JSON.stringify(publicConfig)});</script>`;
+  }
+
   function createWebShellIndexResponse() {
     const shell = path.join(WEB_SHELL_DIR, "index.html");
-    let html = readText(shell);
+    const i18n = currentI18n();
+    let html = patchHtmlLang(readText(shell), i18n.locale);
     const links = officialStyleLinks();
     if (links) {
       // web-shell 自己负责承载 UI，注入官方样式后视觉表现和桌面 renderer 保持一致。
@@ -145,6 +166,12 @@ function createStaticAssetService({ getOfficialBundle }) {
       } else {
         html = html.replace(/<\/head>/i, `${links}\n  </head>`);
       }
+    }
+    const bootstrap = webShellBootstrapScript(i18n);
+    if (html.includes("<!-- opencodex-runtime-config -->")) {
+      html = html.replace("<!-- opencodex-runtime-config -->", bootstrap);
+    } else {
+      html = html.replace(/<\/head>/i, `    ${bootstrap}\n  </head>`);
     }
     return html;
   }

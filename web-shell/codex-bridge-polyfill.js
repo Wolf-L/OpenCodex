@@ -8,6 +8,14 @@
       gatewayWsUrl: location.origin.replace(/^http/, "ws") + "/ws",
     });
   const OPENCODEX_LOCALE = cfg.locale || "zh-CN";
+  const OPENCODEX_MESSAGES = cfg.messages && typeof cfg.messages === "object" ? cfg.messages : {};
+  function t(key, values) {
+    const template = OPENCODEX_MESSAGES[key] || key;
+    if (!values || typeof values !== "object") return template;
+    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) =>
+      Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+    );
+  }
   const OPENCODEX_LANGUAGES = [OPENCODEX_LOCALE, "zh-CN", "zh", "en-US", "en"];
   const AUTH_FORCE_LOGIN_STORAGE_KEY = "codex_web_force_login";
   const OPENCODEX_SETTINGS_STORAGE_KEY = "opencodex_web_settings_v1";
@@ -24,8 +32,8 @@
   const WS_INBOUND_HANDLE_SLOW_MS = Number(cfg.wsInboundHandleSlowMs || 80);
   // app-host RPC 首屏会连续发多条字符串帧；WS 未握手完成前先短暂排队，超过上限直接关闭端口。
   const APP_HOST_PENDING_MESSAGE_LIMIT = 2000;
-  const GATEWAY_AUTH_LOGOUT_LABEL = "退出认证";
-  const GATEWAY_AUTH_LOGOUT_BUSY_LABEL = "正在退出认证...";
+  const GATEWAY_AUTH_LOGOUT_LABEL = t("web.auth.logoutGateway");
+  const GATEWAY_AUTH_LOGOUT_BUSY_LABEL = t("web.auth.logoutGatewayBusy");
   const OFFICIAL_LOGOUT_LABELS = [
     "退出登录",
     "Log out",
@@ -1077,7 +1085,7 @@
       w.__codexGatewayAuthLogoutInProgress = false;
       markGatewayAuthLogoutBusy(item, false);
       renderBridgeErrorToast({
-        description: `退出认证失败：${error instanceof Error ? error.message : String(error)}`,
+        description: t("web.auth.logoutGatewayFailed", { error: error instanceof Error ? error.message : String(error) }),
       });
     }
   }

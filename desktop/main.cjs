@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../gateway/runner/index.cjs");
+const { formatMessage, resolveOpenCodexI18n } = require("../shared/i18n/index.cjs");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 
@@ -308,6 +309,7 @@ async function ensurePortSetting(paths, settings) {
 }
 
 function buildState() {
+  const i18n = launcherI18n();
   return {
     running: !!gatewayState.child && !gatewayState.child.killed,
     pid: gatewayState.child ? gatewayState.child.pid : null,
@@ -329,7 +331,22 @@ function buildState() {
     lastError: gatewayState.lastError,
     startedAt: gatewayState.startedAt,
     officialRuntime: gatewayState.officialRuntime,
+    locale: i18n.locale,
+    messages: i18n.messages,
+    i18nSource: i18n.source,
   };
+}
+
+function launcherI18n() {
+  // launcher 只复用 shared/i18n，不 import gateway；这样 desktop 仍然只是外壳进程。
+  return resolveOpenCodexI18n({
+    systemLocales: [app && typeof app.getLocale === "function" ? app.getLocale() : ""],
+  });
+}
+
+function launcherText(key, values) {
+  const i18n = launcherI18n();
+  return formatMessage(i18n.messages, key, values);
 }
 
 function broadcastState() {
@@ -554,7 +571,7 @@ ipcMain.handle("launcher:update-host-mode", async (_event, hostMode) => {
 ipcMain.handle("launcher:update-port", async (_event, port) => {
   const nextPort = normalizePort(port);
   if (!nextPort) {
-    gatewayState.lastError = "端口必须是 1 到 65535 之间的整数";
+    gatewayState.lastError = launcherText("launcher.error.invalidPort");
     broadcastState();
     return buildState();
   }

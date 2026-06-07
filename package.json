@@ -48,6 +48,7 @@
     "files": [
       "package.json",
       "desktop/**/*",
+      "shared/**/*",
       "gateway/*.cjs",
       "gateway/runner/**/*",
       "gateway/runtime/**/*",
