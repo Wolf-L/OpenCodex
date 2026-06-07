@@ -20,6 +20,16 @@ function pathButton(id, value) {
   node.disabled = !value;
 }
 
+function renderAuthStatus(enabled) {
+  const node = $("authStatus");
+  if (!node) return;
+  const isEnabled = !!enabled;
+  node.textContent = isEnabled ? "已启用" : "未启用";
+  // 访问控制关闭是需要显眼提示的安全状态，单独加 class，避免影响其它 setting-status。
+  node.classList.toggle("is-enabled", isEnabled);
+  node.classList.toggle("is-disabled", !isEnabled);
+}
+
 function formatDateTime(value) {
   if (!value) return "未知";
   const date = new Date(value);
@@ -127,7 +137,7 @@ function render(state) {
   pathButton("logPath", paths.logPath);
   pathButton("reportsDir", runtime.reportsDir || paths.reportsDir);
   pathButton("officialBundleDir", official.bundleDir || paths.officialBundleDir);
-  text("authStatus", state.auth && state.auth.enabled ? "已启用" : "未启用");
+  renderAuthStatus(state.auth && state.auth.enabled);
 
   const error = $("lastError");
   const message = state.lastError || (appServer.lastError ? `app-server: ${appServer.lastError}` : "");
