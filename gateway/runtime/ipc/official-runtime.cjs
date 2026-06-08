@@ -29,6 +29,7 @@ const {
 const { persistedAtomSnapshotForRenderer } = require("../state/desktop-state.cjs");
 const { diagnosticLog, diagnosticWarn, shortId } = require("../core/diagnostics.cjs");
 const { resolveOpenCodexI18n } = require("../../../shared/i18n/index.cjs");
+const { hiddenTrayHookStatus, installOfficialTrayHook } = require("../electron/official-tray-hook.cjs");
 
 const { app, ipcMain } = electron;
 
@@ -1322,6 +1323,7 @@ function buildGatewayStatus() {
     officialBundle: officialBundleStatus(),
     officialIpc: officialIpcStatus(),
     officialAppServer: appServerSpawnHookStatus(),
+    officialTray: hiddenTrayHookStatus(),
     i18n: getI18nSnapshot(),
     workspaceRoots: workspaceRootsFromEnv(),
   };
@@ -1356,7 +1358,7 @@ function startOfficialRuntime() {
    * 官方 runtime 启动点：
    * - ensureOfficialBundle 负责从已安装 Codex.app 抽取白名单资源。
    * - 环境伪装必须发生在 require(bootstrapPath) 之前。
-   * - hook 必须先安装，才能捕获 bootstrap 注册的 IPC handler 和官方 app-server 子进程。
+   * - hook 必须先安装，才能捕获 bootstrap 注册的 IPC handler、官方 app-server 子进程，并隐藏官方托盘。
    */
   const { ensureOfficialBundle } = requireOfficialBundleProvider();
   officialBundle = ensureOfficialBundle({ projectRoot: PROJECT_ROOT });
@@ -1364,6 +1366,7 @@ function startOfficialRuntime() {
   installAppServerSpawnHook(officialBundle);
   installIpcMainHooks();
   installBrowserWindowHooks();
+  installOfficialTrayHook(electron);
   patchOfficialAppSingleton();
 
   // 官方 bootstrap 负责注册 IPC handler、创建隐藏 BrowserWindow 和启动自己的 app-server 连接。
