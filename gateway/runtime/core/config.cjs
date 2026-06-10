@@ -99,6 +99,9 @@ function mimeType(file) {
       return "text/css; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
+    case ".webmanifest":
+      // manifest 需要明确 MIME，Chrome 才能稳定识别安装元数据。
+      return "application/manifest+json; charset=utf-8";
     case ".wasm":
       return "application/wasm";
     case ".svg":

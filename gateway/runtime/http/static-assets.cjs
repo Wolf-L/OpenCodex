@@ -13,6 +13,7 @@ const { gzipIfUseful, send } = require("./http-utils.cjs");
 
 const OPENCODEX_PLUGIN_LOADER_PATH = "/opencodex-plugin-loader.js";
 const OPENCODEX_PLUGIN_URL_PREFIX = "/opencodex-plugins/";
+const PWA_MANIFEST_PATH = "/manifest.webmanifest";
 const WEB_SHELL_PLUGINS_DIR = path.join(WEB_SHELL_DIR, "plugins");
 const SAFE_PLUGIN_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
 
@@ -47,6 +48,7 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
      * - codex-web-config.js，提供端口、workspace roots 等运行时信息。
      * - opencodex-plugin-system.js，提供插件 host。
      * - opencodex-plugin-loader.js，按目录扫描结果加载插件脚本。
+     * - manifest/theme-color，允许 Chrome 把 Web 入口安装为独立窗口壳。
      * - bridge polyfill，把 Electron API 转成 HTTP/WS 调用。
      */
     let html = rawHtml;
@@ -68,6 +70,8 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
     html = html.replace(/(src|href)=["']\.\/([^"'#?]+)["']/g, '$1="/official/$2"');
     const base = [
       '<base href="/official/">',
+      '<link rel="manifest" href="/manifest.webmanifest">',
+      '<meta name="theme-color" content="#ffffff">',
       '<script src="/codex-web-config.js"></script>',
       '<script src="/opencodex-plugin-system.js"></script>',
       '<script src="/opencodex-plugin-loader.js"></script>',
@@ -221,7 +225,9 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
 
   function isPublicStaticPath(reqPath) {
     // 登录前必须可访问的资源限定在入口依赖和官方静态 asset，不包含任何 API。
-    if (reqPath === "/favicon.ico" || reqPath.startsWith(WEB_SHELL_ASSETS_PREFIX)) return true;
+    if (reqPath === "/favicon.ico" || reqPath === PWA_MANIFEST_PATH || reqPath.startsWith(WEB_SHELL_ASSETS_PREFIX)) {
+      return true;
+    }
     if (
       reqPath === OPENCODEX_PLUGIN_LOADER_PATH ||
       reqPath === "/opencodex-plugin-system.js" ||
@@ -298,6 +304,7 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
   function staticFile(reqPath) {
     // 路径映射只接受固定前缀；不能把任意 URL path 直接拼到项目根目录。
     if (reqPath === "/favicon.ico") return path.join(WEB_SHELL_DIR, "assets", "icon.png");
+    if (reqPath === PWA_MANIFEST_PATH) return path.join(WEB_SHELL_DIR, "manifest.webmanifest");
     if (reqPath === "/opencodex-plugin-system.js") return path.join(WEB_SHELL_DIR, "opencodex-plugin-system.js");
     if (reqPath === "/codex-bridge-polyfill.js") return path.join(WEB_SHELL_DIR, "codex-bridge-polyfill.js");
     if (reqPath === "/codex-tooltip-dismiss-guard.js") return path.join(WEB_SHELL_DIR, "codex-tooltip-dismiss-guard.js");
