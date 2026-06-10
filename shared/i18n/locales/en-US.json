@@ -68,6 +68,7 @@
   "web.settings.close": "Close settings",
   "web.settings.mobileKeyboard": "Mobile keyboard optimization",
   "web.settings.mobileSidebarCollapse": "Collapse sidebar after opening a chat on mobile",
+  "web.settings.plugins": "Plugins",
   "web.settings.notifications": "Browser notifications",
   "web.settings.notificationEnable": "Enable",
   "web.settings.notificationEnabled": "Enabled",

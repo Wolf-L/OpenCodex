@@ -11,6 +11,11 @@ const {
 } = require("../core/config.cjs");
 const { gzipIfUseful, send } = require("./http-utils.cjs");
 
+const OPENCODEX_PLUGIN_LOADER_PATH = "/opencodex-plugin-loader.js";
+const OPENCODEX_PLUGIN_URL_PREFIX = "/opencodex-plugins/";
+const WEB_SHELL_PLUGINS_DIR = path.join(WEB_SHELL_DIR, "plugins");
+const SAFE_PLUGIN_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
+
 // 静态资源层把官方 renderer/web-shell 的路径差异统一隐藏起来，server 只需要按 URL 取文件。
 function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
   let hasWarnedHistoryPatchMiss = false;
@@ -40,6 +45,8 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
      * 浏览器环境需要额外注入：
      * - base href，把官方相对资源定位到 /official/。
      * - codex-web-config.js，提供端口、workspace roots 等运行时信息。
+     * - opencodex-plugin-system.js，提供插件 host。
+     * - opencodex-plugin-loader.js，按目录扫描结果加载插件脚本。
      * - bridge polyfill，把 Electron API 转成 HTTP/WS 调用。
      */
     let html = rawHtml;
@@ -62,6 +69,8 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
     const base = [
       '<base href="/official/">',
       '<script src="/codex-web-config.js"></script>',
+      '<script src="/opencodex-plugin-system.js"></script>',
+      '<script src="/opencodex-plugin-loader.js"></script>',
       '<script src="/codex-bridge-polyfill.js"></script>',
       '<script src="/codex-tooltip-dismiss-guard.js"></script>',
     ].join("\n    ");
@@ -154,6 +163,40 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
     return `<script>window.__CODEX_WEB_CONFIG__=Object.assign(window.__CODEX_WEB_CONFIG__||{},${JSON.stringify(publicConfig)});</script>`;
   }
 
+  function listPluginFileNames() {
+    if (!exists(WEB_SHELL_PLUGINS_DIR)) return [];
+    return fs
+      .readdirSync(WEB_SHELL_PLUGINS_DIR)
+      .filter((entry) => SAFE_PLUGIN_FILE_NAME.test(entry))
+      .filter((entry) => {
+        try {
+          return fs.statSync(path.join(WEB_SHELL_PLUGINS_DIR, entry)).isFile();
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+  }
+
+  function createPluginLoaderScript() {
+    const pluginUrls = listPluginFileNames().map((fileName) => `${OPENCODEX_PLUGIN_URL_PREFIX}${fileName}`);
+    return `(() => {
+  const pluginUrls = ${JSON.stringify(pluginUrls)};
+  // loader 由 gateway 生成；刷新页面即可重新扫描 web-shell/plugins 下的插件文件。
+  function loadPlugin(url) {
+    if (document.readyState === "loading") {
+      document.write('<script src="' + url + '"><\\/script>');
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = url;
+    script.async = false;
+    (document.head || document.documentElement).appendChild(script);
+  }
+  for (const url of pluginUrls) loadPlugin(url);
+})();\n`;
+  }
+
   function createWebShellIndexResponse() {
     const shell = path.join(WEB_SHELL_DIR, "index.html");
     const i18n = currentI18n();
@@ -179,8 +222,16 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
   function isPublicStaticPath(reqPath) {
     // 登录前必须可访问的资源限定在入口依赖和官方静态 asset，不包含任何 API。
     if (reqPath === "/favicon.ico" || reqPath.startsWith(WEB_SHELL_ASSETS_PREFIX)) return true;
-    if (reqPath === "/codex-bridge-polyfill.js" || reqPath === "/codex-tooltip-dismiss-guard.js") return true;
+    if (
+      reqPath === OPENCODEX_PLUGIN_LOADER_PATH ||
+      reqPath === "/opencodex-plugin-system.js" ||
+      reqPath === "/codex-bridge-polyfill.js" ||
+      reqPath === "/codex-tooltip-dismiss-guard.js"
+    ) {
+      return true;
+    }
     if (matchedPatchedOfficialPrefix(reqPath)) return true;
+    if (reqPath.startsWith(OPENCODEX_PLUGIN_URL_PREFIX)) return true;
     return reqPath.startsWith("/official/");
   }
 
@@ -247,8 +298,15 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
   function staticFile(reqPath) {
     // 路径映射只接受固定前缀；不能把任意 URL path 直接拼到项目根目录。
     if (reqPath === "/favicon.ico") return path.join(WEB_SHELL_DIR, "assets", "icon.png");
+    if (reqPath === "/opencodex-plugin-system.js") return path.join(WEB_SHELL_DIR, "opencodex-plugin-system.js");
     if (reqPath === "/codex-bridge-polyfill.js") return path.join(WEB_SHELL_DIR, "codex-bridge-polyfill.js");
     if (reqPath === "/codex-tooltip-dismiss-guard.js") return path.join(WEB_SHELL_DIR, "codex-tooltip-dismiss-guard.js");
+    if (reqPath.startsWith(OPENCODEX_PLUGIN_URL_PREFIX)) {
+      const fileName = reqPath.slice(OPENCODEX_PLUGIN_URL_PREFIX.length);
+      // 插件只允许顶层安全文件名，避免 URL 拼接穿透到插件目录外。
+      if (SAFE_PLUGIN_FILE_NAME.test(fileName)) return path.join(WEB_SHELL_PLUGINS_DIR, fileName);
+      return null;
+    }
     if (reqPath.startsWith(WEB_SHELL_ASSETS_PREFIX)) {
       const rel = reqPath.slice(WEB_SHELL_ASSETS_PREFIX.length);
       if (rel && !rel.includes("..") && !path.isAbsolute(rel)) {
@@ -300,11 +358,21 @@ function createStaticAssetService({ getI18nSnapshot, getOfficialBundle }) {
     );
   }
 
+  function servePluginLoader(res) {
+    send(
+      res,
+      200,
+      { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" },
+      createPluginLoaderScript()
+    );
+  }
+
   return {
     createRendererResponse,
     isAppShellRoute,
     isPublicStaticPath,
     serveFile,
+    servePluginLoader,
     serveWebShellIndex,
     staticFile,
   };

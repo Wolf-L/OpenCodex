@@ -155,6 +155,10 @@ curl http://127.0.0.1:3737/api/health
 PORT=3738 pnpm run web:dev
 ```
 
+## 文档
+
+- [插件开发文档](docs/PLUGINS.md)
+
 ## 友链
 
 [LinuxDo](https://linux.do/)

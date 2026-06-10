@@ -9,6 +9,8 @@
     <title>OpenCodex</title>
     <!-- codex-official-styles -->
     <!-- opencodex-runtime-config -->
+    <script src="/opencodex-plugin-system.js"></script>
+    <script src="/opencodex-plugin-loader.js"></script>
     <style>
       :root {
         color-scheme: light;
@@ -239,6 +241,12 @@
         gap: 4px;
         margin-top: 16px;
       }
+      .plugin-settings-list {
+        display: contents;
+      }
+      .plugin-settings-list[hidden] {
+        display: none;
+      }
       .settings-row {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -409,20 +417,14 @@
         </div>
         <div class="settings-list">
           <div class="settings-row">
-            <label for="setting-mobile-keyboard" data-i18n="web.settings.mobileKeyboard">移动端软键盘优化</label>
-            <input id="setting-mobile-keyboard" class="switch" type="checkbox" role="switch" />
-          </div>
-          <div class="settings-row">
-            <label for="setting-mobile-sidebar-collapse" data-i18n="web.settings.mobileSidebarCollapse">移动端点击会话自动收起侧栏</label>
-            <input id="setting-mobile-sidebar-collapse" class="switch" type="checkbox" role="switch" />
-          </div>
-          <div class="settings-row">
             <span class="settings-row-content">
               <span class="settings-row-title" data-i18n="web.settings.notifications">浏览器通知</span>
               <span id="setting-notification-status" class="settings-row-description"></span>
             </span>
             <input id="setting-notification-permission" class="switch" type="checkbox" role="switch" />
           </div>
+          <div id="plugin-settings-title" class="settings-section-title" data-i18n="web.settings.plugins" hidden>插件</div>
+          <div id="plugin-settings-list" class="plugin-settings-list" hidden></div>
           <div class="settings-section-title" data-i18n="web.settings.about">关于</div>
           <a class="settings-row settings-link-row" href="https://github.com/RyensX/OpenCodex" target="_blank" rel="noreferrer">
             <span class="settings-row-content">
@@ -437,14 +439,10 @@
     <script>
       (() => {
         const forceLoginKey = "codex_web_force_login";
-        const settingsKey = "opencodex_web_settings_v1";
+        const pluginSystem = window.OpenCodexPluginSystem || window.__OpenCodexPluginSystem || null;
         const runtimeConfig = window.__CODEX_WEB_CONFIG__ || {};
         const locale = runtimeConfig.locale || "zh-CN";
         const messages = runtimeConfig.messages && typeof runtimeConfig.messages === "object" ? runtimeConfig.messages : {};
-        const defaultSettings = {
-          mobileKeyboardOptimization: true,
-          mobileSidebarAutoCollapse: true,
-        };
         let runtimeAuthToken = "";
         // 登录成功后官方 renderer 会替换当前 document，但 window 对象仍会保留；这里把短期 token 暴露给 bridge 使用。
         window.__OPEN_CODEX_RUNTIME_AUTH_TOKEN__ = "";
@@ -459,10 +457,11 @@
         const settingsClose = document.getElementById("settings-close");
         const settingsBackdrop = document.getElementById("settings-backdrop");
         const settingsSidebar = document.getElementById("settings-sidebar");
-        const mobileKeyboardSwitch = document.getElementById("setting-mobile-keyboard");
-        const mobileSidebarCollapseSwitch = document.getElementById("setting-mobile-sidebar-collapse");
+        const pluginSettingsTitle = document.getElementById("plugin-settings-title");
+        const pluginSettingsList = document.getElementById("plugin-settings-list");
         const notificationPermissionButton = document.getElementById("setting-notification-permission");
         const notificationStatus = document.getElementById("setting-notification-status");
+        const pluginSwitchInputs = new Map();
         let settingsCloseTimer = 0;
 
         function t(key, values) {
@@ -487,28 +486,81 @@
           }
         }
 
-        function loadSettings() {
-          try {
-            const parsed = JSON.parse(localStorage.getItem(settingsKey) || "{}");
-            return {
-              ...defaultSettings,
-              ...(parsed && typeof parsed === "object" ? parsed : {}),
-            };
-          } catch {
-            return { ...defaultSettings };
+        function pluginDefinitions() {
+          if (pluginSystem && pluginSystem.plugins && typeof pluginSystem.plugins.list === "function") {
+            return pluginSystem.plugins.list();
+          }
+          return [];
+        }
+
+        function pluginChecked(plugin) {
+          if (pluginSystem && pluginSystem.plugins && typeof pluginSystem.plugins.isEnabled === "function") {
+            return pluginSystem.plugins.isEnabled(plugin.id);
+          }
+          return plugin.enabled !== false;
+        }
+
+        function localizedPluginText(key, fallback) {
+          const localized = key ? t(key) : "";
+          return localized && localized !== key ? localized : fallback || "";
+        }
+
+        function pluginLabel(plugin) {
+          return localizedPluginText(plugin.labelKey, plugin.label || plugin.name || plugin.id);
+        }
+
+        function pluginDescription(plugin) {
+          return plugin.desc || "";
+        }
+
+        // 只要插件目录里发现插件，就在“插件”区域自动生成一个总开关。
+        function renderPluginSettingsControls() {
+          pluginSettingsList.textContent = "";
+          pluginSwitchInputs.clear();
+          const plugins = pluginDefinitions();
+          const hasPlugins = plugins.length > 0;
+          pluginSettingsTitle.hidden = !hasPlugins;
+          pluginSettingsList.hidden = !hasPlugins;
+          for (const plugin of plugins) {
+            const inputId = `setting-plugin-${plugin.id.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+            const row = document.createElement("div");
+            row.className = "settings-row";
+
+            const content = document.createElement("label");
+            content.className = "settings-row-content";
+            content.htmlFor = inputId;
+
+            const title = document.createElement("span");
+            title.className = "settings-row-title";
+            title.textContent = pluginLabel(plugin);
+            content.append(title);
+
+            const desc = pluginDescription(plugin);
+            if (desc) {
+              // desc 为空时不创建说明节点，避免插件设置列表出现多余间距。
+              const description = document.createElement("span");
+              description.className = "settings-row-description";
+              description.textContent = desc;
+              content.append(description);
+            }
+
+            const input = document.createElement("input");
+            input.id = inputId;
+            input.className = "switch";
+            input.type = "checkbox";
+            input.setAttribute("role", "switch");
+            input.dataset.pluginId = plugin.id;
+
+            row.append(content, input);
+            pluginSettingsList.append(row);
+            pluginSwitchInputs.set(plugin.id, { input, plugin });
           }
         }
 
-        function saveSettings(nextSettings) {
-          try {
-            localStorage.setItem(settingsKey, JSON.stringify({ ...defaultSettings, ...nextSettings }));
-          } catch {}
-        }
-
         function syncSettingsControls() {
-          const settings = loadSettings();
-          mobileKeyboardSwitch.checked = settings.mobileKeyboardOptimization !== false;
-          mobileSidebarCollapseSwitch.checked = settings.mobileSidebarAutoCollapse !== false;
+          for (const { input, plugin } of pluginSwitchInputs.values()) {
+            input.checked = pluginChecked(plugin);
+          }
           syncNotificationPermissionControls();
         }
 
@@ -568,10 +620,11 @@
           }, 300);
         }
 
-        function updateSetting(key, value) {
-          const settings = loadSettings();
-          settings[key] = value;
-          saveSettings(settings);
+        // 插件启用状态写入统一交给插件 host，具体 storageKey 由插件声明决定。
+        function updatePluginEnabled(pluginId, value) {
+          if (pluginSystem && pluginSystem.plugins && typeof pluginSystem.plugins.setEnabled === "function") {
+            pluginSystem.plugins.setEnabled(pluginId, value);
+          }
         }
 
         function storedToken() {
@@ -820,11 +873,10 @@
             setSettingsOpen(false);
           }
         });
-        mobileKeyboardSwitch.addEventListener("change", () => {
-          updateSetting("mobileKeyboardOptimization", mobileKeyboardSwitch.checked);
-        });
-        mobileSidebarCollapseSwitch.addEventListener("change", () => {
-          updateSetting("mobileSidebarAutoCollapse", mobileSidebarCollapseSwitch.checked);
+        pluginSettingsList.addEventListener("change", (event) => {
+          const input = event.target;
+          if (!input || !input.dataset || !input.dataset.pluginId) return;
+          updatePluginEnabled(input.dataset.pluginId, input.checked);
         });
         notificationPermissionButton.addEventListener("change", async () => {
           if (!("Notification" in window) || typeof window.Notification.requestPermission !== "function") {
@@ -849,6 +901,7 @@
           syncNotificationPermissionControls(nextPermission === "denied" ? t("web.settings.notificationBlockedHelp") : "");
         });
         applyI18n();
+        renderPluginSettingsControls();
         syncSettingsControls();
 
         (async () => {

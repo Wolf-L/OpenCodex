@@ -158,6 +158,10 @@ If the port is already in use, switch to another port:
 PORT=3738 pnpm run web:dev
 ```
 
+## Docs
+
+- [Plugin development guide](PLUGINS_EN.md)
+
 ## Links
 
 [LinuxDo](https://linux.do/)

@@ -1,0 +1,200 @@
+(function () {
+  const w = window;
+  const pluginSystem = w.OpenCodexPluginSystem || w.__OpenCodexPluginSystem;
+  if (!pluginSystem || typeof pluginSystem.registerPlugin !== "function") return;
+
+  const AUTO_COLLAPSE_DELAY_MS = 80;
+  const SIDEBAR_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
+  const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
+  const SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME = "sidebar-trigger";
+  const SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIX = "M2.6687 11.333";
+  const NEW_CONVERSATION_MESSAGE_TYPES = new Set(["new-chat", "new-quick-chat"]);
+
+  function visibleElement(element) {
+    if (!element || typeof element.getBoundingClientRect !== "function") return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const style = w.getComputedStyle ? w.getComputedStyle(element) : null;
+    return !style || (style.display !== "none" && style.visibility !== "hidden");
+  }
+
+  function sidebarPanelElement() {
+    return document.querySelector(".app-shell-left-panel");
+  }
+
+  function sidebarNavigationElement() {
+    const panel = sidebarPanelElement();
+    if (panel) return panel.querySelector(SIDEBAR_SCROLL_SELECTOR) || panel.querySelector("nav") || panel;
+    return document.querySelector(SIDEBAR_SCROLL_SELECTOR) || document.querySelector("nav");
+  }
+
+  function isNestedSidebarInteractiveElement(element) {
+    if (!element || typeof element.matches !== "function") return false;
+    const role = String(element.getAttribute?.("role") || "").toLowerCase();
+    return (
+      element.matches("button,a[href],input,select,textarea,summary,[contenteditable='true']") ||
+      role === "button" ||
+      role === "menuitem" ||
+      role === "menuitemcheckbox" ||
+      role === "menuitemradio" ||
+      role === "checkbox" ||
+      role === "switch" ||
+      role === "tab"
+    );
+  }
+
+  function nestedSidebarInteractiveFromTarget(target, row) {
+    for (let node = target; node && node !== row; node = node.parentElement) {
+      if (isNestedSidebarInteractiveElement(node)) return node;
+    }
+    return null;
+  }
+
+  function isSidebarConversationRow(element) {
+    if (!element || typeof element.matches !== "function") return false;
+    const officialThreadRow = element.matches(SIDEBAR_THREAD_ROW_SELECTOR);
+    const legacyThreadRow =
+      element.matches("[role='button'].h-token-nav-row") &&
+      !element.matches(SIDEBAR_NON_THREAD_ROW_SELECTOR) &&
+      !!element.querySelector("[data-thread-title]");
+    if (!officialThreadRow && !legacyThreadRow) return false;
+    if (!visibleElement(element)) return false;
+    if (officialThreadRow) {
+      const id = element.getAttribute("data-app-action-sidebar-thread-id");
+      const kind = element.getAttribute("data-app-action-sidebar-thread-kind");
+      if (!id || !/^(local|remote|pending-worktree)$/.test(kind || "")) return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width >= 80 && rect.height >= 20 && rect.height <= 64;
+  }
+
+  function sidebarConversationRowFromTarget(target) {
+    const element = target && target.nodeType === 1 ? target : target?.parentElement;
+    if (!element || typeof element.closest !== "function") return null;
+    const nav = sidebarNavigationElement();
+    if (!nav || !nav.contains(element)) return null;
+    const officialRow = element.closest(SIDEBAR_THREAD_ROW_SELECTOR);
+    if (officialRow && nav.contains(officialRow) && isSidebarConversationRow(officialRow)) {
+      return nestedSidebarInteractiveFromTarget(element, officialRow) ? null : officialRow;
+    }
+    const tokenRow = element.closest("[role='button'].h-token-nav-row");
+    if (tokenRow && nav.contains(tokenRow) && isSidebarConversationRow(tokenRow)) {
+      return nestedSidebarInteractiveFromTarget(element, tokenRow) ? null : tokenRow;
+    }
+    for (let node = element; node && node !== nav; node = node.parentElement) {
+      if (isSidebarConversationRow(node)) {
+        return nestedSidebarInteractiveFromTarget(element, node) ? null : node;
+      }
+    }
+    return null;
+  }
+
+  function sidebarToggleViewTransitionName(button) {
+    const inlineName =
+      button.style?.viewTransitionName || button.style?.getPropertyValue?.("view-transition-name") || "";
+    if (inlineName) return String(inlineName).trim();
+    try {
+      const style = w.getComputedStyle ? w.getComputedStyle(button) : null;
+      return String(style?.viewTransitionName || style?.getPropertyValue?.("view-transition-name") || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function findSidebarToggleButton() {
+    return Array.from(document.querySelectorAll("button")).find((button) => {
+      if (!visibleElement(button)) return false;
+      return sidebarToggleViewTransitionName(button) === SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME;
+    });
+  }
+
+  function postSidebarToggleMessage() {
+    try {
+      w.postMessage({ type: "toggle-sidebar" }, w.location.origin || "*");
+    } catch {}
+  }
+
+  function isNewConversationMessage(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    if (NEW_CONVERSATION_MESSAGE_TYPES.has(payload.type)) return true;
+    if (payload.type !== "navigate-to-route" || payload.path !== "/") return false;
+    const state = payload.state && typeof payload.state === "object" ? payload.state : null;
+    return !!state && Object.prototype.hasOwnProperty.call(state, "focusComposerNonce");
+  }
+
+  function isSidebarNewConversationButton(button) {
+    if (!button || typeof button.matches !== "function" || !button.matches("button")) return false;
+    const panel = sidebarPanelElement();
+    if (!panel || !panel.contains(button)) return false;
+    if (!visibleElement(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+    return Array.from(button.querySelectorAll("svg path")).some((path) =>
+      String(path.getAttribute("d") || "").startsWith(SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIX)
+    );
+  }
+
+  function sidebarNewConversationButtonFromTarget(target) {
+    const element = target && target.nodeType === 1 ? target : target?.parentElement;
+    if (!element || typeof element.closest !== "function") return null;
+    const button = element.closest("button");
+    return isSidebarNewConversationButton(button) ? button : null;
+  }
+
+  pluginSystem.registerPlugin({
+    id: "opencodex.mobile-sidebar-auto-collapse",
+    name: "Mobile sidebar auto collapse",
+    labelKey: "web.settings.mobileSidebarCollapse",
+    label: "移动端侧栏优化",
+    desc: "在移动端打开会话或新建会话后自动收起侧栏。",
+    enableStorageKey: "mobileSidebarAutoCollapse",
+    defaultEnabled: false,
+    builtin: true,
+    order: 20,
+    activate(context) {
+      if (context.scope !== "renderer" || !document || document.__opencodexMobileSidebarPluginInstalled) return null;
+      document.__opencodexMobileSidebarPluginInstalled = true;
+
+      let collapseTimer = null;
+      const isEnabled = () => context.plugin.isEnabled();
+      const isMobile = () => !!context.platform.isMobile();
+
+      const collapseAfterSelection = () => {
+        if (collapseTimer) w.clearTimeout(collapseTimer);
+        collapseTimer = w.setTimeout(() => {
+          collapseTimer = null;
+          const panel = sidebarPanelElement();
+          if (!panel || !visibleElement(panel)) return;
+          const toggleButton = findSidebarToggleButton();
+          if (toggleButton && typeof toggleButton.click === "function") {
+            toggleButton.click();
+            return;
+          }
+          postSidebarToggleMessage();
+        }, AUTO_COLLAPSE_DELAY_MS);
+      };
+
+      const handleClick = (event) => {
+        if (!isEnabled() || !isMobile()) return;
+        if (event.defaultPrevented || event.button > 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        if (!sidebarConversationRowFromTarget(event.target) && !sidebarNewConversationButtonFromTarget(event.target)) {
+          return;
+        }
+        collapseAfterSelection();
+      };
+
+      const disposeViewMessage = context.events.on("view:message", (payload) => {
+        if (isEnabled() && isMobile() && isNewConversationMessage(payload)) collapseAfterSelection();
+      });
+
+      document.addEventListener("click", handleClick, true);
+
+      return () => {
+        if (collapseTimer) w.clearTimeout(collapseTimer);
+        disposeViewMessage();
+        document.removeEventListener("click", handleClick, true);
+        document.__opencodexMobileSidebarPluginInstalled = false;
+      };
+    },
+  });
+})();

@@ -68,6 +68,7 @@
   "web.settings.close": "关闭设置",
   "web.settings.mobileKeyboard": "移动端软键盘优化",
   "web.settings.mobileSidebarCollapse": "移动端点击会话自动收起侧栏",
+  "web.settings.plugins": "插件",
   "web.settings.notifications": "浏览器通知",
   "web.settings.notificationEnable": "启用",
   "web.settings.notificationEnabled": "已启用",

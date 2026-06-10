@@ -252,6 +252,10 @@ function createRequestHandler({ localFiles, staticAssets }) {
     }
 
     // 公开静态资源先返回，保证登录页和 web-shell polyfill 在未登录时也能加载。
+    if (pathname === "/opencodex-plugin-loader.js" && req.method === "GET") {
+      // loader 是目录扫描结果，登录页设置面板也依赖它，所以必须在 auth gate 前动态生成。
+      return staticAssets.servePluginLoader(res);
+    }
     if (staticAssets.isPublicStaticPath(pathname)) {
       const file = staticAssets.staticFile(pathname);
       if (file && exists(file)) return staticAssets.serveFile(req, res, file, 200, pathname);

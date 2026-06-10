@@ -19,7 +19,6 @@
   }
   const OPENCODEX_LANGUAGES = [OPENCODEX_LOCALE, "zh-CN", "zh", "en-US", "en"];
   const AUTH_FORCE_LOGIN_STORAGE_KEY = "codex_web_force_login";
-  const OPENCODEX_SETTINGS_STORAGE_KEY = "opencodex_web_settings_v1";
   const WS_READY_WAIT_TIMEOUT_MS = 2500;
   const CLIENT_DIAGNOSTIC_FLUSH_DELAY_MS = 120;
   const CLIENT_DIAGNOSTIC_MAX_BATCH = 40;
@@ -44,16 +43,6 @@
     "Sign out of Codex",
     "Log out of Codex",
   ];
-  const OPENCODEX_DEFAULT_SETTINGS = {
-    mobileKeyboardOptimization: true,
-    mobileSidebarAutoCollapse: true,
-  };
-  const SIDEBAR_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
-  const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
-  const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
-  const SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME = "sidebar-trigger";
-  const SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIX = "M2.6687 11.333";
-  const NEW_CONVERSATION_MESSAGE_TYPES = new Set(["new-chat", "new-quick-chat"]);
   const MESSAGE_FOR_VIEW_CHANNEL = "codex_desktop:message-for-view";
 
   function installLocaleOverride() {
@@ -74,20 +63,14 @@
     } catch {}
   }
 
-  function opencodexSettings() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(OPENCODEX_SETTINGS_STORAGE_KEY) || "{}");
-      return {
-        ...OPENCODEX_DEFAULT_SETTINGS,
-        ...(parsed && typeof parsed === "object" ? parsed : {}),
-      };
-    } catch {
-      return { ...OPENCODEX_DEFAULT_SETTINGS };
-    }
+  function opencodexPluginSystem() {
+    return w.OpenCodexPluginSystem || w.__OpenCodexPluginSystem || null;
   }
 
-  function opencodexSettingEnabled(key) {
-    return opencodexSettings()[key] !== false;
+  function emitOpenCodexPluginEvent(eventName, payload) {
+    try {
+      opencodexPluginSystem()?.events?.emit?.(eventName, payload);
+    } catch {}
   }
 
   function gatewayAuthToken() {
@@ -180,125 +163,6 @@
 
   installLocaleOverride();
   installRandomUUIDPolyfill();
-
-  function installMobileViewportGuards() {
-    if (!document || document.__codexMobileViewportGuardsInstalled) return;
-    document.__codexMobileViewportGuardsInstalled = true;
-
-    const style = document.createElement("style");
-    style.id = "codex-mobile-viewport-guards";
-    style.textContent = `
-      @media (max-width: 820px), (pointer: coarse) {
-        html,
-        body,
-        #root {
-          height: var(--codex-visual-viewport-height, 100dvh) !important;
-          min-height: var(--codex-visual-viewport-height, 100dvh) !important;
-          max-height: var(--codex-visual-viewport-height, 100dvh) !important;
-          overflow: hidden;
-        }
-
-        body {
-          width: 100%;
-          touch-action: pan-x pan-y;
-          overscroll-behavior: none;
-        }
-
-        input,
-        textarea,
-        [contenteditable="true"],
-        .ProseMirror {
-          font-size: max(16px, 1em) !important;
-          scroll-margin-bottom: calc(var(--codex-keyboard-inset-bottom, 0px) + 96px);
-        }
-      }
-    `;
-    (document.head || document.documentElement).appendChild(style);
-
-    const setViewportVars = () => {
-      const viewport = w.visualViewport;
-      const height = Math.max(0, Math.floor(viewport?.height || w.innerHeight || document.documentElement.clientHeight || 0));
-      const offsetTop = Math.max(0, Math.floor(viewport?.offsetTop || 0));
-      const layoutHeight = Math.max(0, Math.floor(w.innerHeight || document.documentElement.clientHeight || height));
-      const keyboardInset = Math.max(0, layoutHeight - height - offsetTop);
-      const root = document.documentElement;
-      if (height > 0) root.style.setProperty("--codex-visual-viewport-height", `${height}px`);
-      root.style.setProperty("--codex-visual-viewport-offset-top", `${offsetTop}px`);
-      root.style.setProperty("--codex-keyboard-inset-bottom", `${keyboardInset}px`);
-    };
-
-    const scrollableAncestor = (element) => {
-      for (let node = element?.parentElement; node && node !== document.body; node = node.parentElement) {
-        const style = w.getComputedStyle ? w.getComputedStyle(node) : null;
-        const overflowY = String(style?.overflowY || "");
-        if (/(auto|scroll)/.test(overflowY) && node.scrollHeight > node.clientHeight) return node;
-      }
-      return null;
-    };
-
-    const keepActiveInputVisible = () => {
-      if (!isLikelyMobileKeyboardDevice()) return;
-      const active = document.activeElement;
-      if (!isComposerEditableElement(active)) return;
-      const viewport = w.visualViewport;
-      const visibleTop = Math.max(0, viewport?.offsetTop || 0);
-      const visibleBottom = visibleTop + Math.max(0, viewport?.height || w.innerHeight || 0);
-      if (visibleBottom <= visibleTop) return;
-
-      const rect = active.getBoundingClientRect();
-      const bottomLimit = visibleBottom - 18;
-      const topLimit = visibleTop + 8;
-      let delta = 0;
-      if (rect.bottom > bottomLimit) {
-        delta = rect.bottom - bottomLimit;
-      } else if (rect.top < topLimit) {
-        delta = rect.top - topLimit;
-      }
-      if (Math.abs(delta) < 1) return;
-
-      const scroller = scrollableAncestor(active);
-      if (scroller) {
-        scroller.scrollTop += delta;
-        return;
-      }
-      try {
-        w.scrollBy(0, delta);
-      } catch {}
-    };
-
-    const scheduleViewportUpdate = () => {
-      setViewportVars();
-      const run = () => {
-        setViewportVars();
-        keepActiveInputVisible();
-      };
-      if (typeof w.requestAnimationFrame === "function") {
-        w.requestAnimationFrame(run);
-      } else {
-        w.setTimeout(run, 0);
-      }
-      w.setTimeout(run, 80);
-      w.setTimeout(run, 240);
-    };
-    const preventZoomGesture = (event) => {
-      if (!isLikelyMobileKeyboardDevice()) return;
-      if (event.touches && event.touches.length < 2) return;
-      event.preventDefault();
-    };
-
-    setViewportVars();
-    w.addEventListener("resize", scheduleViewportUpdate, { passive: true });
-    w.addEventListener("orientationchange", scheduleViewportUpdate, { passive: true });
-    w.visualViewport?.addEventListener("resize", scheduleViewportUpdate, { passive: true });
-    w.visualViewport?.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
-    document.addEventListener("focusin", scheduleViewportUpdate, true);
-    document.addEventListener("input", scheduleViewportUpdate, true);
-    document.addEventListener("touchmove", preventZoomGesture, { passive: false });
-    document.addEventListener("gesturestart", preventZoomGesture, { passive: false });
-    document.addEventListener("gesturechange", preventZoomGesture, { passive: false });
-  }
-
-  installMobileViewportGuards();
 
   /**
    * Electron 的 <webview> 在浏览器里不存在。
@@ -447,9 +311,6 @@
   // 每个官方 connect-app-host MessagePort 对应一条 relay，key 是仅在当前页面内有效的 portId。
   const appHostPortRelays = new Map();
   const activeBrowserNotifications = new Map();
-  const MOBILE_COMPOSER_POST_SEND_FOCUS_BLOCK_MS = 4000;
-  const MOBILE_COMPOSER_MANUAL_FOCUS_MS = 900;
-  const MOBILE_SIDEBAR_AUTO_COLLAPSE_DELAY_MS = 80;
   const STATSIG_DEFAULT_FEATURES_CONFIG = "statsig_default_enable_features";
   const STATSIG_I18N_LAYER_CONFIG = "72216192";
   const STATSIG_I18N_LAYER_VALUES = {
@@ -468,9 +329,6 @@
   const wsReadyWaiters = new Set();
   let reconnectTimer = null;
   let reconnectDelay = 500;
-  let mobileComposerFocusBlockedUntilMs = 0;
-  let lastManualComposerFocusIntentAtMs = 0;
-  let mobileSidebarCollapseTimer = null;
   const bridgeStartedAtMs = Date.now();
   const clientDiagnosticQueue = [];
   let clientDiagnosticFlushTimer = null;
@@ -910,86 +768,12 @@
     return (hasCoarsePointer && hasTouch) || /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
   }
 
-  /** ProseMirror 是官方 composer 的可编辑输入区。 */
-  function isComposerEditableElement(element) {
-    return !!(
-      element &&
-      element.nodeType === 1 &&
-      typeof element.matches === "function" &&
-      element.matches(".ProseMirror,[contenteditable='true'],textarea,input")
-    );
-  }
-
-  /** 用户主动点输入区时，发送后的 focus guard 必须放行。 */
-  function rememberManualComposerFocusIntent(event) {
-    const target = event && event.target;
-    if (!target || typeof target.closest !== "function") return;
-    if (target.closest(".ProseMirror,[contenteditable='true'],textarea,input")) {
-      lastManualComposerFocusIntentAtMs = Date.now();
-    }
-  }
-
-  /** 判断一次 IPC 是否代表用户正在发送 prompt。 */
-  function isPromptSendInvoke(channel, payload) {
-    if (channel === "turn:start" || channel === "start-conversation") return true;
-    if (channel !== "codex_desktop:message-from-view") return false;
-    if (!payload || typeof payload !== "object") return false;
-    const request = payload.request && typeof payload.request === "object" ? payload.request : null;
-    return !!request && request.method === "turn/start";
-  }
-
-  /** 发送后移动端官方 renderer 会自动 refocus composer；Web 侧短时间拦住，避免键盘重新弹起。 */
-  function markMobileComposerPromptSent(channel, payload) {
-    if (!opencodexSettingEnabled("mobileKeyboardOptimization")) return;
-    if (!isLikelyMobileKeyboardDevice() || !isPromptSendInvoke(channel, payload)) return;
-    mobileComposerFocusBlockedUntilMs = Date.now() + MOBILE_COMPOSER_POST_SEND_FOCUS_BLOCK_MS;
-  }
-
-  /** 只拦发送后的程序化 composer focus，不拦用户手动点击输入区。 */
-  function shouldSuppressMobileComposerFocus(element) {
-    if (!opencodexSettingEnabled("mobileKeyboardOptimization")) return false;
-    if (!isLikelyMobileKeyboardDevice()) return false;
-    const now = Date.now();
-    if (now > mobileComposerFocusBlockedUntilMs) return false;
-    if (!isComposerEditableElement(element)) return false;
-    return now - lastManualComposerFocusIntentAtMs > MOBILE_COMPOSER_MANUAL_FOCUS_MS;
-  }
-
-  /** 安装移动端 composer focus guard。 */
-  function installMobileComposerFocusGuard() {
-    if (!document || document.__codexMobileComposerFocusGuardInstalled) return;
-    const proto = w.HTMLElement && w.HTMLElement.prototype;
-    if (!proto || typeof proto.focus !== "function") return;
-    document.__codexMobileComposerFocusGuardInstalled = true;
-    const originalFocus = proto.focus;
-    proto.focus = function focus(...args) {
-      if (shouldSuppressMobileComposerFocus(this)) return;
-      return originalFocus.apply(this, args);
-    };
-    document.addEventListener("pointerdown", rememberManualComposerFocusIntent, true);
-    document.addEventListener("touchstart", rememberManualComposerFocusIntent, true);
-  }
-
-  installMobileComposerFocusGuard();
-
   function visibleElement(element) {
     if (!element || typeof element.getBoundingClientRect !== "function") return false;
     const rect = element.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
     const style = w.getComputedStyle ? w.getComputedStyle(element) : null;
     return !style || (style.display !== "none" && style.visibility !== "hidden");
-  }
-
-  function sidebarPanelElement() {
-    return document.querySelector(".app-shell-left-panel");
-  }
-
-  function sidebarNavigationElement() {
-    const panel = sidebarPanelElement();
-    if (panel) {
-      return panel.querySelector(SIDEBAR_SCROLL_SELECTOR) || panel.querySelector("nav") || panel;
-    }
-    return document.querySelector(SIDEBAR_SCROLL_SELECTOR) || document.querySelector("nav");
   }
 
   function elementTextLabel(element) {
@@ -1210,157 +994,22 @@
     }
   }
 
-  function isNestedSidebarInteractiveElement(element) {
-    if (!element || typeof element.matches !== "function") return false;
-    const role = String(element.getAttribute?.("role") || "").toLowerCase();
-    return (
-      element.matches("button,a[href],input,select,textarea,summary,[contenteditable='true']") ||
-      role === "button" ||
-      role === "menuitem" ||
-      role === "menuitemcheckbox" ||
-      role === "menuitemradio" ||
-      role === "checkbox" ||
-      role === "switch" ||
-      role === "tab"
-    );
-  }
-
-  function nestedSidebarInteractiveFromTarget(target, row) {
-    for (let node = target; node && node !== row; node = node.parentElement) {
-      if (isNestedSidebarInteractiveElement(node)) return node;
-    }
-    return null;
-  }
-
-  function isSidebarConversationRow(element) {
-    if (!element || typeof element.matches !== "function") return false;
-    const officialThreadRow = element.matches(SIDEBAR_THREAD_ROW_SELECTOR);
-    const legacyThreadRow =
-      element.matches("[role='button'].h-token-nav-row") &&
-      !element.matches(SIDEBAR_NON_THREAD_ROW_SELECTOR) &&
-      !!element.querySelector("[data-thread-title]");
-    if (!officialThreadRow && !legacyThreadRow) return false;
-    if (!visibleElement(element)) return false;
-    if (officialThreadRow) {
-      const id = element.getAttribute("data-app-action-sidebar-thread-id");
-      const kind = element.getAttribute("data-app-action-sidebar-thread-kind");
-      if (!id || !/^(local|remote|pending-worktree)$/.test(kind || "")) return false;
-    }
-    const rect = element.getBoundingClientRect();
-    return rect.width >= 80 && rect.height >= 20 && rect.height <= 64;
-  }
-
-  function sidebarConversationRowFromTarget(target) {
-    const element = target && target.nodeType === 1 ? target : target?.parentElement;
-    if (!element || typeof element.closest !== "function") return null;
-    const nav = sidebarNavigationElement();
-    if (!nav || !nav.contains(element)) return null;
-    const officialRow = element.closest(SIDEBAR_THREAD_ROW_SELECTOR);
-    if (officialRow && nav.contains(officialRow) && isSidebarConversationRow(officialRow)) {
-      return nestedSidebarInteractiveFromTarget(element, officialRow) ? null : officialRow;
-    }
-    const tokenRow = element.closest("[role='button'].h-token-nav-row");
-    if (tokenRow && nav.contains(tokenRow) && isSidebarConversationRow(tokenRow)) {
-      return nestedSidebarInteractiveFromTarget(element, tokenRow) ? null : tokenRow;
-    }
-    for (let node = element; node && node !== nav; node = node.parentElement) {
-      if (isSidebarConversationRow(node)) {
-        return nestedSidebarInteractiveFromTarget(element, node) ? null : node;
-      }
-    }
-    return null;
-  }
-
-  function sidebarToggleViewTransitionName(button) {
-    const inlineName =
-      button.style?.viewTransitionName || button.style?.getPropertyValue?.("view-transition-name") || "";
-    if (inlineName) return String(inlineName).trim();
-    try {
-      const style = w.getComputedStyle ? w.getComputedStyle(button) : null;
-      return String(style?.viewTransitionName || style?.getPropertyValue?.("view-transition-name") || "").trim();
-    } catch {
-      return "";
-    }
-  }
-
-  function findSidebarToggleButton() {
-    return Array.from(document.querySelectorAll("button")).find((button) => {
-      if (!visibleElement(button)) return false;
-      return sidebarToggleViewTransitionName(button) === SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME;
-    });
-  }
-
-  function postSidebarToggleMessage() {
-    try {
-      w.postMessage({ type: "toggle-sidebar" }, w.location.origin || "*");
-    } catch {}
-  }
-
-  function collapseMobileSidebarAfterSelection() {
-    if (mobileSidebarCollapseTimer) w.clearTimeout(mobileSidebarCollapseTimer);
-    mobileSidebarCollapseTimer = w.setTimeout(() => {
-      mobileSidebarCollapseTimer = null;
-      const panel = sidebarPanelElement();
-      if (!panel || !visibleElement(panel)) return;
-      const toggleButton = findSidebarToggleButton();
-      if (toggleButton && typeof toggleButton.click === "function") {
-        toggleButton.click();
-        return;
-      }
-      postSidebarToggleMessage();
-    }, MOBILE_SIDEBAR_AUTO_COLLAPSE_DELAY_MS);
-  }
-
-  function isNewConversationMessage(payload) {
-    if (!payload || typeof payload !== "object") return false;
-    if (NEW_CONVERSATION_MESSAGE_TYPES.has(payload.type)) return true;
-    if (payload.type !== "navigate-to-route" || payload.path !== "/") return false;
-    const state = payload.state && typeof payload.state === "object" ? payload.state : null;
-    return !!state && Object.prototype.hasOwnProperty.call(state, "focusComposerNonce");
-  }
-
-  function collapseMobileSidebarAfterNewConversation(payload) {
-    if (!opencodexSettingEnabled("mobileSidebarAutoCollapse")) return;
-    if (!isLikelyMobileKeyboardDevice()) return;
-    if (!isNewConversationMessage(payload)) return;
-    collapseMobileSidebarAfterSelection();
-  }
-
-  function isSidebarNewConversationButton(button) {
-    if (!button || typeof button.matches !== "function" || !button.matches("button")) return false;
-    const panel = sidebarPanelElement();
-    if (!panel || !panel.contains(button)) return false;
-    if (!visibleElement(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
-    return Array.from(button.querySelectorAll("svg path")).some((path) =>
-      String(path.getAttribute("d") || "").startsWith(SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIX)
-    );
-  }
-
-  function sidebarNewConversationButtonFromTarget(target) {
-    const element = target && target.nodeType === 1 ? target : target?.parentElement;
-    if (!element || typeof element.closest !== "function") return null;
-    const button = element.closest("button");
-    return isSidebarNewConversationButton(button) ? button : null;
-  }
-
-  function handleMobileSidebarAutoCollapseClick(event) {
-    if (!opencodexSettingEnabled("mobileSidebarAutoCollapse")) return;
-    if (!isLikelyMobileKeyboardDevice()) return;
-    if (event.defaultPrevented || event.button > 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (!sidebarConversationRowFromTarget(event.target) && !sidebarNewConversationButtonFromTarget(event.target)) {
+  function installOpenCodexBuiltinPlugins() {
+    const capabilities = {
+      platform: {
+        isMobile: isLikelyMobileKeyboardDevice,
+      },
+    };
+    const pluginSystem = opencodexPluginSystem();
+    if (pluginSystem && typeof pluginSystem.activate === "function") {
+      pluginSystem.activate("renderer", capabilities);
       return;
     }
-    collapseMobileSidebarAfterSelection();
+
+    console.warn("[opencodex-plugin] plugin system is unavailable; builtin plugin capabilities were not activated");
   }
 
-  function installMobileSidebarAutoCollapse() {
-    if (!document || document.__codexMobileSidebarAutoCollapseInstalled) return;
-    document.__codexMobileSidebarAutoCollapseInstalled = true;
-    document.addEventListener("click", handleMobileSidebarAutoCollapseClick, true);
-  }
-
-  installMobileSidebarAutoCollapse();
+  installOpenCodexBuiltinPlugins();
   installGatewayAuthMenuInjection();
 
   /** 获取某个 channel 的监听集合。 */
@@ -2360,7 +2009,7 @@
   async function invoke(channel, ...args) {
     const payload = payloadFromIpcArgs(args);
     if (channel === "pick-files") return pickFilesInBrowser(payload);
-    markMobileComposerPromptSent(channel, payload);
+    emitOpenCodexPluginEvent("ipc:invoke", { channel, payload });
     return invokeGateway(channel, args);
   }
 
@@ -2768,7 +2417,7 @@
         if (handleIdeContextFetchMessage(payload)) {
           return true;
         }
-        collapseMobileSidebarAfterNewConversation(payload);
+        emitOpenCodexPluginEvent("view:message", payload);
         if (
           payload &&
           typeof payload === "object" &&
