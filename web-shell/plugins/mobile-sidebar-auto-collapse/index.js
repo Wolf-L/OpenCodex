@@ -148,7 +148,7 @@
     descKey: "plugin.mobileSidebarAutoCollapse.desc",
     desc: "在移动端打开会话或新建会话后自动收起侧栏。",
     enableStorageKey: "mobileSidebarAutoCollapse",
-    defaultEnabled: false,
+    defaultEnabled: true,
     builtin: true,
     order: 20,
     activate(context) {
