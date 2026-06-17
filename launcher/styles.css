@@ -75,7 +75,7 @@ html, body {
 /* 左上角品牌只展示应用名称和 launcher 版本，服务类型不再占据主视觉。 */
 .brand-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
@@ -97,6 +97,27 @@ html, body {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.update-badge {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background-color: var(--accent-color);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.update-badge:hover {
+  background-color: var(--accent-hover);
+}
+
+.update-badge[hidden] {
+  display: none;
 }
 
 .status-pill {

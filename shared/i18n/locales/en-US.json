@@ -14,6 +14,7 @@
   "launcher.actions.openCodex": "Open OpenCodex",
   "launcher.actions.copyUrl": "Copy URL",
   "launcher.actions.restart": "Restart service",
+  "launcher.update.available": "Update available",
   "launcher.tray.openLauncher": "Open launcher",
   "launcher.tray.quit": "Quit app",
   "launcher.tray.tooltip": "OpenCodex is running",

@@ -6,6 +6,11 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../gateway/runner/index.cjs");
+const {
+  createInitialLatestReleaseState,
+  fetchLatestReleaseState,
+  markLatestReleaseChecking,
+} = require("./latest-release.cjs");
 const { OPENCODEX_VERSION_LABEL } = require("../shared/app-version.cjs");
 const { PREFERRED_LANGUAGES_ENV, formatMessage, resolveOpenCodexI18n } = require("../shared/i18n/index.cjs");
 const packageMetadata = require("../package.json");
@@ -23,6 +28,7 @@ let mainWindow = null;
 let tray = null;
 let trayMenu = null;
 let statusTimer = null;
+let latestReleaseCheckedForForeground = false;
 let isQuitting = false;
 
 const gatewayState = {
@@ -39,6 +45,7 @@ const gatewayState = {
   status: null,
   i18n: null,
   preferredLanguages: null,
+  latestRelease: createInitialLatestReleaseState(),
   lastError: "",
   startedAt: null,
   officialRuntime: null,
@@ -359,6 +366,7 @@ async function ensurePortSetting(paths, settings) {
 
 function buildState() {
   const i18n = currentGatewayI18n();
+  const latestRelease = gatewayState.latestRelease || {};
   return {
     running: !!gatewayState.child && !gatewayState.child.killed,
     pid: gatewayState.child ? gatewayState.child.pid : null,
@@ -382,6 +390,13 @@ function buildState() {
       author: OPENCODEX_AUTHOR,
       authorUrl: OPENCODEX_AUTHOR_URL,
       githubUrl: OPENCODEX_GITHUB_URL,
+    },
+    latestRelease: {
+      checking: !!latestRelease.checking,
+      tagName: latestRelease.tagName || "",
+      available: !!latestRelease.available,
+      lastCheckedAt: latestRelease.lastCheckedAt || null,
+      error: latestRelease.error || "",
     },
     externalPlugins: externalPluginStatus((gatewayState.settings || defaultSettings()).pluginDirs),
     status: gatewayState.status,
@@ -412,6 +427,25 @@ function launcherText(key, values) {
   return formatMessage(i18n.messages, key, values);
 }
 
+async function checkLatestRelease() {
+  if (gatewayState.latestRelease.checking) return gatewayState.latestRelease;
+  gatewayState.latestRelease = markLatestReleaseChecking(gatewayState.latestRelease);
+  broadcastState();
+  gatewayState.latestRelease = await fetchLatestReleaseState({
+    currentVersionLabel: OPENCODEX_VERSION_LABEL,
+    previousState: gatewayState.latestRelease,
+  });
+  broadcastState();
+  return gatewayState.latestRelease;
+}
+
+function checkLatestReleaseForForeground() {
+  if (latestReleaseCheckedForForeground) return;
+  // 同一次前台停留只检查一次；窗口失焦后会重置，下一次回到前台再查。
+  latestReleaseCheckedForForeground = true;
+  void checkLatestRelease();
+}
+
 function openOpenCodexUrl() {
   // 只有 launcher 主动打开浏览器时固定使用 localhost；展示和复制仍走 primaryUrl 方便局域网访问。
   return gatewayState.port ? `http://localhost:${gatewayState.port}` : "";
@@ -425,6 +459,12 @@ function openOpenCodex() {
   const openUrl = openOpenCodexUrl();
   if (canOpenOpenCodex()) shell.openExternal(openUrl);
   return buildState();
+}
+
+function openLatestRelease() {
+  const release = gatewayState.latestRelease || {};
+  if (!release.available || !release.htmlUrl) return false;
+  return shell.openExternal(release.htmlUrl);
 }
 
 function preferredSystemLanguages() {
@@ -636,9 +676,15 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.on("focus", checkLatestReleaseForForeground);
+  mainWindow.on("blur", () => {
+    // 失焦后允许下一次回到前台重新检查最新版本。
+    latestReleaseCheckedForForeground = false;
+  });
   mainWindow.on("closed", () => {
     // 窗口允许真正关闭；后台驻留由托盘对象和 app 生命周期负责，之后需要时再重建窗口。
     mainWindow = null;
+    latestReleaseCheckedForForeground = false;
     hideLauncherDockIconIfWindowless();
     updateTrayMenu();
   });
@@ -804,6 +850,10 @@ ipcMain.handle("launcher:open-author", () => {
   // 作者入口同样固定到作者主页，不复用通用外链接口。
   return shell.openExternal(OPENCODEX_AUTHOR_URL);
 });
+ipcMain.handle("launcher:open-latest-release", () => {
+  // 更新按钮只能打开主进程已校验并保存的 latest release 链接。
+  return openLatestRelease();
+});
 ipcMain.handle("launcher:reveal-path", (_event, targetPath) => revealPath(targetPath));
 ipcMain.handle("launcher:copy", (_event, value) => {
   clipboard.writeText(String(value || ""));
@@ -883,6 +933,8 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     createWindow();
     createLauncherTray();
+    // 首次打开窗口也按“当前前台周期”检查一次，不启动任何后台定时器。
+    checkLatestReleaseForForeground();
     await startGateway();
   });
 

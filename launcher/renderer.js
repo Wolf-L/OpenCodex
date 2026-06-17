@@ -85,6 +85,26 @@ function renderExternalPluginStatus(status) {
   node.classList.remove("is-disabled");
 }
 
+function renderLatestRelease(latestRelease) {
+  const button = $("latestReleaseButton");
+  if (!button) return;
+  const available = !!(latestRelease && latestRelease.available && latestRelease.tagName);
+
+  // 更新按钮只在 GitHub latest tag 与本地版本不同且链接已由主进程校验后显示。
+  button.hidden = !available;
+  button.disabled = !available;
+  if (!available) {
+    button.textContent = t("launcher.update.available");
+    button.removeAttribute("title");
+    button.removeAttribute("aria-label");
+    return;
+  }
+
+  button.textContent = t("launcher.update.available");
+  button.title = t("launcher.update.available");
+  button.setAttribute("aria-label", t("launcher.update.available"));
+}
+
 function formatDateTime(value) {
   if (!value) return t("common.unknown");
   const date = new Date(value);
@@ -185,6 +205,7 @@ function render(state) {
 
   // launcher 自身版本固定展示在左上角品牌区，避免占用设置列表空间。
   text("openCodexVersion", appInfo.version || t("common.unknown"));
+  renderLatestRelease(state.latestRelease);
   // 底部关于区展示应用元信息，随 package.json 与主进程状态同步。
   linkButton("authorLink", appInfo.author, "common.unknown");
   linkButton("githubLink", appInfo.githubUrl, "common.notFound");
@@ -286,6 +307,10 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "authorLink") {
     await launcher.openAuthor();
+    return;
+  }
+  if (target.id === "latestReleaseButton") {
+    await launcher.openLatestRelease();
     return;
   }
   if (target.classList && target.classList.contains("path")) {
