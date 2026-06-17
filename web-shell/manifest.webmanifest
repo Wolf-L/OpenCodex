@@ -5,6 +5,7 @@
   "description": "OpenCodex browser shell",
   "start_url": "/",
   "scope": "/",
+  "display_override": ["window-controls-overlay", "standalone"],
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
