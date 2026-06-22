@@ -23,6 +23,13 @@ const UNKNOWN_IPC_PATH = path.join(REPORTS_DIR, "unknown-ipc.jsonl");
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_GENERATED_IMAGES_DIR = path.join(CODEX_HOME, "generated_images");
 const CODEX_WEB_PICKED_FILES_DIR = path.join(CODEX_HOME, ".tmp", "web-picked-files");
+const CODEX_WEB_PICKED_FILES_MAX_COUNT = positiveIntegerFromEnv("CODEX_WEB_PICKED_FILES_MAX_COUNT", 20);
+const CODEX_WEB_PICKED_FILE_MAX_BYTES = positiveIntegerFromEnv("CODEX_WEB_PICKED_FILE_MAX_BYTES", 50 * 1024 * 1024);
+const CODEX_WEB_PICKED_FILES_MAX_TOTAL_BYTES = positiveIntegerFromEnv(
+  "CODEX_WEB_PICKED_FILES_MAX_TOTAL_BYTES",
+  100 * 1024 * 1024
+);
+const CODEX_WEB_PICKED_FILE_TTL_MS = positiveIntegerFromEnv("CODEX_WEB_PICKED_FILE_TTL_MS", 24 * 60 * 60 * 1000);
 const PORT = Number(process.env.PORT || 3737);
 const HOST = process.env.HOST || "0.0.0.0";
 // 配置路径支持 launcher 显式传入，避免 Electron cwd 变化时误读项目根目录的 config.yaml。
@@ -67,6 +74,11 @@ function readText(file) {
 
 function exists(file) {
   return fs.existsSync(file);
+}
+
+function positiveIntegerFromEnv(name, fallback) {
+  const value = Math.floor(Number(process.env[name] || fallback));
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function realpathSafe(filePath) {
@@ -189,7 +201,11 @@ module.exports = {
   AUTH_TOKEN_TTL_MS,
   CODEX_GENERATED_IMAGES_DIR,
   CODEX_HOME,
+  CODEX_WEB_PICKED_FILE_MAX_BYTES,
+  CODEX_WEB_PICKED_FILE_TTL_MS,
   CODEX_WEB_PICKED_FILES_DIR,
+  CODEX_WEB_PICKED_FILES_MAX_COUNT,
+  CODEX_WEB_PICKED_FILES_MAX_TOTAL_BYTES,
   COOKIE_NAME,
   DEBUG_LOGS,
   HOST,

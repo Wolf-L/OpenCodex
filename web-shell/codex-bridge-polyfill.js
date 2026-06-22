@@ -1334,6 +1334,38 @@
     return btoa(binary);
   }
 
+  function normalizePickFilesParams(payload) {
+    const params = payload && typeof payload === "object" && payload.params ? payload.params : payload || {};
+    return params && typeof params === "object" && !Array.isArray(params) ? params : {};
+  }
+
+  function pickFilesAllowsMultiple(params) {
+    // 官方不同版本的单选参数名不完全一致，只要明确要求单选就收敛到一个文件。
+    if (params && params.single === true) return false;
+    if (params && params.multiple === false) return false;
+    if (params && params.allowMultiple === false) return false;
+    if (params && params.allowsMultiple === false) return false;
+    if (params && Number(params.maxFiles) === 1) return false;
+    if (params && Number(params.limit) === 1) return false;
+    return true;
+  }
+
+  function pickFilesAccept(params) {
+    if (!params || typeof params !== "object") return "";
+    if (params.imagesOnly) return "image/*";
+    if (typeof params.accept === "string" && params.accept.trim()) return params.accept.trim();
+    const values = [];
+    for (const item of Array.isArray(params.mimeTypes) ? params.mimeTypes : []) {
+      if (typeof item === "string" && item.trim()) values.push(item.trim());
+    }
+    for (const item of Array.isArray(params.extensions) ? params.extensions : []) {
+      if (typeof item !== "string" || !item.trim()) continue;
+      const extension = item.trim();
+      values.push(extension.startsWith(".") ? extension : `.${extension}`);
+    }
+    return values.join(",");
+  }
+
   /** 浏览器 File 对象不能暴露真实路径，所以只把文件名和内容交给 gateway 落盘。 */
   async function serializePickedFile(file) {
     return {
@@ -1350,10 +1382,12 @@
     return new Promise((resolve, reject) => {
       const input = document.createElement("input");
       let finished = false;
+      const allowMultiple = pickFilesAllowsMultiple(params);
+      const accept = pickFilesAccept(params);
 
       input.type = "file";
-      input.multiple = true;
-      if (params && params.imagesOnly) input.accept = "image/*";
+      input.multiple = allowMultiple;
+      if (accept) input.accept = accept;
       input.style.position = "fixed";
       input.style.left = "-10000px";
       input.style.top = "-10000px";
@@ -1379,7 +1413,8 @@
       input.addEventListener(
         "change",
         () => {
-          finish(Array.from(input.files || []));
+          const picked = Array.from(input.files || []);
+          finish(allowMultiple ? picked : picked.slice(0, 1));
         },
         { once: true }
       );
@@ -1398,7 +1433,7 @@
 
   /** 实现 pick-files：浏览器选文件，gateway 写临时文件并返回 renderer 需要的 fsPath。 */
   async function pickFilesInBrowser(payload) {
-    const params = payload && typeof payload === "object" && payload.params ? payload.params : payload || {};
+    const params = normalizePickFilesParams(payload);
     const files = await openBrowserFilePicker(params);
     if (!files || files.length === 0) return { files: [] };
     const serialized = await Promise.all(files.map((file) => serializePickedFile(file)));

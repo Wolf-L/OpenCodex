@@ -40,6 +40,7 @@ const {
   startOfficialRuntime,
   webConfigScript,
 } = require("./ipc/official-runtime.cjs");
+const { createPickedFilesService } = require("./ipc/picked-files.cjs");
 const { createStaticAssetService } = require("./http/static-assets.cjs");
 const { createWsHub } = require("./ipc/ws-hub.cjs");
 const { diagnosticError, diagnosticLog, diagnosticWarn, sanitizeDiagnosticValue, shortId } = require("./core/diagnostics.cjs");
@@ -179,13 +180,14 @@ async function handleClientLog(req, res) {
   return sendJson(res, 200, { ok: true }, { "cache-control": "no-store" });
 }
 
-function installShutdownHandlers(server, localFiles) {
+function installShutdownHandlers(server, localFiles, pickedFiles) {
   let shuttingDown = false;
   function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;
     // 退出时先释放短期 token 和待处理的官方内部请求，避免请求一直挂起。
     localFiles.dispose();
+    if (pickedFiles && typeof pickedFiles.dispose === "function") pickedFiles.dispose();
     rejectPendingInternalResponses(new Error("gateway shutting down"));
     const exit = () => {
       if (signal) {
@@ -227,7 +229,7 @@ async function listen(server) {
   });
 }
 
-function createRequestHandler({ localFiles, staticAssets }) {
+function createRequestHandler({ localFiles, pickedFiles, staticAssets }) {
   /**
    * 路由顺序很关键：
    * 1. 认证和 launcher 探活先处理。
@@ -315,7 +317,7 @@ function createRequestHandler({ localFiles, staticAssets }) {
     }
 
     if (pathname === "/api/ipc/invoke" && req.method === "POST") {
-      return handleIpcInvoke(req, res, localFiles);
+      return handleIpcInvoke(req, res, localFiles, pickedFiles);
     }
 
     if (pathname === "/api/client-log" && req.method === "POST") {
@@ -349,7 +351,7 @@ function createRequestHandler({ localFiles, staticAssets }) {
   };
 }
 
-async function handleIpcInvoke(req, res, localFiles) {
+async function handleIpcInvoke(req, res, localFiles, pickedFiles) {
   /**
    * 浏览器把 Electron ipcRenderer.invoke/send 折叠成 HTTP POST。
    * gateway 在这里恢复 channel/args，并伪造 IpcMainEvent 交给官方 handler。
@@ -384,6 +386,15 @@ async function handleIpcInvoke(req, res, localFiles) {
   // 成功 IPC start/end 会跟随前端渲染频率放大；默认保留慢调用和失败日志，DEBUG 时再展开完整链路。
   if (DEBUG_LOGS && !suppressRoutineLog) diagnosticLog("gateway-ipc", "invoke_start", diagnosticBase);
   try {
+    if (channel === "pick-files") {
+      // Web 端 pick-files 必须在浏览器侧选文件，再由 gateway 落盘；不能继续转给官方 Electron dialog。
+      const value = pickedFiles.handlePickFilesPayload(payload);
+      const elapsedMs = Date.now() - startedAtMs;
+      if (DEBUG_LOGS && !suppressRoutineLog) {
+        diagnosticLog("gateway-ipc", "invoke_end", { ...diagnosticBase, elapsedMs, ok: true });
+      }
+      return sendJson(res, 200, { ok: true, value });
+    }
     // AsyncLocalStorage 让后续官方 webContents.send 能知道这次 HTTP IPC 属于哪个浏览器 client。
     const value = await requestContext.run({ clientId, remoteAddress }, () =>
       invokeOfficialIpc(channel, args, {
@@ -412,7 +423,8 @@ async function handleIpcInvoke(req, res, localFiles) {
       error: error instanceof Error ? error.message : String(error),
       ok: false,
     });
-    return sendJson(res, 500, {
+    const status = error && typeof error.status === "number" ? error.status : 500;
+    return sendJson(res, status, {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -432,8 +444,9 @@ async function createGateway() {
   await startOfficialRuntime();
 
   const localFiles = createLocalFileService();
+  const pickedFiles = createPickedFilesService();
   const staticAssets = createStaticAssetService({ getI18nSnapshot, getOfficialBundle });
-  const requestHandler = createRequestHandler({ localFiles, staticAssets });
+  const requestHandler = createRequestHandler({ localFiles, pickedFiles, staticAssets });
   const server = http.createServer((req, res) => {
     requestHandler(req, res).catch((error) => {
       diagnosticError("gateway", "request_failed", {
@@ -453,7 +466,7 @@ async function createGateway() {
   });
   // official-runtime 通过这个 hub 把官方 renderer 的异步消息转发给浏览器。
   setWsHub(webSocketHub);
-  installShutdownHandlers(server, localFiles);
+  installShutdownHandlers(server, localFiles, pickedFiles);
   await listen(server);
 
   diagnosticLog("gateway", "listening", { url: `http://${HOST}:${PORT}` });
