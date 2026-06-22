@@ -66,6 +66,7 @@
   "web.auth.enter": "Enter",
   "web.auth.starting": "Starting OpenCodex...",
   "web.auth.invalidPassword": "Incorrect password.",
+  "web.auth.tooManyAttempts": "Too many login attempts. Try again in {seconds} seconds.",
   "web.auth.prompt": "Enter the access password.",
   "web.auth.expired": "Session expired. Please enter the password again.",
   "web.auth.loadFailedHttp": "Unable to load OpenCodex: HTTP {status}",

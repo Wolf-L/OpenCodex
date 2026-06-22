@@ -9,9 +9,12 @@ const {
   exists,
   readText,
 } = require("../core/config.cjs");
-const { headerValue, readBody, sendJson } = require("./http-utils.cjs");
+const { authRateLimiter } = require("./auth-rate-limit.cjs");
+const { headerValue, isRequestBodyTooLargeError, readBody, sendJson } = require("./http-utils.cjs");
 
 // auth.cjs 负责 gateway 自身访问控制；密码只在配置文件里短暂出现，启动后会改写为 sha256-v1 hash。
+const LOGIN_BODY_MAX_BYTES = 8 * 1024;
+
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(String(value), "utf-8").digest("hex");
 }
@@ -319,6 +322,29 @@ function readPasswordHashFromBody(rawBody, contentType) {
   return params.get("passwordHash") || "";
 }
 
+function retryAfterSeconds(retryAfterMs) {
+  return String(Math.max(1, Math.ceil((Number(retryAfterMs) || 0) / 1000)));
+}
+
+function sendTooManyLoginAttempts(res, decision) {
+  const retryAfterMs = Math.max(1, Math.ceil(Number(decision && decision.retryAfterMs) || 1));
+  return sendJson(
+    res,
+    429,
+    {
+      ok: false,
+      authRequired: true,
+      authenticated: false,
+      error: "Too many login attempts",
+      retryAfterMs,
+    },
+    {
+      "cache-control": "no-store",
+      "retry-after": retryAfterSeconds(retryAfterMs),
+    }
+  );
+}
+
 async function handleAuthLogin(req, res) {
   if (req.method !== "POST") {
     return sendJson(res, 405, { ok: false, error: "Method Not Allowed" }, { "cache-control": "no-store" });
@@ -339,10 +365,32 @@ async function handleAuthLogin(req, res) {
       { "cache-control": "no-store" }
     );
   }
-  const rawBody = await readBody(req);
+  const limitBeforeBody = authRateLimiter.check(req);
+  if (!limitBeforeBody.allowed) return sendTooManyLoginAttempts(res, limitBeforeBody);
+
+  let rawBody = "";
+  try {
+    rawBody = await readBody(req, { maxBytes: LOGIN_BODY_MAX_BYTES });
+  } catch (error) {
+    if (isRequestBodyTooLargeError(error)) {
+      return sendJson(
+        res,
+        413,
+        { ok: false, authRequired: true, authenticated: false, error: "Request body too large" },
+        { "cache-control": "no-store" }
+      );
+    }
+    throw error;
+  }
+  // 读 body 期间如果同一来源被其它并发登录失败推入退避/锁定，这里再次拦截。
+  const limitAfterBody = authRateLimiter.check(req);
+  if (!limitAfterBody.allowed) return sendTooManyLoginAttempts(res, limitAfterBody);
+
   // 前端提交 passwordHash 而不是明文，避免明文密码在 gateway 日志/代理层出现。
   const passwordHash = readPasswordHashFromBody(rawBody, headerValue(req.headers, "content-type")).trim().toLowerCase();
   if (!isValidPasswordHash(passwordHash) || !timingSafeEqualString(passwordHash, AUTH_PASSWORD_HASH)) {
+    const failure = authRateLimiter.recordFailure(req);
+    if (failure.limited) return sendTooManyLoginAttempts(res, failure);
     return sendJson(
       res,
       401,
@@ -350,6 +398,7 @@ async function handleAuthLogin(req, res) {
       { "cache-control": "no-store" }
     );
   }
+  authRateLimiter.recordSuccess(req);
   const issued = authStore.issue();
   return sendJson(
     res,

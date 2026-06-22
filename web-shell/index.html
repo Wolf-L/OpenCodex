@@ -694,6 +694,11 @@
         function localizedError(error) {
           const message = error && error.message ? error.message : String(error || "");
           if (message === "Invalid password") return t("web.auth.invalidPassword");
+          if (message === "Too many login attempts") {
+            // retryAfterMs 由 gateway 429 响应返回；没有该字段时给出 1 秒兜底，避免显示空值。
+            const seconds = Math.max(1, Math.ceil((Number(error && error.retryAfterMs) || 1000) / 1000));
+            return t("web.auth.tooManyAttempts", { seconds });
+          }
           return message;
         }
 
@@ -872,7 +877,11 @@
           });
           const body = await res.json().catch(() => null);
           if (!res.ok || !body || body.ok === false) {
-            throw new Error((body && body.error) || t("web.auth.loginFailedHttp", { status: res.status }));
+            const loginError = new Error((body && body.error) || t("web.auth.loginFailedHttp", { status: res.status }));
+            // 429 限速需要把 retryAfterMs 带到 localizedError，便于入口页展示明确等待时间。
+            loginError.status = res.status;
+            loginError.retryAfterMs = body && Number.isFinite(Number(body.retryAfterMs)) ? Number(body.retryAfterMs) : 0;
+            throw loginError;
           }
           clearForceLogin();
           if (body.token) storeToken(body.token);

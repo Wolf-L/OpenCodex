@@ -66,6 +66,7 @@
   "web.auth.enter": "进入",
   "web.auth.starting": "正在启动 OpenCodex...",
   "web.auth.invalidPassword": "密码不正确。",
+  "web.auth.tooManyAttempts": "尝试次数过多，请 {seconds} 秒后重试。",
   "web.auth.prompt": "请输入访问密码。",
   "web.auth.expired": "登录已过期，请重新输入密码。",
   "web.auth.loadFailedHttp": "无法加载 OpenCodex：HTTP {status}",
