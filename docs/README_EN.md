@@ -135,10 +135,38 @@ If you need to access it from another device, use the LAN address shown by the L
 | `CODEX_WEB_SLOW_LOG_MS` | `750` | Slow IPC call logging threshold, in milliseconds. |
 | `CODEX_WEB_LOCAL_FILE_TOKEN_TTL_MS` | `300000` | Local file preview URL token lifetime, in milliseconds. |
 | `CODEX_DESKTOP_APP_PATH` | Auto scan | Codex Desktop install path or path containing `app.asar`. |
+| `CODEX_DESKTOP_EXECUTABLE_PATH` | Auto scan | Codex Desktop Electron executable path override on Windows/Linux. |
+| `CODEX_APP_SERVER_BINARY_PATH` | Auto scan | Codex app-server/CLI executable path override on Windows. |
+| `CODEX_CLI_PATH` | Auto scan | Codex CLI executable path override on Windows. |
 | `CODEX_WEB_RUNTIME_DIR` | `.data/runtime` | Runtime directory for command-line gateway startup; packaged Launcher mode points this to the user data directory. |
 | `CODEX_WEB_OFFICIAL_BUNDLE_DIR` | `.data/cache/codex-official-bundle` | Official bundle extraction cache directory. |
 | `CODEX_WEB_OFFICIAL_USER_DATA_DIR` | `.data/official-user-data` | Isolated official Electron profile directory. |
+| `CODEX_WEB_OFFICIAL_TMPDIR` / `CODEX_WEB_OFFICIAL_TMP_DIR` | Auto generated | Temporary directory for the hidden official runtime, used to isolate the official IPC socket. |
+| `CODEX_WEB_REPORTS_DIR` | `.data/reports` | Gateway diagnostics report output directory. |
+| `CODEX_WEB_WORKSPACE_ROOTS` | Empty | Initial workspace roots, comma-separated. |
 | `CODEX_HOME` | `~/.codex` | Config and runtime data directory for Codex CLI / app-server. |
+
+### Advanced Debug Environment Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CODEX_WEB_PICKED_FILES_MAX_COUNT` | `20` | Maximum number of temporary picked-file request directories. |
+| `CODEX_WEB_PICKED_FILE_MAX_BYTES` | `52428800` | Maximum size of one picked file, in bytes. |
+| `CODEX_WEB_PICKED_FILES_MAX_TOTAL_BYTES` | `104857600` | Maximum total size of picked-file temporary directories, in bytes. |
+| `CODEX_WEB_PICKED_FILE_TTL_MS` | `86400000` | Picked-file temporary directory retention time, in milliseconds. |
+| `CODEX_WEB_DISABLE_ASSET_CACHE` | Empty | Set to `1` to disable gateway static asset caching. |
+| `CODEX_WEB_DISABLE_GZIP` | Empty | Set to `1` to disable gateway gzip response compression. |
+| `OPENCODEX_DEBUG_WS` | Empty | Set to `1` to enable WebSocket/app-host diagnostics. |
+| `OPENCODEX_WS_LARGE_LOG_BYTES` | `262144` | WebSocket large-message log threshold, in bytes. |
+| `OPENCODEX_WS_SEND_SLOW_MS` | `80` | WebSocket slow-send log threshold, in milliseconds. |
+| `OPENCODEX_WS_STRINGIFY_SLOW_MS` | `20` | WebSocket JSON stringify slow-log threshold, in milliseconds. |
+| `OPENCODEX_WS_BUFFERED_LOG_BYTES` | `524288` | WebSocket bufferedAmount log threshold, in bytes. |
+| `OPENCODEX_APP_HOST_TRAFFIC_FLUSH_MS` | `2000` | app-host traffic stats flush interval, in milliseconds. |
+| `OPENCODEX_APP_HOST_LARGE_FRAME_BYTES` | `65536` | app-host large-frame log threshold, in bytes. |
+| `OPENCODEX_WS_DISABLE_DEFLATE` | Empty | Set to `1` to disable WebSocket permessage-deflate. |
+| `OPENCODEX_WS_DEFLATE_THRESHOLD` | `65536` | WebSocket compression threshold, in bytes. |
+| `OPENCODEX_WS_DEFLATE_CONCURRENCY` | `4` | WebSocket compression concurrency limit. |
+| `OPENCODEX_WS_DEFLATE_LEVEL` | `3` | WebSocket zlib compression level. |
 
 ## FAQ
 
