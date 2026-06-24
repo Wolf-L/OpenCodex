@@ -32,18 +32,24 @@ function appFsPathFromRequestPath(pathname) {
 }
 
 /** app://fs 只服务 Codex 生成图、Web 附件临时目录和当前允许的 workspace roots。 */
-function isAllowedAppFsFile(filePath) {
+function isAllowedAppFsFile(filePath, extraWorkspaceRoots = []) {
   /**
    * app://fs 入口没有单独 token，因此必须限定目录：
    * - Codex 生成图片目录。
    * - Web 上传/选择文件临时目录。
    * - launcher 注入的 workspace roots。
    */
-  const roots = [CODEX_GENERATED_IMAGES_DIR, CODEX_WEB_PICKED_FILES_DIR, ...workspaceRootsFromEnv()];
+  const roots = [
+    CODEX_GENERATED_IMAGES_DIR,
+    CODEX_WEB_PICKED_FILES_DIR,
+    ...workspaceRootsFromEnv(),
+    ...extraWorkspaceRoots,
+  ];
   return roots.some((root) => typeof root === "string" && root.length > 0 && isWithinRoot(filePath, root));
 }
 
-function createLocalFileService() {
+function createLocalFileService(options = {}) {
+  const getWorkspaceRoots = typeof options.getWorkspaceRoots === "function" ? options.getWorkspaceRoots : () => [];
   // token 仅保存在内存中，重启 gateway 后自动失效，不把本机绝对路径持久化到前端。
   const localFileTokens = new Map();
 
@@ -81,7 +87,8 @@ function createLocalFileService() {
   function serveAppFsFile(pathname, res) {
     // 先解析并校验 allowlist，再 stat/read，避免错误信息泄露任意路径是否存在。
     const filePath = appFsPathFromRequestPath(pathname);
-    if (!filePath || !isAllowedAppFsFile(filePath)) {
+    // 新增项目通过 Web IPC 动态注册，本轮 gateway 不重启也要立刻放行其 app://fs 资源。
+    if (!filePath || !isAllowedAppFsFile(filePath, getWorkspaceRoots())) {
       return send(res, 404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "File not allowed.");
     }
     try {
@@ -150,4 +157,4 @@ function createLocalFileService() {
   };
 }
 
-module.exports = { createLocalFileService, safeInlineFilename };
+module.exports = { createLocalFileService, isAllowedAppFsFile, safeInlineFilename };

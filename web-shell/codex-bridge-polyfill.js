@@ -1294,6 +1294,14 @@
     w.setTimeout(() => removeBridgeToast(toast), 8000);
   }
 
+  function showBridgeToast(payload) {
+    // 先广播给可能存在的官方适配器；无人处理时再用官方类名兜底渲染。
+    const delivered = dispatch("codex-web:toast", payload);
+    emitWindowMessage("codex-web:toast", payload);
+    if (delivered > 0) return;
+    renderBridgeErrorToast(payload);
+  }
+
   /** fetch 形态没有稳定的官方业务 catch，这里才做同款 toast 兜底并短时间去重。 */
   function surfaceFetchIpcError(channel, payload) {
     if (!payload || typeof payload !== "object") return;
@@ -1315,11 +1323,13 @@
       description: `${url}: ${message}`,
     };
 
-    // 先广播给可能存在的官方适配器；无人处理时再用官方类名兜底渲染。
-    const delivered = dispatch("codex-web:toast", toastPayload);
-    emitWindowMessage("codex-web:toast", toastPayload);
-    if (delivered > 0) return;
-    renderBridgeErrorToast(toastPayload);
+    showBridgeToast(toastPayload);
+  }
+
+  function handleRemoteWorkspaceRootOption(payload) {
+    const picker = w.OpenCodexWorkspaceRootPicker;
+    if (!picker || typeof picker.handleMessage !== "function") return null;
+    return picker.handleMessage(payload);
   }
 
   /** 把 ArrayBuffer 转成 base64；分块处理避免大文件触发调用栈上限。 */
@@ -2477,6 +2487,8 @@
           return true;
         }
         emitOpenCodexPluginEvent("view:message", payload);
+        const workspaceRootResult = handleRemoteWorkspaceRootOption(payload);
+        if (workspaceRootResult) return workspaceRootResult;
         if (
           payload &&
           typeof payload === "object" &&
@@ -2749,6 +2761,13 @@
   w.__codexWebUnsubscribe = unsubscribe;
   w.__codexWebDispatch = dispatch;
   w.__codexWebPayloadShape = payloadShape;
+  // 独立 Web 能力模块通过这个最小 helper 面访问 bridge，避免把业务弹窗继续塞进 polyfill。
+  w.__codexWebBridgeHelpers = {
+    invoke,
+    normalizeErrorMessage,
+    showToast: showBridgeToast,
+    t,
+  };
 
   /** 建立到 gateway 的 WebSocket，接收 app-server/业务广播事件。 */
   function connect() {
