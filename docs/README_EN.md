@@ -2,7 +2,7 @@
 
 [中文](../README.md) | **English**
 
-OpenCodex is a middleware layer for Codex Desktop. It lets you use a phone, tablet, or another computer to access and operate Codex on a target machine through a browser, making it suitable for continuous AI Coding in LAN or remote LAN environments.
+OpenCodex is a middleware layer for Codex Desktop. It lets you directly use a phone, tablet, or another computer to access and operate Codex on a target machine through a browser, so you can AI Code anytime, anywhere.
 
 ---
 
@@ -13,6 +13,7 @@ Compared with the official option, OpenCodex still has advantages in several usa
 1. No proxy network required.
 2. No overseas Google Play / Apple account required.
 3. Supports full Codex capabilities, including file tree, terminal, review, and more, making anytime-anywhere AI Coding easier.
+4. Freely pair it with intranet tunneling or public network access without going through the official relay server, making it faster and easier to protect private data.
 
 ---
 
@@ -114,9 +115,11 @@ After startup, visit:
 http://127.0.0.1:3737
 ```
 
-If you need to access it from another device, use the LAN address shown by the Launcher, or use Tailscale, ZeroTier, a company VPN, or a similar private network solution for remote LAN access.
+### Remote Access
 
-> Directly exposing OpenCodex to the public Internet is not recommended.
+OpenCodex itself does not provide a remote access service. If you need remote access from another device, use Tailscale, ZeroTier, Cloudflare Tunnel, a company VPN, or a similar network solution, then enable LAN mode in the Launcher.
+
+> Public network access is also possible, but directly exposing OpenCodex to the public Internet is not recommended. The tools above are safer and easier to control.
 
 ## Common Environment Variables
 
@@ -174,6 +177,12 @@ If you need to access it from another device, use the LAN address shown by the L
 
 The first load can be slow and is also affected by remote LAN bandwidth. Wait for a while, then refresh or re-enter the session.
 
+### Session sync is not timely
+
+If you use OpenCodex and the official Desktop at the same time, both maintain their own session state. Although they use the same data, the state may not always sync in real time.
+
+Whether locally or remotely, it is recommended to use OpenCodex directly. With PWA support, the experience is close to the official Desktop.
+
 ### The page does not open after startup
 
 You can first check whether the service is running:
@@ -188,7 +197,9 @@ If the port is already in use, switch to another port:
 PORT=3738 pnpm run web:dev
 ```
 
-## Docs
+## Plugin System
+
+OpenCodex includes a plugin system. You can use plugins to enhance Codex capabilities, and developers are welcome to build plugins based on this system.
 
 - [Plugin development guide](PLUGINS_EN.md)
 
