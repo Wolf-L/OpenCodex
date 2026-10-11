@@ -33,6 +33,24 @@ test("Windows logical directory validation is not confused by MSIX native realpa
   assert.equal(nativeCalls, 0);
 });
 
+test("multi-megabyte replay preserves bytes in independently backed bounded stream chunks", async (t) => {
+  const { cache } = await fixture(t);
+  const body = JSON.stringify({ payload: "中文".repeat(1_250_000) });
+  await cache.fetch(descriptor(), endpoint, {}, async () => new Response(body, { headers: { "content-type": "application/json" } }));
+  const result = await cache.fetch(descriptor(), endpoint, {}, async () => { throw Error("Unexpected network"); });
+  const reader = result.body.getReader();
+  const chunks = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    assert.ok(value.byteLength <= 64 * 1024);
+    assert.equal(value.buffer.byteLength, value.byteLength);
+    chunks.push(Buffer.from(value));
+  }
+  assert.ok(chunks.length > 100);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), body);
+});
+
 test("permanent cache survives engine recreation and marks old server data without changing the first response", async (t) => {
   const { cache, config, directory } = await fixture(t);
   let calls = 0;

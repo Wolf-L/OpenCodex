@@ -16,6 +16,7 @@ const KIND_SET = new Set(STARTUP_RESPONSE_CACHE_KINDS);
 const SAFE_HEADERS = ["content-type", "cache-control", "etag", "last-modified"];
 const SECRET_PROPERTY = /^(?:access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|proxy-authorization|cookie|set-cookie)$/i;
 const ENTRY_NAME = /^[a-f0-9]{64}\.json$/;
+const REPLAY_CHUNK_BYTES = 64 * 1024;
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -82,6 +83,32 @@ function awaitWithAbort(promise, signal) {
 
 function blankCounters() {
   return { hits: 0, misses: 0, writes: 0, corrupt: 0, errors: 0, skipped: 0, lastHitAt: null, lastWriteAt: null };
+}
+
+function replayBody(body, signal) {
+  let bytes = Buffer.from(body, "utf8");
+  let offset = 0;
+  // 本地字符串 Response 会一次发出整个大正文；按网络响应的粒度拉取，避免多 MB 的单个 RPC 帧。
+  return new ReadableStream({
+    pull(controller) {
+      try { checkAbort(signal); } catch (error) {
+        bytes = null;
+        controller.error(error);
+        return;
+      }
+      if (!bytes || offset >= bytes.length) {
+        bytes = null;
+        controller.close();
+        return;
+      }
+      const end = Math.min(offset + REPLAY_CHUNK_BYTES, bytes.length);
+      // 必须复制到独立小缓冲区，否则 MessagePort structured clone 可能重复复制整个底层大 buffer。
+      controller.enqueue(new Uint8Array(bytes.subarray(offset, end)));
+      offset = end;
+      if (offset === bytes.length) { bytes = null; controller.close(); }
+    },
+    cancel() { bytes = null; },
+  }, { highWaterMark: 1 });
 }
 
 function createOfficialStartupResponseCache({ directory, buildId, enabled = false, maxBodyBytes = 16 * 1024 * 1024 } = {}) {
@@ -202,7 +229,7 @@ function createOfficialStartupResponseCache({ directory, buildId, enabled = fals
       const headers = new Headers(record.headers);
       headers.set("X-OpenCodex-Startup-Cache", "hit");
       headers.set("X-OpenCodex-Startup-Cache-Saved-At", record.savedAt);
-      const response = new Response(record.body, { status: record.status, headers });
+      const response = new Response(replayBody(record.body, signal), { status: record.status, headers });
       familyEntries[descriptor.kind].add(key);
       return response;
     } catch (error) {

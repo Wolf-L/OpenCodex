@@ -3,6 +3,34 @@ const test = require("node:test");
 
 const codec = require("../../web-shell/codex-app-host-message-codec.js");
 
+test("multi-megabyte binary RPC payloads do not overflow the Base64 validator stack", () => {
+  // 用合成大块复现缓存 Statsig 正文，不读取任何真实账号响应。
+  const bytes = new Uint8Array(7_308_949);
+  bytes[0] = 17;
+  bytes[bytes.length - 1] = 219;
+  const wire = codec.encodeMessageData({ chunk: bytes });
+  const restored = codec.decodeMessageData(JSON.parse(JSON.stringify(wire)));
+  assert.deepEqual(restored.chunk, bytes);
+});
+
+test("browser without Buffer decodes the same large binary frame and rejects malformed padding", () => {
+  const fs = require("node:fs");
+  const vm = require("node:vm");
+  const sandbox = { Uint8Array, ArrayBuffer, DataView, atob, btoa };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../../web-shell/codex-app-host-message-codec.js"), "utf8"), sandbox);
+  const browserCodec = sandbox.__OpenCodexAppHostMessageCodec;
+  const bytes = new Uint8Array(7_308_949);
+  bytes[bytes.length - 1] = 219;
+  const wire = browserCodec.encodeMessageData(bytes);
+  const restored = browserCodec.decodeMessageData(wire);
+  assert.equal(restored.length, bytes.length);
+  assert.equal(restored[bytes.length - 1], 219);
+  // 只替换 wire 中的 Base64 字段；保留原有严格字符/padding 验证，而不是直接信任 atob 的宽松语法。
+  for (const bad of ["====", "A===", "AA=A", "AAA", "AA A", "AA-_", "AAA=\n"]) {
+    assert.throws(() => browserCodec.decodeMessageData({ dataEncoding: browserCodec.encoding, data: ["bytes", "Uint8Array", bad] }), /Invalid app-host base64 payload/);
+  }
+});
+
 test("round-trips structured app-host values through JSON wire data", () => {
   const arrayBuffer = Uint8Array.from([1, 2, 3, 255]).buffer;
   const dataView = new DataView(Uint8Array.from([4, 5, 6, 7]).buffer);

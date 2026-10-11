@@ -68,7 +68,9 @@
   }
 
   function base64ToBytes(value) {
-    if (typeof value !== "string" || value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    // 重复分组的长 Base64 正则会在多 MB 数据上耗尽 V8 栈；线性检查字符和尾部 padding，保持相同严格语法。
+    const padding = typeof value === "string" ? (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0) : 0;
+    if (typeof value !== "string" || value.length % 4 !== 0 || /[^A-Za-z0-9+/]/.test(value.slice(0, value.length - padding))) {
       throw new TypeError("Invalid app-host base64 payload");
     }
     if (typeof Buffer !== "undefined" && typeof Buffer.from === "function") {
