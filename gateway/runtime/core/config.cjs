@@ -58,7 +58,8 @@ const LOCAL_DOWNLOAD_ARCHIVE_MAX_BYTES = positiveIntegerFromEnv(
   1024 * 1024 * 1024
 );
 // 路径版本是响应期 patch 的缓存破坏位：官方文件 hash 不变，但 gateway 注入逻辑可能变化。
-const PATCHED_OFFICIAL_PREFIX = "/official-patched-v8/";
+// 请求调度补丁适配新官方构建后会改变原本未改写的 chunk，升级 URL 避免沿用旧 immutable 响应。
+const PATCHED_OFFICIAL_PREFIX = "/official-patched-v9/";
 // 这两个 channel 是官方桌面 renderer/main 的主消息桥，gateway 通过 hook 复用它们。
 const MESSAGE_FROM_VIEW_CHANNEL = "codex_desktop:message-from-view";
 const MESSAGE_FOR_VIEW_CHANNEL = "codex_desktop:message-for-view";

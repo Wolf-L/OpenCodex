@@ -748,6 +748,195 @@ test("patched request scheduler supports the current expanded official backgroun
   assert.doesNotMatch(patched, /backgroundMethods=new Set\(\[`app\/installed`/);
 });
 
+function makeRequestSchedulerHarness(t, { transformSource = (source) => source, compatibilityService = null } = {}) {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  // 只执行最小请求客户端夹具，保留当前已确认的两个定位结构，不加载真实官方应用。
+  const source = transformSource([
+    "const _pn=3e4;",
+    "const criticalMethods=new Set([`thread/approveGuardianDeniedAction`,`thread/start`,`turn/interrupt`,`turn/start`,`turn/steer`]);",
+    "const backgroundMethods=new Set([`app/installed`,`app/list`,`app/read`,`collaborationMode/list`,`configRequirements/read`,`experimentalFeature/list`,`hooks/list`,`mcpServerStatus/list`,`model/list`,`permissionProfile/list`,`plugin/list`,`skills/list`]);",
+    "class RequestClient{",
+    "dispatchMessage=()=>{};pendingConfigReadRequests=new Map;queuedRequests=[];",
+    "constructor(){this.calls=[];this.pending=[];this.configReads=[]}",
+    "sendConfigReadRequest(params,options){this.configReads.push({params,options});return this.enqueueRequest(`config/read`,params,options)}",
+    "enqueueRequest(method,params,options){this.calls.push({method,params,options});return new Promise((resolve,reject)=>this.pending.push({resolve,reject}))}",
+    "async sendRequest(e,t,n){if(this.dispatchMessage==null)throw Error(`AppServerRequestClient is missing a message dispatcher`);return e===`config/read`?this.sendConfigReadRequest(t,n):this.enqueueRequest(e,t,e===`plugin/list`&&n?.timeoutMs==null?{...n,timeoutMs:_pn}:n)}",
+    "}",
+  ].join(""));
+  const assetName = "app-shared-scheduler-737655e1fb23.js";
+  fs.writeFileSync(path.join(assetsDir, assetName), source);
+  const reqPath = `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`;
+  const service = createService(webviewDir, compatibilityService);
+  const response = serveOfficialAssetResponse(service, reqPath);
+  const patched = response.body.toString("utf8");
+  const classes = new Function(`${patched};return {RequestClient,backgroundMethods,criticalMethods};`)();
+  return { ...classes, patched, source, response, webviewDir, assetName, reqPath };
+}
+
+test("current request scheduler preserves effective plugin timeout before coalescing defaults", async (t) => {
+  const { RequestClient, backgroundMethods, criticalMethods, response, patched } = makeRequestSchedulerHarness(t);
+  assert.match(patched, /opencodexInFlightCapabilityReads=new Map/);
+  assert.equal(response.headers["cache-control"], "private, no-cache, must-revalidate");
+  const client = new RequestClient();
+  const params = { cursor: null };
+  const options = [undefined, null, Object.freeze({}), Object.freeze({ timeoutMs: undefined }), Object.freeze({ timeoutMs: null }), Object.freeze({ timeoutMs: 30_000 })];
+  const pending = options.map((option) => client.sendRequest("plugin/list", params, option));
+  // undefined、null 与显式默认值具有相同的有效超时；首个请求立即入队且不改写调用方对象。
+  assert.equal(client.calls.length, 1);
+  assert.equal(client.calls[0].options.timeoutMs, 30_000);
+  assert.equal(options[3].timeoutMs, undefined);
+  assert.equal(options[4].timeoutMs, null);
+  client.pending[0].resolve("plugins");
+  assert.deepEqual(await Promise.all(pending), options.map(() => "plugins"));
+  assert.equal(client.opencodexInFlightCapabilityReads.size, 0);
+  for (const method of ["config/read", "model/list", "configRequirements/read", "permissionProfile/list", "app/installed", "app/read"]) {
+    assert.equal(backgroundMethods.has(method), false, method);
+    assert.equal(criticalMethods.has(method), false, method);
+  }
+  for (const method of ["app/list", "hooks/list", "mcpServerStatus/list", "plugin/list", "skills/list"]) {
+    assert.equal(backgroundMethods.has(method), true, method);
+  }
+  assert.equal(criticalMethods.has("turn/start"), true);
+});
+
+test("current request scheduler preserves explicit zero and positive plugin timeouts", async (t) => {
+  const { RequestClient } = makeRequestSchedulerHarness(t);
+  const client = new RequestClient();
+  const zero = Object.freeze({ timeoutMs: 0 });
+  const positive = Object.freeze({ timeoutMs: 5000 });
+  const pending = [
+    client.sendRequest("plugin/list", {}, zero),
+    client.sendRequest("plugin/list", {}, zero),
+    client.sendRequest("plugin/list", {}, positive),
+    client.sendRequest("plugin/list", {}, positive),
+    client.sendRequest("plugin/list", {}),
+  ];
+  assert.equal(client.calls.length, 3);
+  assert.equal(client.calls[0].options, zero);
+  assert.equal(client.calls[1].options, positive);
+  assert.equal(client.calls[2].options.timeoutMs, 30_000);
+  client.pending.forEach(({ resolve }, index) => resolve(index));
+  assert.deepEqual(await Promise.all(pending), [0, 0, 1, 1, 2]);
+});
+
+test("current request scheduler preserves the captured timeout symbol without shadowing minified names", async (t) => {
+  for (const transformSource of [
+    (source) => source.replaceAll("_pn", "r").replace("3e4", "43210"),
+    (source) => source.replaceAll("_pn", "i").replace("3e4", "43210"),
+    (source) => source.replaceAll("_pn", "a").replace("3e4", "43210"),
+    (source) => source.replace(/\be\b/g, "r").replace(/\bt\b/g, "i").replace(/\bn\b/g, "a").replace("3e4", "43210"),
+  ]) {
+    const { RequestClient } = makeRequestSchedulerHarness(t, { transformSource });
+    const client = new RequestClient();
+    const request = client.sendRequest("plugin/list", {});
+    assert.equal(client.calls.length, 1);
+    assert.equal(client.calls[0].options.timeoutMs, 43210);
+    client.pending[0].resolve("done");
+    assert.equal(await request, "done");
+  }
+});
+
+test("current request scheduler never merges different effective request options or params", async (t) => {
+  const { RequestClient } = makeRequestSchedulerHarness(t);
+  const client = new RequestClient();
+  const base = { priority: "background", source: "initial", timeoutMs: 30000, trace: true, widget: "sidebar" };
+  const requests = [
+    ["plugin/list", { cursor: null }, base],
+    ...Object.entries({ priority: "critical", source: "refresh", timeoutMs: 1, trace: false, widget: "settings" }).map(
+      ([key, value]) => ["plugin/list", { cursor: null }, { ...base, [key]: value }]
+    ),
+    ["plugin/list", { cursor: "next" }, base],
+    ["mcpServerStatus/list", { cursor: null }, base],
+    ["app/list", { cursor: null }, base],
+  ];
+  const pending = requests.map(([method, params, options]) => client.sendRequest(method, params, Object.freeze(options)));
+  assert.equal(client.calls.length, requests.length);
+  client.pending.forEach(({ resolve }, index) => resolve(index));
+  assert.deepEqual(await Promise.all(pending), requests.map((_, index) => index));
+});
+
+test("current request scheduler evicts success and rejection without caching settled results", async (t) => {
+  const { RequestClient } = makeRequestSchedulerHarness(t);
+  for (const method of ["plugin/list", "mcpServerStatus/list", "app/list"]) {
+    const client = new RequestClient();
+    const first = client.sendRequest(method, {});
+    const duplicate = client.sendRequest(method, {});
+    const settlement = Promise.allSettled([first, duplicate]);
+    assert.equal(client.calls.length, 1);
+    assert.deepEqual(client.calls[0].options, method === "plugin/list" ? { timeoutMs: 30000 } : undefined);
+    const failure = new Error("fixture rejected");
+    client.pending[0].reject(failure);
+    const rejected = await settlement;
+    assert.deepEqual(rejected.map((item) => item.status), ["rejected", "rejected"]);
+    assert.equal(rejected[0].reason, failure);
+    assert.equal(rejected[1].reason, failure);
+    assert.equal(client.opencodexInFlightCapabilityReads.size, 0);
+    const retry = client.sendRequest(method, {});
+    assert.equal(client.calls.length, 2);
+    client.pending[1].resolve("retried");
+    assert.equal(await retry, "retried");
+    assert.equal(client.opencodexInFlightCapabilityReads.size, 0);
+    const fresh = client.sendRequest(method, {});
+    assert.equal(client.calls.length, 3);
+    client.pending[2].resolve("fresh");
+    assert.equal(await fresh, "fresh");
+  }
+});
+
+test("current request scheduler keeps config reads writes and noncoalesced calls intact", async (t) => {
+  const { RequestClient } = makeRequestSchedulerHarness(t);
+  for (const method of ["config/read", "turn/start", "config/value/write", "model/list", "skills/list"]) {
+    const client = new RequestClient();
+    const options = Object.freeze({ priority: "critical", source: "fixture", timeoutMs: null });
+    const params = { value: 1 };
+    const pending = [client.sendRequest(method, params, options), client.sendRequest(method, params, options)];
+    assert.equal(client.calls.length, 2, method);
+    for (const call of client.calls) {
+      assert.equal(call.method, method);
+      assert.equal(call.params, params);
+      assert.equal(call.options, options);
+    }
+    assert.equal(client.configReads.length, method === "config/read" ? 2 : 0);
+    client.pending.forEach(({ resolve }) => resolve("done"));
+    await Promise.all(pending);
+  }
+  const disconnected = new RequestClient();
+  disconnected.dispatchMessage = null;
+  await assert.rejects(disconnected.sendRequest("plugin/list", {}), /missing a message dispatcher/);
+  assert.equal(disconnected.calls.length, 0);
+});
+
+test("current request scheduler patch is idempotent without an erroneous compatibility failure", (t) => {
+  const first = makeRequestSchedulerHarness(t);
+  assert.notEqual(first.patched, first.source);
+  const compatibilityService = createCompatibilityService();
+  t.after(() => compatibilityService.dispose());
+  const second = makeRequestSchedulerHarness(t, { transformSource: () => first.patched, compatibilityService });
+  assert.equal(second.patched, first.patched);
+  const point = compatibilityService.registry.point("static.cache.renderer.app-server-request-scheduling");
+  assert.doesNotMatch(JSON.stringify(point), /Official App Server request layout did not match/);
+});
+
+test("request scheduler unknown source shapes remain unchanged with compatibility diagnostics", (t) => {
+  // 对未确认的新逻辑直接保留官方行为，不能局部替换字段后留下半补丁状态。
+  for (const transformSource of [
+    (source) => source.replace("timeoutMs:_pn", "timeoutMs:customTimeout()"),
+    (source) => source.replace("`skills/list`]);", "`skills/list`,`unknown/read`]);"),
+    (source) => source.replace("pendingConfigReadRequests=new Map;", "pendingConfigReadRequests=new WeakMap;"),
+  ]) {
+    const compatibilityService = createCompatibilityService();
+    t.after(() => compatibilityService.dispose());
+    const { source, patched } = makeRequestSchedulerHarness(t, { transformSource, compatibilityService });
+    assert.equal(patched, source);
+    assert.doesNotMatch(patched, /opencodexInFlightCapabilityReads/);
+    const point = compatibilityService.registry.point("static.cache.renderer.app-server-request-scheduling");
+    assert.match(JSON.stringify(point), /Official App Server request layout did not match/);
+    assert.match(JSON.stringify(point), /Official renderer behavior/);
+  }
+});
+
 test("remote renderer defers plugin summary image bytes until an image mounts", async (t) => {
   const webviewDir = makeOfficialWebviewDir(t);
   const assetsDir = path.join(webviewDir, "assets");
@@ -1759,20 +1948,26 @@ test("current twelve-digit content hashes cache unchanged scripts and static ass
   const webviewDir = makeOfficialWebviewDir(t);
   const assetsDir = path.join(webviewDir, "assets");
   fs.mkdirSync(assetsDir, { recursive: true });
-  // 覆盖实际大包命名以及相对导入的样式、字体和图片，防止刷新时又退回 no-store。
+  // 覆盖实际大包命名以及相对导入的样式、字体、图片和提示音，防止刷新时又退回 no-store。
   const assetNames = [
     "app-shared-737655e1fb23.js",
     "app-ABCDEF012345.js",
     "app-737655e1fb23.css",
     "OpenAISans-Medium-737655e1fb23.woff2",
     "OpenAISans-Medium-737655e1fb23.woff",
+    "dictation-start-3d0290130f06.wav",
+    "dictation-stop-508377056bdb.wav",
+    "error-878d0efcada6.wav",
     ...["avif", "gif", "ico", "jpg", "jpeg", "png", "svg", "webp"].map(
       (extension) => `image-737655e1fb23.${extension}`
     ),
   ];
   const service = createService(webviewDir);
   for (const assetName of assetNames) {
-    const source = Buffer.from(assetName.endsWith(".js") ? "export const ready = true;" : "static asset");
+    // WAV 按二进制透传，非 UTF-8 字节也不能在缓存路径中被重编码。
+    const source = assetName.endsWith(".wav")
+      ? Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0xff, 0x80, 0x00])
+      : Buffer.from(assetName.endsWith(".js") ? "export const ready = true;" : "static asset");
     fs.writeFileSync(path.join(assetsDir, assetName), source);
     const reqPath = `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`;
     const response = serveOfficialAssetResponse(service, reqPath);
@@ -1784,6 +1979,8 @@ test("current twelve-digit content hashes cache unchanged scripts and static ass
       "if-none-match": response.headers.etag,
     });
     assert.equal(validated.status, 304, assetName);
+    assert.equal(validated.headers.etag, response.headers.etag, assetName);
+    assert.equal(validated.headers["cache-control"], response.headers["cache-control"], assetName);
     assert.equal(validated.body.length, 0, assetName);
   }
 });
@@ -1804,15 +2001,25 @@ test("content hash caching excludes unversioned namespaces and unhashed or unsup
     "app-737655e1fb23.js.map",
     "app-737655e1fb23.html",
     "app-737655e1fb23.json",
+    "dictation-start.wav",
+    "dictation-start-3d0290130f0z.wav",
+    "dictation-start-3d0290130f06.mp3",
   ]) {
     fs.writeFileSync(path.join(assetsDir, assetName), "static asset");
     const response = serveOfficialAssetResponse(service, `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`);
     assert.equal(response.status, 200, assetName);
     assert.equal(response.headers["cache-control"], "no-store", assetName);
   }
-  for (const assetName of ["app-Dk3EPlSk.js", "app-737655e1fb23.js", "app-737655e1fb23.css"]) {
+  for (const assetName of [
+    "app-Dk3EPlSk.js",
+    "app-737655e1fb23.js",
+    "app-737655e1fb23.css",
+    "dictation-start-3d0290130f06.wav",
+    "dictation-stop-508377056bdb.wav",
+    "error-878d0efcada6.wav",
+  ]) {
     fs.writeFileSync(path.join(assetsDir, assetName), "static asset");
-    for (const prefix of ["/official-patched/", "/official-patched-v7/"]) {
+    for (const prefix of ["/official-patched/", "/official-patched-v7/", "/official-patched-v8/"]) {
       const response = serveOfficialAssetResponse(service, `${prefix}assets/${assetName}`);
       assert.equal(response.status, 200, `${prefix}${assetName}`);
       assert.equal(response.headers["cache-control"], "no-store", `${prefix}${assetName}`);
@@ -1884,6 +2091,9 @@ test("asset cache opt-out keeps twelve-digit hashed and dynamically patched asse
     ["app-737655e1fb23.js", "export const ready = true;"],
     ["app-737655e1fb23.css", "body { color: red; }"],
     ["font-737655e1fb23.woff2", "font"],
+    ["dictation-start-3d0290130f06.wav", "audio"],
+    ["dictation-stop-508377056bdb.wav", "audio"],
+    ["error-878d0efcada6.wav", "audio"],
     ["locale-737655e1fb23.js", 'export default {"artifactTab.preview.openInFolder":"Open in folder"};'],
   ]);
   for (const [assetName, source] of fixtures) fs.writeFileSync(path.join(assetsDir, assetName), source);

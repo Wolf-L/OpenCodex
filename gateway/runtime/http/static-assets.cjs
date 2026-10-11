@@ -33,7 +33,7 @@ const PATCHED_ASSET_CACHE_MAX_BYTES = Math.max(
     ? configuredPatchedAssetCacheMaxBytes
     : 96 * 1024 * 1024
 );
-const PATCHED_ASSET_PATCH_REVISION = "11";
+const PATCHED_ASSET_PATCH_REVISION = "12";
 const ASYNC_PATCH_MIN_BYTES = 512 * 1024;
 const OFFICIAL_ASSET_PATCH_WORKER_IDLE_MS = 30_000;
 const OFFICIAL_ASSET_PATCH_WORKER_PATH = path.join(__dirname, "official-asset-patch-worker.cjs");
@@ -141,10 +141,11 @@ const APPLICATION_MENU_SERVICE_USAGE_RE =
 const APP_SERVER_REQUEST_CLIENT_FIELDS_RE =
   /pendingConfigReadRequests=new Map;queuedRequests=\[\]/;
 const APP_SERVER_REQUEST_CLIENT_DISPATCH_ERROR = "AppServerRequestClient is missing a message dispatcher";
+// 只接受旧版直传 options 与新版 plugin/list 默认超时两种已确认结构，保留官方超时符号而非硬编码数值。
 const APP_SERVER_REQUEST_CLIENT_SEND_RE =
-  /async sendRequest\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(this\.dispatchMessage==null\)throw Error\(`AppServerRequestClient is missing a message dispatcher`\);return \1===`config\/read`\?this\.sendConfigReadRequest\(\2,\3\):this\.enqueueRequest\(\1,\2,\3\)\}/;
+  /async sendRequest\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(this\.dispatchMessage==null\)throw Error\(`AppServerRequestClient is missing a message dispatcher`\);return \1===`config\/read`\?this\.sendConfigReadRequest\(\2,\3\):this\.enqueueRequest\(\1,\2,(?:\1===`plugin\/list`&&\3\?\.timeoutMs==null\?\{\.\.\.\3,timeoutMs:([A-Za-z_$][\w$]*)\}:\3|\3)\)\}/;
 const APP_SERVER_BACKGROUND_METHODS_RE =
-  /new Set\(\[(?:`app\/installed`,)?`app\/list`(?:,`app\/read`)?,`collaborationMode\/list`,`config\/read`,`configRequirements\/read`,`experimentalFeature\/list`,`hooks\/list`,`mcpServerStatus\/list`,`model\/list`,`permissionProfile\/list`,`plugin\/list`,`skills\/list`\]\)/;
+  /new Set\(\[(?:`app\/installed`,)?`app\/list`(?:,`app\/read`)?,`collaborationMode\/list`,(?:`config\/read`,)?`configRequirements\/read`,`experimentalFeature\/list`,`hooks\/list`,`mcpServerStatus\/list`,`model\/list`,`permissionProfile\/list`,`plugin\/list`,`skills\/list`\]\)/;
 const APP_SERVER_BACKGROUND_METHODS = [
   "app/list",
   "hooks/list",
@@ -339,6 +340,7 @@ function createStaticAssetService({
   const patchedOfficialPrefixes = Array.from(
     new Set([
       PATCHED_OFFICIAL_PREFIX,
+      "/official-patched-v8/",
       "/official-patched-v7/",
       "/official-patched-v6/",
       "/official-patched-v5/",
@@ -1451,6 +1453,8 @@ ${pluginGatewayStateBootstrapScript()}
      * 不保存返回值，也不延后 plugin/MCP/Apps 的首个初始化请求。
      */
     if (!source.includes(APP_SERVER_REQUEST_CLIENT_DISPATCH_ERROR)) return source;
+    // 同一响应再次经过补丁流程时直接复用已知字段布局，不重复注入，也不误报官方定位失败。
+    if (source.includes("pendingConfigReadRequests=new Map;opencodexInFlightCapabilityReads=new Map;queuedRequests=[]")) return source;
     const hasFields = APP_SERVER_REQUEST_CLIENT_FIELDS_RE.test(source);
     const sendMatch = source.match(APP_SERVER_REQUEST_CLIENT_SEND_RE);
     const backgroundMatch = source.match(APP_SERVER_BACKGROUND_METHODS_RE);
@@ -1463,7 +1467,18 @@ ${pluginGatewayStateBootstrapScript()}
       return source;
     }
 
-    const [, methodVar, paramsVar, optionsVar] = sendMatch;
+    const [, methodVar, paramsVar, optionsVar, pluginTimeoutSymbol] = sendMatch;
+    // 新版 plugin/list 的空超时会补官方默认值；先创建有效 options 再计算 key，保留显式 0 且不改调用方对象。
+    const normalizeOptions = pluginTimeoutSymbol
+      ? `${optionsVar}=${methodVar}===\`plugin/list\`&&${optionsVar}?.timeoutMs==null?{...${optionsVar},timeoutMs:${pluginTimeoutSymbol}}:${optionsVar};`
+      : "";
+    // minifier 可能把参数或超时常量命名为 r/i/a；补丁局部变量必须避开它们，避免遮蔽与暂时性死区。
+    const occupiedNames = new Set([methodVar, paramsVar, optionsVar, pluginTimeoutSymbol]);
+    const [keyVar, existingVar, pendingVar] = ["r", "i", "a"].map((name) => {
+      while (occupiedNames.has(name)) name += "_";
+      occupiedNames.add(name);
+      return name;
+    });
     const coalescedMethods = [
       `${methodVar}===\`app/list\``,
       `${methodVar}===\`mcpServerStatus/list\``,
@@ -1473,13 +1488,14 @@ ${pluginGatewayStateBootstrapScript()}
       `async sendRequest(${methodVar},${paramsVar},${optionsVar}){`,
       "if(this.dispatchMessage==null)throw Error(`AppServerRequestClient is missing a message dispatcher`);",
       `if(${methodVar}===\`config/read\`)return this.sendConfigReadRequest(${paramsVar},${optionsVar});`,
+      normalizeOptions,
       `if(!(${coalescedMethods}))return this.enqueueRequest(${methodVar},${paramsVar},${optionsVar});`,
-      `let r=JSON.stringify({method:${methodVar},params:${paramsVar},priority:${optionsVar}?.priority??null,source:${optionsVar}?.source??null,timeoutMs:${optionsVar}?.timeoutMs??0,trace:${optionsVar}?.trace===void 0?\`auto\`:${optionsVar}.trace,widget:${optionsVar}?.widget??null}),`,
-      "i=this.opencodexInFlightCapabilityReads.get(r);",
-      "if(i!=null)return i;",
-      `let a=this.enqueueRequest(${methodVar},${paramsVar},${optionsVar});`,
-      "return this.opencodexInFlightCapabilityReads.set(r,a),",
-      "a.then(()=>this.opencodexInFlightCapabilityReads.delete(r),()=>this.opencodexInFlightCapabilityReads.delete(r)),a}",
+      `let ${keyVar}=JSON.stringify({method:${methodVar},params:${paramsVar},priority:${optionsVar}?.priority??null,source:${optionsVar}?.source??null,timeoutMs:${optionsVar}?.timeoutMs??0,trace:${optionsVar}?.trace===void 0?\`auto\`:${optionsVar}.trace,widget:${optionsVar}?.widget??null}),`,
+      `${existingVar}=this.opencodexInFlightCapabilityReads.get(${keyVar});`,
+      `if(${existingVar}!=null)return ${existingVar};`,
+      `let ${pendingVar}=this.enqueueRequest(${methodVar},${paramsVar},${optionsVar});`,
+      `return this.opencodexInFlightCapabilityReads.set(${keyVar},${pendingVar}),`,
+      `${pendingVar}.then(()=>this.opencodexInFlightCapabilityReads.delete(${keyVar}),()=>this.opencodexInFlightCapabilityReads.delete(${keyVar})),${pendingVar}}`,
     ].join("");
     const backgroundMethods = APP_SERVER_BACKGROUND_METHODS.map((method) => `\`${method}\``).join(",");
 
@@ -1592,11 +1608,12 @@ ${pluginGatewayStateBootstrapScript()}
       /**
        * patched JS 的相对动态导入会让 CSS、字体和图片也落到当前 patched 命名空间；
        * 未改写资源兼容旧版 8 位 Vite hash 和新版 12 位十六进制内容摘要；
+       * 已确认录音开始、结束及错误提示音使用带摘要的 WAV，同样允许缓存以免刷新重复下载；
        * 不能按任意长度字母后缀放宽，否则普通文件名也会被误判为不可变资源。
        */
       if (
         reqPath.startsWith(PATCHED_OFFICIAL_PREFIX) &&
-        /-(?:[A-Za-z0-9_-]{8}|[a-f0-9]{12})\.(?:avif|css|gif|ico|jpe?g|js|png|svg|webp|woff2?)$/i.test(
+        /-(?:[A-Za-z0-9_-]{8}|[a-f0-9]{12})\.(?:avif|css|gif|ico|jpe?g|js|png|svg|wav|webp|woff2?)$/i.test(
           patchedOfficialAssetName(reqPath)
         )
       ) {
