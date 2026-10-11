@@ -46,10 +46,16 @@
     overflow: visible !important;
   }
 
-  .app-shell-left-panel > div,
-  .app-shell-left-panel > div > div,
-  .app-shell-left-panel > div > div > div {
+  .app-shell-left-panel > div:has([data-app-navigation-rail]),
+  .app-shell-left-panel > div > div:has([data-app-navigation-rail]),
+  .app-shell-left-panel > div > div > div:has([data-app-navigation-rail]) {
     width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .app-shell-left-panel [class~="group/panel-resizer"] {
+    /* 手机侧栏固定全宽；隐藏桌面拖宽手柄，否则其透明伪元素会截获分类与搜索点击。 */
+    display: none !important;
   }
 
   [data-app-shell-sidebar-open="false"] .app-shell-left-panel [data-slate-sidebar-content] {
@@ -67,8 +73,113 @@
     box-shadow: none !important;
   }
 
-  [data-app-shell-sidebar-open="true"] [data-app-shell-main-surface] {
+  [data-app-shell-sidebar-open="true"]:not(:has(#settings-search)) [data-app-shell-main-surface] {
     visibility: hidden;
+  }
+
+  /* 设置等页面侧栏不是聊天抽屉，没有可收起开关；不能因此永久隐藏正文。
+   * 保留官方分类按钮和搜索行为，将页面导航放在正文上方，底部应用导航仍复用原节点。
+   */
+  [data-app-shell-frame]:has(#settings-search) {
+    --opencodex-phone-page-navigation-height: 112px;
+  }
+
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel {
+    bottom: auto !important;
+    height: var(--opencodex-phone-page-navigation-height);
+    width: 100% !important;
+    box-shadow: none !important;
+  }
+
+  [data-app-shell-frame]:has(#settings-search) [data-app-shell-main-surface] {
+    visibility: visible;
+    margin-top: calc(var(--app-shell-titlebar-height) + var(--opencodex-phone-page-navigation-height)) !important;
+    min-width: 0;
+  }
+
+  [data-app-shell-frame]:has(#settings-search) [data-slate-sidebar-content] {
+    visibility: visible !important;
+    pointer-events: auto !important;
+  }
+
+  /* 设置搜索与分类分别一行。分类可横向滚动，所有项目仍保留键盘焦点和原生选中状态。 */
+  nav:has(#settings-search) > div > div:has(#settings-search) {
+    padding: 4px 12px !important;
+  }
+
+  nav:has(#settings-search) > div > div:has(#settings-search) > :has(h1) {
+    display: none;
+  }
+
+  nav:has(#settings-search) [data-sidebar-header-search] {
+    min-height: 44px;
+  }
+
+  #settings-search {
+    font-size: 16px;
+  }
+
+  nav:has(#settings-search) > div > div:not(:has(#settings-search)) {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    align-items: center;
+    padding: 4px 12px 8px !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pinch-zoom;
+  }
+
+  nav:has(#settings-search) [class~="group/nav-section"],
+  nav:has(#settings-search) [class~="group/nav-list"],
+  nav:has(#settings-search) > div > div > div:has(> [class~="group/nav-list"]) {
+    /* 搜索结果还有一层无 class 包装；也需展开，否则多条结果垂直居中后会钻到搜索框下面。 */
+    display: contents;
+  }
+
+  nav:has(#settings-search) [class~="group/nav-section-title"] {
+    display: none;
+  }
+
+  nav:has(#settings-search) button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: 12px;
+    border-radius: 12px;
+    touch-action: manipulation;
+  }
+
+  /* 窄屏长说明与右侧操作上下排列，避免表单操作区被挤出视口。 */
+  [class~="group/settings"] [class~="@container/settings-row"] {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  [class~="group/settings"] [class~="@container/settings-row"] > :first-child {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  [class~="group/settings"] [class~="@container/settings-row"] > :not(:first-child) {
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  [class~="group/settings"] button:not([role="switch"]),
+  [class~="group/settings"] input:not([type="checkbox"]),
+  [class~="group/settings"] select {
+    min-height: 44px;
+    max-width: 100%;
+  }
+
+  [class~="group/settings"] input,
+  [class~="group/settings"] textarea {
+    font-size: 16px;
   }
 
   /* 底部六个原生入口均保留：不克隆按钮，不制造第二份导航状态。 */
@@ -155,15 +266,72 @@
     display: none !important;
   }
 
+  /* 手机聊天顶栏优先侧栏和标签；历史箭头会占掉固定的左侧安全空间。设置页保留返回按钮。 */
+  [data-app-shell-frame]:not(:has(#settings-search)) [data-app-shell-header-slot="start"] button:not([data-app-shell-sidebar-trigger]) {
+    display: none !important;
+  }
+
   header[data-app-shell-titlebar] button,
   header[data-app-shell-titlebar] [role="checkbox"] {
     min-width: 44px;
     min-height: 44px;
   }
 
+  /* main 布局按钮在紧凑视图中也是“新建标签页”入口，不能当作纯分屏控件隐藏。 */
   header[data-app-shell-titlebar] [data-app-shell-workspace-layout-toggle="main"] {
-    /* 小屏不呈现分屏切换，保留打开/关闭文件等右侧面板的入口。 */
-    display: none !important;
+    display: inline-flex !important;
+  }
+
+  [data-app-shell-frame]:not(:has([data-app-shell-tab-row])) [data-app-shell-workspace-layout-toggle="main"] {
+    gap: 6px;
+    width: auto;
+    padding-inline: 10px;
+  }
+
+  [data-app-shell-frame]:not(:has([data-app-shell-tab-row])) [data-app-shell-workspace-layout-toggle="main"]::after {
+    /* 借鉴手机聊天应用的明确顶栏入口；标签跟随官方“新建/显示标签页”状态与语言。 */
+    content: attr(aria-label);
+    max-width: 108px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  /* 手机采用单栏内容面板：官方 split 状态与标签仍保留，只避免把聊天挤成几十像素。
+   * “隐藏标签页/显示标签页”继续使用原生动作返回聊天，不更改用户的默认完整视图偏好。
+   */
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]):has(header [data-app-shell-tab-row]) [data-app-shell-workspace-layout="split"],
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]):has(header [data-app-shell-tab-row]) [data-app-shell-main-titlebar] {
+    display: none;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]):has(header [data-app-shell-tab-row]) aside[data-app-shell-focus-area="right-panel"],
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]):has(header [data-app-shell-tab-row]) [data-app-shell-pane-frame] {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]) header > div:has(> [data-app-shell-titlebar-slot="content"]) {
+    clip-path: none !important;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]) [data-app-shell-titlebar-slot="content"] {
+    inset-inline: 64px 108px !important;
+    width: auto !important;
+    --app-shell-titlebar-trailing-width: 0px !important;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]) [data-app-shell-titlebar-slot="content"] > div {
+    width: 100% !important;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]) [data-app-shell-tab-row] > :has(> [data-tab-id]) {
+    width: min(240px, calc(100vw - 244px)) !important;
+  }
+
+  [data-app-shell-frame]:has([data-app-shell-workspace-layout="split"]):has(header [data-app-shell-tab-row]) [data-app-shell-main-surface] [role="separator"][aria-orientation="vertical"] {
+    display: none;
   }
 
   [data-app-shell-main-titlebar],

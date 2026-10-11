@@ -72,3 +72,41 @@ test("short phone screens prioritize the composer and keep new-tab space in the 
   // 只收起首页装饰，不通过 display:none 隐藏真实输入框或发送按钮。
   assert.doesNotMatch(css, /(?:^|\n)\s*\[data-codex-composer-root\](?:\s+button)?\s*\{[^}]*display: none/s);
 });
+
+test("page sidebars never apply the chat drawer content-hiding rule", () => {
+  // 设置侧栏常驻且没有聊天开关；page-sidebar 也被聊天历史复用，必须按设置搜索标记区分。
+  const hiddenRules = [...css.matchAll(/([^{}]+)\{([^{}]*visibility:\s*hidden[^{}]*)\}/g)]
+    .filter((match) => match[1].includes("[data-app-shell-main-surface]"));
+  assert.equal(hiddenRules.length, 1);
+  assert.match(hiddenRules[0][1], /:not\(:has\(#settings-search\)\)/);
+  assert.match(css, /\[data-app-shell-frame\]:has\(#settings-search\) \[data-app-shell-main-surface\]\s*\{[^}]*visibility: visible;[^}]*margin-top: calc\(var\(--app-shell-titlebar-height\) \+ var\(--opencodex-phone-page-navigation-height\)\)/s);
+  assert.doesNotMatch(css, /\[data-app-shell-page-sidebar="true"\]/);
+});
+
+test("phone sidebar resizers cannot intercept native navigation or search clicks", () => {
+  assert.match(css, /\.app-shell-left-panel \[class~="group\/panel-resizer"\]\s*\{[^}]*display: none !important/s);
+  assert.doesNotMatch(css, /\.app-shell-left-panel > div\s*[,\{]/);
+  assert.match(css, /\.app-shell-left-panel > div:has\(\[data-app-navigation-rail\]\)/);
+});
+
+test("settings keep native horizontally scrollable categories and readable wrapped controls", () => {
+  assert.match(css, /--opencodex-phone-page-navigation-height: 112px/);
+  assert.match(css, /nav:has\(#settings-search\) > div > div:not\(:has\(#settings-search\)\)\s*\{[^}]*overflow-x: auto;[^}]*overflow-y: hidden/s);
+  assert.match(css, /nav:has\(#settings-search\) button\s*\{[^}]*min-height: 44px/s);
+  assert.match(css, /> div:has\(> \[class~="group\/nav-list"\]\)\s*\{[^}]*display: contents/s);
+  assert.match(css, /#settings-search\s*\{[^}]*font-size: 16px/s);
+  assert.match(css, /\[class~="@container\/settings-row"\] > :first-child\s*\{[^}]*flex: 1 1 100%;[^}]*overflow-wrap: anywhere/s);
+});
+
+test("compact chat retains the native new-tab or show-tabs control after exiting full view", () => {
+  // 同一 main 标记有不同原生动作，不能再全局当成分屏开关隐藏。
+  assert.doesNotMatch(css, /\[data-app-shell-workspace-layout-toggle="main"\]\s*\{[^}]*display:\s*none/s);
+  assert.match(css, /\[data-app-shell-frame\]:not\(:has\(\[data-app-shell-tab-row\]\)\) \[data-app-shell-workspace-layout-toggle="main"\]::after\s*\{[^}]*content: attr\(aria-label\)/s);
+});
+
+test("phone split view uses a full-width native content pane without changing workspace state", () => {
+  assert.match(css, /:has\(header \[data-app-shell-tab-row\]\) aside\[data-app-shell-focus-area="right-panel"\]/);
+  assert.match(css, /\[data-app-shell-pane-frame\]\s*\{[^}]*width: 100% !important;[^}]*min-width: 0 !important/s);
+  assert.match(css, /\[data-app-shell-titlebar-slot="content"\]\s*\{[^}]*inset-inline: 64px 108px !important/s);
+  assert.match(css, /calc\(100vw - 244px\)/);
+});

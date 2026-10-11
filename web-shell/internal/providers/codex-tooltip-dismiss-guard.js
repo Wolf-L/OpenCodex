@@ -91,6 +91,8 @@
 
   function currentPointerTarget() {
     if (!lastPointer) return null;
+    // focusin 没有指针坐标，不能将 undefined/NaN 交给 elementFromPoint。
+    if (!Number.isFinite(lastPointer.x) || !Number.isFinite(lastPointer.y)) return lastPointer.target;
     if (typeof document.elementFromPoint !== "function") return lastPointer.target;
     return document.elementFromPoint(lastPointer.x, lastPointer.y) || lastPointer.target;
   }
@@ -177,7 +179,7 @@
     tooltipPresent = false;
     // 同一交互会话不反复断开、重连或续期，避免鼠标经过嵌套按钮节点时持续扫描全页。
     if (tooltipObserverExpiryTimer) {
-      rememberPointer(event);
+      if (event?.type !== "focusin") rememberPointer(event);
       return;
     }
     disposeTooltipObservation = adapterHost.dom.observe({

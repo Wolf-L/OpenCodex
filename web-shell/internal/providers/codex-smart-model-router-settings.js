@@ -933,25 +933,53 @@
     return button;
   }
 
+  function clippedContentBounds(rect) {
+    const viewportWidth = Math.max(0, window.innerWidth);
+    const viewportHeight = Math.max(0, window.innerHeight);
+    if (!rect || ![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite)) return null;
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const left = Math.max(0, Math.min(viewportWidth, rect.left));
+    const top = Math.max(0, Math.min(viewportHeight, rect.top));
+    const right = Math.max(left, Math.min(viewportWidth, rect.left + rect.width));
+    const bottom = Math.max(top, Math.min(viewportHeight, rect.top + rect.height));
+    if (right <= left || bottom <= top) return null;
+    return { left, top, width: right - left, height: bottom - top };
+  }
+
   function contentBounds(nav) {
+    // OWL 的侧栏兄弟节点是 display:contents，必须在同一个外壳内寻找实际正文盒子。
+    const frame = nav.closest("[data-app-shell-frame]");
+    for (const main of frame?.querySelectorAll("[data-app-shell-main-surface]") || []) {
+      if (main.closest("[data-app-shell-frame]") !== frame) continue;
+      const rect = clippedContentBounds(main.getBoundingClientRect());
+      if (rect) return rect;
+    }
+
     const legacySidebar = nav.closest(".app-shell-left-panel");
     const legacyContent = legacySidebar?.nextElementSibling;
-    if (legacyContent) return legacyContent.getBoundingClientRect();
+    const legacyRect = clippedContentBounds(legacyContent?.getBoundingClientRect());
+    if (legacyRect) return legacyRect;
 
     // 新版设置布局由官方 split panel 组件承载；逐层寻找与导航并列的大尺寸内容节点。
     let branch = nav;
-    while (branch.parentElement && branch.parentElement !== document.body) {
+    while (branch !== frame && branch.parentElement && branch.parentElement !== document.body) {
       const parent = branch.parentElement;
       const candidate = Array.from(parent.children).find((child) => {
         if (child === branch || child.contains(nav)) return false;
+        if (frame && child.closest("[data-app-shell-frame]") !== frame) return false;
         const rect = child.getBoundingClientRect();
         return rect.width >= Math.min(360, window.innerWidth * 0.35) && rect.height >= window.innerHeight * 0.55;
       });
-      if (candidate) return candidate.getBoundingClientRect();
+      const candidateRect = clippedContentBounds(candidate?.getBoundingClientRect());
+      if (candidateRect) return candidateRect;
       branch = parent;
     }
     const navRect = nav.getBoundingClientRect();
-    return { left: navRect.right, top: 0, width: window.innerWidth - navRect.right, height: window.innerHeight };
+    // 无有效正文时保留旧版侧栏右侧回退；横向手机导航则从下方开始，绝不强撑 320px。
+    const left = Math.max(0, Math.min(window.innerWidth, Number.isFinite(navRect.right) ? navRect.right : 0));
+    const belowNavigation = left >= window.innerWidth;
+    const top = belowNavigation ? Math.max(0, Math.min(window.innerHeight, navRect.bottom || 0)) : 0;
+    return { left: belowNavigation ? 0 : left, top, width: belowNavigation ? window.innerWidth : window.innerWidth - left, height: window.innerHeight - top };
   }
 
   function positionPage() {
@@ -961,8 +989,8 @@
     const rect = contentBounds(nav);
     page.style.left = `${Math.max(0, rect.left)}px`;
     page.style.top = `${Math.max(0, rect.top)}px`;
-    page.style.width = `${Math.max(320, rect.width)}px`;
-    page.style.height = `${Math.max(320, rect.height)}px`;
+    page.style.width = `${rect.width}px`;
+    page.style.height = `${rect.height}px`;
   }
 
   function suppressOfficialNavigationSelection() {
@@ -1045,6 +1073,20 @@
 
   function mutationsTouchSettings(records) {
     return Array.from(records || []).some((record) => {
+      if (record.type === "attributes") {
+        if (!active) return false;
+        // 复用现有观察器，只响应本页导航祖先、正文盒子和键盘状态，忽略正文内高频样式变化。
+        if (record.target === document.documentElement) {
+          return ["data-opencodex-mobile-keyboard-visible", "data-opencodex-ios-keyboard-visible"].includes(record.attributeName);
+        }
+        const nav = navigationItem?.closest("nav");
+        const frame = nav?.closest("[data-app-shell-frame]");
+        if (!frame || !frame.contains(record.target)) return false;
+        return record.target.contains(nav) || (
+          record.target.matches?.("[data-app-shell-main-surface]") &&
+          record.target.closest("[data-app-shell-frame]") === frame
+        );
+      }
       if (record.type !== "childList") return false;
       if (nodeTouchesSettings(record.target)) return true;
       if (active && page?.parentElement?.contains?.(record.target)) return true;
@@ -1066,7 +1108,12 @@
       disposeObservation = adapterHost.dom.observe({
         key: {},
         root: document.documentElement,
-        options: { childList: true, subtree: true },
+        options: {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["class", "style", "data-app-shell-sidebar-open", "data-app-shell-page-sidebar", "data-opencodex-mobile-keyboard-visible", "data-opencodex-ios-keyboard-visible"],
+        },
         callback: handleMutations,
       });
     };
@@ -1085,8 +1132,13 @@
       },
     });
     adapterHost.events.observe({ key: {}, target: window, type: "resize", callback: () => {
-      if (active) positionPage();
+      if (active) scheduleSync();
     } });
+    if (window.visualViewport) {
+      adapterHost.events.observe({ key: {}, target: window.visualViewport, type: "resize", callback: () => {
+        if (active) scheduleSync();
+      } });
+    }
     adapterHost.events.observe({ key: {}, target: document, type: "visibilitychange", callback: () => {
       if (document.visibilityState === "hidden") {
         // 自定义设置页在后台不需要跟随官方 DOM，回前台时一次全量同步即可恢复挂载。
