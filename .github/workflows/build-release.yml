@@ -198,8 +198,10 @@ jobs:
         include:
           - arch: x64
             runner: ubuntu-24.04
+            deb_arch: amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
+            deb_arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout repository
@@ -238,12 +240,23 @@ jobs:
           # Android/chroot 环境优先使用无需 FUSE 的压缩包；仅后续 release job 可以发布。
           pnpm exec electron-builder --linux deb tar.gz --${{ matrix.arch }} --publish never
 
+      - name: Verify both Linux package formats
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          # DEB 采用 Debian 的 amd64 名称，压缩包仍使用 Electron 的 x64；两种产物都必须存在。
+          version="$(node --print "require('./package.json').version")"
+          test -s "release/OpenCodex-${version}-linux-${DEB_ARCH}.deb"
+          test -s "release/OpenCodex-${version}-linux-${BUILD_ARCH}.tar.gz"
+          test "$(dpkg-deb --field "release/OpenCodex-${version}-linux-${DEB_ARCH}.deb" Architecture)" = "$DEB_ARCH"
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v6
         with:
           name: opencodex-linux-${{ matrix.arch }}-${{ github.sha }}
           path: |
-            release/*-linux-${{ matrix.arch }}.deb
+            release/*-linux-${{ matrix.deb_arch }}.deb
             release/*-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
@@ -288,7 +301,10 @@ jobs:
           # 不能仅检查数量，两个同架构包也不算完整的 Linux 发布。
           for arch in x64 arm64; do
             for ext in deb tar.gz; do
-              expected="release-assets/OpenCodex-${RELEASE_VERSION}-linux-${arch}.${ext}"
+              # DEB 的架构名由打包器转换为 Debian 标准，不能按 tar.gz 的 x64 名称寻找。
+              asset_arch="$arch"
+              if [[ "$ext" == "deb" && "$arch" == "x64" ]]; then asset_arch=amd64; fi
+              expected="release-assets/OpenCodex-${RELEASE_VERSION}-linux-${asset_arch}.${ext}"
               if [[ ! -f "$expected" ]]; then
                 echo "Missing Linux asset: $expected" >&2
                 exit 1

@@ -73,9 +73,8 @@ test("Linux CI builds and tests natively on x64 and ARM64 before artifact upload
   for (const name of linuxTests) assert.ok(linux.includes(`gateway/test/${name}.test.cjs`));
   assert.doesNotMatch(linux, /pnpm\s+(?:run\s+)?test\b/);
   assert.match(linux, /electron-builder --linux deb tar\.gz --\$\{\{ matrix\.arch \}\} --publish never/);
-  for (const extension of ["deb", "tar.gz"]) {
-    assert.ok(linux.includes(`release/*-linux-\${{ matrix.arch }}.${extension}`));
-  }
+  assert.ok(linux.includes("release/*-linux-${{ matrix.deb_arch }}.deb"));
+  assert.ok(linux.includes("release/*-linux-${{ matrix.arch }}.tar.gz"));
   assert.match(linux, /name:\s*opencodex-linux-\$\{\{ matrix\.arch \}\}-\$\{\{ github\.sha \}\}/);
 });
 
@@ -87,8 +86,29 @@ test("Draft release waits for Linux and checks both architectures and formats", 
   assert.ok(release.includes("${#tar_files[@]} != 2"));
   assert.match(release, /for arch in x64 arm64/);
   assert.match(release, /for ext in deb tar\.gz/);
-  assert.ok(release.includes("OpenCodex-${RELEASE_VERSION}-linux-${arch}.${ext}"));
+  assert.ok(release.includes('if [[ "$ext" == "deb" && "$arch" == "x64" ]]; then asset_arch=amd64; fi'));
+  assert.ok(release.includes("OpenCodex-${RELEASE_VERSION}-linux-${asset_arch}.${ext}"));
   const assets = release.match(/^\s*assets=\(([^\r\n]*)\)/m)?.[1];
   assert.ok(assets?.includes("release-assets/*-linux-*.deb"));
   assert.ok(assets?.includes("release-assets/*-linux-*.tar.gz"));
+});
+
+test("Linux uploads include the real Debian filename and verify both package formats", () => {
+  const linux = workflowJob("build-linux");
+  // 用打包器实际生成的文件名检验上传路径，防止仅成功上传 tar.gz 却遗漏 DEB。
+  const matrix = [...linux.matchAll(/- arch: (\w+)\s+runner: [\w.-]+\s+deb_arch: (\w+)/g)];
+  assert.equal(matrix.length, 2);
+  const uploadPaths = linux.match(/path: \|\r?\n((?: +release\/[^\r\n]+\r?\n)+)/)?.[1].trim().split(/\r?\n/).map((line) => line.trim());
+  assert.ok(uploadPaths);
+  for (const [, arch, debArch] of matrix) {
+    const patterns = uploadPaths.map((item) => item.replace("${{ matrix.arch }}", arch).replace("${{ matrix.deb_arch }}", debArch));
+    const debName = arch === "x64" ? "amd64" : "arm64";
+    for (const filename of [`release/OpenCodex-2.1.0-linux-${debName}.deb`, `release/OpenCodex-2.1.0-linux-${arch}.tar.gz`]) {
+      assert.ok(patterns.some((pattern) => path.matchesGlob(filename, pattern)), `Missing artifact: ${filename}`);
+    }
+  }
+  assert.ok(linux.indexOf("Verify both Linux package formats") < linux.indexOf("Upload Linux artifacts"));
+  assert.ok(linux.includes('test -s "release/OpenCodex-${version}-linux-${DEB_ARCH}.deb"'));
+  assert.ok(linux.includes('test -s "release/OpenCodex-${version}-linux-${BUILD_ARCH}.tar.gz"'));
+  assert.match(linux, /dpkg-deb --field.*Architecture/);
 });
