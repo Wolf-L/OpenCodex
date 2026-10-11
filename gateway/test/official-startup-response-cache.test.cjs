@@ -22,6 +22,17 @@ async function recordFiles(directory) {
   return (await fs.readdir(directory)).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
 }
 
+test("Windows logical directory validation is not confused by MSIX native realpath remapping", { skip: process.platform !== "win32" }, async (t) => {
+  const { cache } = await fixture(t);
+  let nativeCalls = 0;
+  t.mock.method(fs, "realpath", async () => { nativeCalls += 1; return "C:\\virtualized-package-cache"; });
+  await cache.fetch(descriptor(), endpoint, {}, async () => jsonResponse());
+  const response = await cache.fetch(descriptor(), endpoint, {}, async () => { throw Error("Expected saved response"); });
+  assert.equal(response.headers.get("x-opencodex-startup-cache"), "hit");
+  assert.equal(cache.status().writes, 1);
+  assert.equal(nativeCalls, 0);
+});
+
 test("permanent cache survives engine recreation and marks old server data without changing the first response", async (t) => {
   const { cache, config, directory } = await fixture(t);
   let calls = 0;

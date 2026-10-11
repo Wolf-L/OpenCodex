@@ -125,7 +125,11 @@ function createOfficialStartupResponseCache({ directory, buildId, enabled = fals
       }
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Unsafe cache directory");
     }
-    const realRoot = await fsp.realpath(root);
+    // Windows MSIX 可把句柄映射到包的 LocalCache，而逻辑目录并非符号链接。
+    // 与核心目录校验保持一致：使用 JS realpath 保持同一命名空间，仍逐级拒绝真实 junction/符号链接。
+    const realRoot = process.platform === "win32"
+      ? await new Promise((resolve, reject) => fs.realpath(root, (error, value) => error ? reject(error) : resolve(value)))
+      : await fsp.realpath(root);
     const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
     if (normalize(realRoot) !== normalize(root)) throw new Error("Unsafe cache directory");
     if (!scanned) {
