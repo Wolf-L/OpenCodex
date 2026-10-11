@@ -1473,6 +1473,18 @@ test("bundle updates retain exactly the previous backup and restore it", (t) => 
   assert.equal(fs.readdirSync(projectRoot).some((name) => name.includes(".restore-") || name.includes(".tmp-")), false);
 });
 
+test("new optimizer cache version rejects the previous unsupported manifest when automatic scanning is off", (t) => {
+  const { bundleDir, cache, createBundle } = createBackupFixture(t);
+  createBundle(bundleDir, "fixture");
+  const manifestPath = path.join(bundleDir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.equal(cache.reuseWithoutSourceScanBlockReason(manifest), "");
+  // 关闭扫描只锁定官方来源版本，不能继续复用缺失新版适配的旧工作副本。
+  manifest.schemaVersion = MANIFEST_SCHEMA_VERSION - 1;
+  manifest.runtimeOptimizations = { nativePetPrewarm: "unsupported-layout" };
+  assert.match(cache.reuseWithoutSourceScanBlockReason(manifest), /缓存清单版本变化/);
+});
+
 test("failed bundle replacement preserves current bundle and previous backup", (t) => {
   const { projectRoot, bundleDir, cache, createBundle, versionAt } = createBackupFixture(t);
   createBundle(bundleDir, "2");

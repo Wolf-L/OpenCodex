@@ -218,9 +218,12 @@ function pointSummaryStatus(state) {
 }
 
 function groupDisplayStatus(pointSnapshots) {
-  const statuses = pointSnapshots.map((point) => point.status);
-  if (statuses.length === 0) return "pending";
-  if (statuses.every((status) => status === "disabled")) return "disabled";
+  if (pointSnapshots.length === 0) return "pending";
+  // 整点停用或全部贡献不适用不代表降级；部分贡献停用仍参与汇总，不能掩盖其它贡献异常。
+  const statuses = pointSnapshots.filter((point) => !(point.status === "disabled" && (
+    point.explicitlyDisabled || point.contributions.every((item) => item.application === "disabled")
+  ))).map((point) => point.status);
+  if (statuses.length === 0) return "disabled";
   if (statuses.includes("unavailable")) return "unavailable";
   if (statuses.includes("degraded") || statuses.includes("disabled")) return "degraded";
   if (statuses.includes("pending")) return "pending";
@@ -1057,20 +1060,8 @@ function createCompatibilityRegistry({ getRuntimeIdentity = () => ({}), now = ()
       kind: adapter.kind,
       dependencies: [...adapter.dependencies],
     }));
-    const pointStatuses = pointItems.map((point) => point.status);
     // 分类组只是展示索引；总体状态必须只由修改点计算，避免同一失败被重复聚合。
-    const statuses = pointStatuses;
-    const status = statuses.length > 0 && statuses.every((pointStatus) => pointStatus === "disabled")
-      ? "disabled"
-      : statuses.includes("unavailable")
-      ? "unavailable"
-      : statuses.includes("degraded") || statuses.includes("disabled")
-        ? "degraded"
-        : statuses.includes("pending")
-          ? "pending"
-          : statuses.includes("ready")
-            ? "ready"
-            : "healthy";
+    const status = pointItems.length > 0 ? groupDisplayStatus(pointItems) : "healthy";
     return {
       schemaVersion: COMPATIBILITY_REPORT_SCHEMA_VERSION,
       generatedAt: timestamp(),

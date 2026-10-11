@@ -297,6 +297,78 @@ test("display groups derive status without changing point lifecycle", () => {
   assert.equal(snapshot.status, "disabled");
 });
 
+test("fully disabled points do not degrade other point states in live summaries", () => {
+  for (const expected of ["pending", "ready", "healthy", "degraded", "unavailable"]) {
+    const registry = createCompatibilityRegistry();
+    const active = registerTestPoint(registry, "gateway.runtime.group.enabled");
+    const disabled = registerTestPoint(registry, "gateway.runtime.group.disabled");
+    registry.disablePoint(disabled, "Not applicable on the current platform");
+    if (expected === "unavailable") {
+      registry.beginResolution(active, { locatorRevision: "v1", adapterId: "adapter.test" })
+        .fail(new Error("real failure"));
+    } else if (expected !== "pending") {
+      const { handle } = resolveTestPoint(registry, active);
+      handle.apply();
+      handle.verify();
+      if (expected === "healthy") handle.recordHit();
+      if (expected === "degraded") registry.useFallback(active, "real fallback");
+    }
+    const snapshot = registry.snapshot();
+    assert.equal(snapshot.status, expected);
+    assert.equal(snapshot.groups.find((group) => group.id === "test-group").status, expected);
+    assert.equal(snapshot.points.find((point) => point.id === disabled).status, "disabled");
+  }
+});
+
+function ingestDisabledTestContributions(registry, id, extra = []) {
+  // 模拟平台不适用的内核报告；这不同于 Registry 的整点主动停用标记。
+  registry.ingestKernelPoint(id, {
+    id,
+    groupId: "test-group",
+    directAdapterIds: ["adapter.test"],
+    adapterChainIds: ["adapter.test"],
+    contributions: [{ application: "disabled", exercise: "disabled" }, ...extra].map((item, index) => ({
+      id: `${id}::${index}`,
+      directAdapterId: "adapter.test",
+      adapterId: "adapter.test",
+      adapterChainIds: ["adapter.test"],
+      location: "resolved",
+      application: "applied",
+      verification: "not-required",
+      activation: "inactive",
+      exercise: "not-exercised",
+      ...item,
+    })),
+  });
+}
+
+test("platform-disabled kernel contributions stay visible without a false degradation", () => {
+  const registry = createCompatibilityRegistry();
+  const id = registerTestPoint(registry, "static.cache.group.platform");
+  ingestDisabledTestContributions(registry, id);
+  assert.equal(registry.point(id).explicitlyDisabled, false);
+  assert.equal(registry.snapshot().status, "disabled");
+  const active = registerTestPoint(registry, "gateway.runtime.group.enabled");
+  const { handle } = resolveTestPoint(registry, active);
+  handle.apply();
+  handle.verify();
+  const snapshot = registry.snapshot();
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.groups.find((group) => group.id === "test-group").status, "ready");
+  assert.equal(snapshot.points.find((point) => point.id === id).status, "disabled");
+});
+
+test("a disabled contribution cannot erase another contribution failure from summaries", () => {
+  const registry = createCompatibilityRegistry();
+  const id = registerTestPoint(registry, "gateway.runtime.group.partial");
+  ingestDisabledTestContributions(registry, id, [{ location: "failed", reason: "real failure" }]);
+  // 旧的单点阶段聚合可能显示 disabled，分组和总体仍必须保留异常提示。
+  const snapshot = registry.snapshot();
+  assert.equal(snapshot.status, "degraded");
+  assert.equal(snapshot.groups.find((group) => group.id === "test-group").status, "degraded");
+  assert.equal(snapshot.points[0].contributions.some((item) => item.location === "failed"), true);
+});
+
 test("runtime identity changes reset point state and invalidate old handles", () => {
   let identity = { version: "26.8", build: "1", bundleHash: "bundle-a" };
   const registry = createCompatibilityRegistry({ getRuntimeIdentity: () => identity });

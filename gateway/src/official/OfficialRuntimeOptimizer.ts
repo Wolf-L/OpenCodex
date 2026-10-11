@@ -25,6 +25,11 @@ const NATIVE_PET_PREWARM_PATTERN =
 const NATIVE_PET_RESTORE_MARKER = "electron-avatar-overlay-open";
 const NATIVE_PET_RESTORE_PATTERN =
   /async restoreOpenState\(([A-Za-z_$][\w$]*)\)\{this\.globalState\.get\(`electron-avatar-overlay-open`\)===!0&&await this\.open\(\1\)\}/g;
+// OWL 新版同时考虑刘海模式与按需可见性；必须保护整个 OR 条件，不能只拦截持久状态分支。
+const AVATAR_OVERLAY_RESTORE_PATTERN =
+  /async restoreOpenState\(([A-Za-z_$][\w$]*)\)\{\(this\.isNotchEnabled\|\|this\.visibilityMode!==`on-demand`&&this\.globalState\.get\(`electron-avatar-overlay-open`\)===!0\)&&await this\.open\(\1\)\}/g;
+const OPTIMIZED_AVATAR_OVERLAY_RESTORE_PATTERN =
+  /async restoreOpenState\(([A-Za-z_$][\w$]*)\)\{if\(process\.env\.OPENCODEX_GATEWAY_HIDDEN_RUNTIME===`1`\)return;\(this\.isNotchEnabled\|\|this\.visibilityMode!==`on-demand`&&this\.globalState\.get\(`electron-avatar-overlay-open`\)===!0\)&&await this\.open\(\1\)\}/g;
 const OPTIMIZED_NATIVE_PET_FACTORY_PATTERN =
   /function [A-Za-z_$][\w$]*\(\{devAppPath:[A-Za-z_$][\w$]*,platform:([A-Za-z_$][\w$]*)=process\.platform\}=\{\}\)\{if\(\1!==`darwin`\|\|process\.env\.OPENCODEX_GATEWAY_HIDDEN_RUNTIME===`1`\)return null;/g;
 const AVATAR_OVERLAY_ENSURE_WINDOW_PATTERN =
@@ -40,6 +45,11 @@ const MAC_PUSH_REGISTRATION_PATTERN =
   /process\.platform!==`darwin`\|\|([A-Za-z_$][\w$]*)!==([A-Za-z_$][\w$]*)\.[A-Za-z_$][\w$]*\.Prod\|\|([A-Za-z_$][\w$]*)\(\{appServerClient:/g;
 const OPTIMIZED_MAC_PUSH_REGISTRATION_PATTERN =
   /process\.platform!==`darwin`\|\|process\.env\.OPENCODEX_GATEWAY_HIDDEN_RUNTIME===`1`\|\|([A-Za-z_$][\w$]*)!==([A-Za-z_$][\w$]*)\.[A-Za-z_$][\w$]*\.Prod\|\|([A-Za-z_$][\w$]*)\(\{appServerClient:/g;
+// 新版压缩器改用正向 AND；保留旧 OR 定位器并独立校验，避免改变平台/发行通道判断。
+const MAC_PUSH_REGISTRATION_AND_PATTERN =
+  /process\.platform===`darwin`&&([A-Za-z_$][\w$]*)===([A-Za-z_$][\w$]*)\.[A-Za-z_$][\w$]*\.Prod&&([A-Za-z_$][\w$]*)\(\{appServerClient:/g;
+const OPTIMIZED_MAC_PUSH_REGISTRATION_AND_PATTERN =
+  /process\.platform===`darwin`&&process\.env\.OPENCODEX_GATEWAY_HIDDEN_RUNTIME!==`1`&&([A-Za-z_$][\w$]*)===([A-Za-z_$][\w$]*)\.[A-Za-z_$][\w$]*\.Prod&&([A-Za-z_$][\w$]*)\(\{appServerClient:/g;
 const GIT_ORIGIN_RESOLVER_PATTERN =
   /async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=await \3\.getStableMetadata\(\2,\4\);if\(\5==null\)return null;let ([A-Za-z_$][\w$]*)=\3\.getWorktreeRepositoryForRoot\(\5\.root,\4\),([A-Za-z_$][\w$]*)=await \3\.getRepoRepository\(\2,\4\);return \7==null\?null:\{dir:\2,root:\6\.root,originUrl:await \7\.getOriginUrl\(\),commonDir:\7\.getCommonDir\(\)\}\}/g;
 const GIT_LOCAL_PREFILTER_PATTERN =
@@ -48,6 +58,12 @@ const GIT_BACKGROUND_TIMEOUT_PATTERN =
   /async function (?<functionName>[A-Za-z_$][\w$]*)\((?<cwdName>[A-Za-z_$][\w$]*),(?<argsName>[A-Za-z_$][\w$]*),(?<hostName>[A-Za-z_$][\w$]*),(?<optionsName>[A-Za-z_$][\w$]*)=\{\}\)\{let\{[^}]{0,1400}timeoutMs:(?<timeoutOptionName>[A-Za-z_$][\w$]*)[^}]{0,1400}\}=\k<optionsName>,[^;]{1,2400}?(?<timeoutName>[A-Za-z_$][\w$]*)=Object\.is\(\k<timeoutOptionName>,null\)\?void 0:\k<timeoutOptionName>\?\?\([^;]{1,400}?\),(?<idName>[A-Za-z_$][\w$]*)=crypto\.randomUUID\(\)\.slice\(0,8\),(?<startedName>[A-Za-z_$][\w$]*)=Date\.now\(\),(?<deadlineName>[A-Za-z_$][\w$]*)=\k<timeoutName>==null\?void 0:\k<startedName>\+\k<timeoutName>,(?<contextName>[A-Za-z_$][\w$]*)=(?<contextFactoryName>[A-Za-z_$][\w$]*)\(\),(?<metadataKeyName>[A-Za-z_$][\w$]*)=[^;]{1,1200}?\k<contextName>\.metadataCommonDir[^;]{1,1200}?;[\s\S]{0,18000}?let (?<timerName>[A-Za-z_$][\w$]*)=\k<timeoutName>==null\?null:setTimeout/g;
 const WORKTREE_SHELL_ENVIRONMENT_PATTERN =
   /"worktree-shell-environment-config":(async\(\{cwd:([A-Za-z_$][\w$]*),hostId:([A-Za-z_$][\w$]*)\}\)=>\{let [^;]{1,1000};return\{shellEnvironment:[^{}]{1,300}\}\})/g;
+// 只接受已确认的完整委托表达式，保留参数绑定、默认主机与取消信号，不吞掉后续链式调用。
+const WORKTREE_SHELL_ENVIRONMENT_DELEGATE_PATTERN =
+  /"worktree-shell-environment-config":(\(\{cwd:([A-Za-z_$][\w$]*),hostId:([A-Za-z_$][\w$]*),signal:([A-Za-z_$][\w$]*)\}\)=>this\.readWorktreeShellEnvironment\(\2,\3\?\?`local`,\4\))(?=,)/g;
+// 按实际包装后的入口逐个计数，不能用一个缓存标记冒充同一文件内所有接口都已适配。
+const OPTIMIZED_WORKTREE_SHELL_ENVIRONMENT_PATTERN =
+  /"worktree-shell-environment-config":\(\(__opencodexHandler,__opencodexWorktreeShellEnvironmentCache\)=>async\(__opencodexArgs\)=>\{if\(process\.env\.OPENCODEX_GATEWAY_HIDDEN_RUNTIME!==`1`(?:\|\|__opencodexArgs\.signal!=null)?\)return __opencodexHandler\(__opencodexArgs\);/g;
 
 function matchCount(source: string, pattern: RegExp): number {
   // 所有模式都带全局标记；match 返回完整命中列表，不复用可变 lastIndex。
@@ -114,7 +130,9 @@ class OfficialRuntimeOptimizer {
         nativePetRestoreMarkerCount += restoreMarkerCount;
         const recognizedRestoreCount =
           matchCount(source, NATIVE_PET_RESTORE_PATTERN) +
-          matchCount(source, OPTIMIZED_NATIVE_PET_RESTORE_PATTERN);
+          matchCount(source, OPTIMIZED_NATIVE_PET_RESTORE_PATTERN) +
+          matchCount(source, AVATAR_OVERLAY_RESTORE_PATTERN) +
+          matchCount(source, OPTIMIZED_AVATAR_OVERLAY_RESTORE_PATTERN);
         // 一个 chunk 可能同时打包多份 Native pet 实现；只识别其中一份时仍必须报告布局不完整。
         const factorySupported = recognizedFactoryCount >= markerCount;
         const prewarmSupported = recognizedPrewarmCount >= markerCount;
@@ -160,12 +178,16 @@ class OfficialRuntimeOptimizer {
         const markerCount = source.split(MAC_PUSH_LOG_MARKER).length - 1;
         const recognizedCount =
           matchCount(source, MAC_PUSH_REGISTRATION_PATTERN) +
-          matchCount(source, OPTIMIZED_MAC_PUSH_REGISTRATION_PATTERN);
+          matchCount(source, OPTIMIZED_MAC_PUSH_REGISTRATION_PATTERN) +
+          matchCount(source, MAC_PUSH_REGISTRATION_AND_PATTERN) +
+          matchCount(source, OPTIMIZED_MAC_PUSH_REGISTRATION_AND_PATTERN);
         // 候选必须与标记一一对应；额外候选同样属于歧义，不能改写无法确认的入口。
         const patchedPush = this.patchMacPushRegistration(optimized);
         const supported = recognizedCount === markerCount &&
-          matchCount(patchedPush, OPTIMIZED_MAC_PUSH_REGISTRATION_PATTERN) === markerCount &&
-          matchCount(patchedPush, MAC_PUSH_REGISTRATION_PATTERN) === 0;
+          matchCount(patchedPush, OPTIMIZED_MAC_PUSH_REGISTRATION_PATTERN) +
+            matchCount(patchedPush, OPTIMIZED_MAC_PUSH_REGISTRATION_AND_PATTERN) === markerCount &&
+          matchCount(patchedPush, MAC_PUSH_REGISTRATION_PATTERN) +
+            matchCount(patchedPush, MAC_PUSH_REGISTRATION_AND_PATTERN) === 0;
         if (supported) macPushReadyFileCount += 1;
         else unsupportedParts.push("mac-push");
         optimized = this.runPatchPoint({
@@ -241,7 +263,8 @@ class OfficialRuntimeOptimizer {
         const markerCount = source.split(WORKTREE_SHELL_ENVIRONMENT_MARKER).length - 1;
         const recognizedCount =
           matchCount(source, WORKTREE_SHELL_ENVIRONMENT_PATTERN) +
-          (source.includes(WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER) ? markerCount : 0);
+          matchCount(source, WORKTREE_SHELL_ENVIRONMENT_DELEGATE_PATTERN) +
+          matchCount(source, OPTIMIZED_WORKTREE_SHELL_ENVIRONMENT_PATTERN);
         const supported = recognizedCount >= markerCount;
         if (supported) worktreeShellEnvironmentReadyFileCount += 1;
         else unsupportedParts.push("worktree-shell-environment");
@@ -418,6 +441,12 @@ class OfficialRuntimeOptimizer {
         // 隐藏 profile 可能继承上次“宠物已打开”的持久状态；启动阶段不得因此创建第二个不可见 renderer。
         `process.env.${GATEWAY_RUNTIME_ENV}!==\`1\`&&this.globalState.get(\`electron-avatar-overlay-open\`)===!0&&`
       )
+    ).replace(AVATAR_OVERLAY_RESTORE_PATTERN, (match, argument) =>
+      match.replace(
+        `async restoreOpenState(${argument}){`,
+        // 提前返回也阻止刘海模式打开窗口；非隐藏官方进程的短路顺序与状态读取保持原样。
+        `async restoreOpenState(${argument}){if(process.env.${GATEWAY_RUNTIME_ENV}===\`1\`)return;`
+      )
     );
   }
 
@@ -427,6 +456,11 @@ class OfficialRuntimeOptimizer {
         "process.platform!==`darwin`||",
         // 隐藏 runner 没有官方签名 entitlement，注册必然失败；浏览器通知继续走已有 WS 通知桥。
         `process.platform!==\`darwin\`||process.env.${GATEWAY_RUNTIME_ENV}===\`1\`||`
+      )
+    ).replace(MAC_PUSH_REGISTRATION_AND_PATTERN, (match) =>
+      match.replace(
+        "process.platform===`darwin`&&",
+        `process.platform===\`darwin\`&&process.env.${GATEWAY_RUNTIME_ENV}!==\`1\`&&`
       )
     );
   }
@@ -603,15 +637,16 @@ class OfficialRuntimeOptimizer {
   }
 
   private patchWorktreeShellEnvironment(source: string): string {
-    if (source.includes(WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER)) return source;
-    return source.replace(WORKTREE_SHELL_ENVIRONMENT_PATTERN, (_match, handlerSource) => {
+    // 已包装入口不再命中原始定位器；仍继续修补同文件里尚未包装的可识别入口。
+    const wrapHandler = (_match, handlerSource) => {
       /**
        * 多个浏览器页会同时读取同一工作区的 shell 环境。复用完全相同的在途请求；失效挂载
        * 超过两秒仍未响应时先返回官方支持的 null fallback，底层成功后会自动刷新短期缓存。
        */
       return [
         `"worktree-shell-environment-config":((__opencodexHandler,${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER})=>async(__opencodexArgs)=>{`,
-        `if(process.env.${GATEWAY_RUNTIME_ENV}!==\`1\`)return __opencodexHandler(__opencodexArgs);`,
+        // 带取消信号的请求不能共享 Promise 或命中其它请求的缓存，否则会串扰独立取消。
+        `if(process.env.${GATEWAY_RUNTIME_ENV}!==\`1\`||__opencodexArgs.signal!=null)return __opencodexHandler(__opencodexArgs);`,
         `let __opencodexKey=JSON.stringify([__opencodexArgs.hostId,__opencodexArgs.cwd]),__opencodexNow=Date.now(),__opencodexCached=${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER}.get(__opencodexKey);`,
         `if(__opencodexCached!=null&&(__opencodexCached.pending||__opencodexCached.expiresAt>__opencodexNow))return __opencodexCached.promise;`,
         `for(let[__opencodexOldKey,__opencodexOld]of ${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER})if(!__opencodexOld.pending&&__opencodexOld.expiresAt<=__opencodexNow)${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER}.delete(__opencodexOldKey);`,
@@ -620,7 +655,10 @@ class OfficialRuntimeOptimizer {
         `__opencodexEntry.promise=__opencodexPromise,${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER}.set(__opencodexKey,__opencodexEntry),__opencodexRaw.then(__opencodexValue=>{clearTimeout(__opencodexEntry.timer),__opencodexEntry.pending=!1,__opencodexEntry.expiresAt=Date.now()+5e3,__opencodexEntry.promise=Promise.resolve(__opencodexValue)},()=>{clearTimeout(__opencodexEntry.timer);if(${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER}.get(__opencodexKey)!==__opencodexEntry)return;if(__opencodexEntry.timedOut)__opencodexEntry.pending=!1,__opencodexEntry.expiresAt=Date.now()+6e4,__opencodexEntry.promise=Promise.resolve(__opencodexFallback);else ${WORKTREE_SHELL_ENVIRONMENT_CACHE_MARKER}.delete(__opencodexKey)});`,
         `return __opencodexPromise})(${handlerSource},new Map)`,
       ].join("");
-    });
+    };
+    return source
+      .replace(WORKTREE_SHELL_ENVIRONMENT_PATTERN, wrapHandler)
+      .replace(WORKTREE_SHELL_ENVIRONMENT_DELEGATE_PATTERN, wrapHandler);
   }
 }
 
