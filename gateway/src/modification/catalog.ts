@@ -334,6 +334,7 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("gateway.runtime.chromium.hidden-services", "关闭隐藏 Runtime 无效后台服务", "official-runtime", G.backgroundEfficiency, A.officialEnvironment),
   point("gateway.runtime.chromium.gcm-profile", "隔离隐藏 Runtime 的 GCM Profile", "official-runtime", G.notifications, A.officialEnvironment),
   point("gateway.runtime.node.electron-module-loader", "包装官方 electron 模块导出", "official-runtime", G.gatewayRuntime, A.electronApi),
+  point("gateway.runtime.network.startup-response-cache", "永久缓存已成功的官方启动响应", "official-runtime", G.startupHistory, A.officialRuntime),
   point("gateway.runtime.electron.notification", "替换官方 Notification", "official-runtime", G.notifications, A.electronApi),
   point("gateway.runtime.electron.tray", "替换官方 Tray", "official-runtime", G.notifications, A.electronApi),
   point("gateway.runtime.electron.ipc-main", "捕获官方 ipcMain 注册", "official-runtime", G.rendererCore, A.gatewayIpc),

@@ -40,6 +40,10 @@ const {
   officialElectronModuleHookStatus,
 } = require("../electron/official-electron-module-hook.cjs");
 const { hiddenTrayHookStatus, installOfficialTrayHook } = require("../electron/official-tray-hook.cjs");
+const {
+  installOfficialStartupCacheHook,
+  officialStartupCacheStatus,
+} = require("../electron/official-startup-cache-hook.cjs");
 const { createOfficialLiveObserver } = require("./official-live-observer.cjs");
 const {
   gateway: gatewayPointRefs,
@@ -221,6 +225,23 @@ function validateInstalledRuntimeCompatibilityPoints() {
       );
       runtimeCompatibility.modifications.useFallback(point, "Official runtime behavior");
     } catch {}
+  }
+}
+
+function syncStartupCacheCompatibility(state) {
+  if (!runtimeCompatibility?.modifications) return;
+  const point = gatewayPointRefs.startupResponseCache;
+  try {
+    ensureRuntimeModificationPoint(point);
+    if (!state.enabled) {
+      // 永久快照为本机显式选择，未开启不是错误，也不伪装成已有缓存命中。
+      runtimeCompatibility.modifications.setEnabled(point, false, "Local startup response cache is not enabled");
+    } else if (!state.supported && state.reason !== "awaiting-source") {
+      runtimeCompatibility.modifications.locationFailure(point, "unsupported", new Error(state.reason));
+      runtimeCompatibility.modifications.useFallback(point, "Official network transport");
+    }
+  } catch {
+    // 诊断与真实 transport 分离；兼容性报告异常不得改变账号或网络行为。
   }
 }
 
@@ -2461,6 +2482,7 @@ function buildGatewayStatus() {
     officialElectronModule: officialElectronModuleHookStatus(),
     officialNotification: officialNotificationHookStatus(),
     officialTray: hiddenTrayHookStatus(),
+    officialStartupCache: officialStartupCacheStatus(),
     compatibility: compatibility || null,
     i18n: getI18nSnapshot(),
     workspaceRoots: workspaceRootsFromEnv(),
@@ -2611,6 +2633,17 @@ function startOfficialRuntime(options = {}) {
     gatewayPointRefs.singleInstance,
     patchOfficialAppSingleton
   );
+
+  const startupCache = runRuntimeCompatibilityCapability(
+    gatewayPointRefs.startupResponseCache,
+    () => installOfficialStartupCacheHook({
+      bundle: officialBundle,
+      runtimeDir: RUNTIME_DIR,
+      onHit: () => recordRuntimeCompatibilityHit(gatewayPointRefs.startupResponseCache),
+      onState: syncStartupCacheCompatibility,
+    })
+  );
+  syncStartupCacheCompatibility(startupCache);
 
   // 官方 bootstrap 负责注册 IPC handler、创建隐藏 BrowserWindow 和启动自己的 app-server 连接。
   require(officialBundle.bootstrapPath);
