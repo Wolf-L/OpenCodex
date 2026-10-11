@@ -6,6 +6,7 @@ const path = require("node:path");
 const SCHEMA_VERSION = 1;
 const STARTUP_RESPONSE_CACHE_KINDS = Object.freeze([
   "accounts",
+  "account-profile",
   "workspace-settings",
   "workspace-policy",
   "workspace-policy-acknowledge",

@@ -22,6 +22,8 @@
 
 - GET `/backend-api/wham/accounts/check`
 - GET `/backend-api/accounts/check/v4-2023-04-27`
+- GET `/backend-api/me`（当前用户资料）
+- GET `/backend-api/profiles/me`（当前账号个人资料）
 - GET `/backend-api/accounts/{id}/settings`
 - GET `/backend-api/accounts/{id}/workspace_policy`
 - GET `/backend-api/accounts/{id}/workspace_policy/acknowledge`

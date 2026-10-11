@@ -20,6 +20,7 @@ const copy = (value) => JSON.parse(JSON.stringify(value));
 test("only reviewed startup GETs and read-only bootstrap POSTs are candidates", () => {
   for (const [pathname, kind] of [
     ["/wham/accounts/check", "accounts"], ["/accounts/check/v4-2023-04-27", "accounts"],
+    ["/me", "account-profile"], ["/profiles/me", "account-profile"],
     ["/accounts/id/settings", "workspace-settings"], ["/accounts/id/workspace_policy", "workspace-policy"],
     ["/accounts/id/workspace_policy/acknowledge", "workspace-policy-acknowledge"],
   ]) {
@@ -63,6 +64,39 @@ test("ambiguous URLs, methods, bodies and malformed account segments bypass", ()
   assert.equal(classify(url, { method: "HEAD" }), null);
   assert.equal(classify(url, { body: "unexpected" }), null);
   assert.equal(classify(url).validateBody({ error: "failed" }), false);
+});
+
+test("own profile reads retain identity isolation and exclude edits, other users and auth data", () => {
+  for (const [pathname, body] of [["/me", { id: "synthetic-user", name: "Synthetic" }], ["/profiles/me", { profile_details: { display_name: "Synthetic" } }]]) {
+    const url = `https://chatgpt.com/backend-api${pathname}`;
+    const descriptor = classify(url);
+    assert.equal(descriptor.validateBody(body), true);
+    for (const invalid of [{}, { ...body, error: "failed" }, { ...body, access_token: "synthetic" }]) assert.equal(descriptor.validateBody(invalid), false);
+    for (const method of ["POST", "PATCH", "PUT", "DELETE"]) assert.equal(classify(url, { method }), null);
+    assert.equal(classify(url, {}, { namespace: "desktop", principal: null }), null);
+    assert.notDeepEqual(descriptor.keyParts, classify(url, {}, { namespace: "desktop", principal: { ...principal, userId: "another" } }).keyParts);
+  }
+  assert.equal(classify("https://chatgpt.com/backend-api/profiles/another-user"), null);
+  assert.equal(classify("https://chatgpt.com/backend-api/me/extra"), null);
+});
+
+test("own profile snapshots survive restart and replay exact genuine bytes", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "startup-profile-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const first = createOfficialStartupResponseCache({ directory, enabled: true, buildId: "synthetic" });
+  const fixtures = [["/me", '{"id":"synthetic-user","name":"Test 名称"}'], ["/profiles/me", '{"profile_details":{"display_name":"Test 名称"}}']];
+  for (const [pathname, saved] of fixtures) {
+    const url = `https://chatgpt.com/backend-api${pathname}`;
+    await first.fetch(classify(url), url, {}, async () => new Response(saved, { headers: { "content-type": "application/json" } }));
+  }
+  const restarted = createOfficialStartupResponseCache({ directory, enabled: true, buildId: "synthetic" });
+  for (const [pathname, saved] of fixtures) {
+    const url = `https://chatgpt.com/backend-api${pathname}`;
+    const response = await restarted.fetch(classify(url), url, {}, async () => { throw new Error("must not contact upstream"); });
+    assert.equal(await response.text(), saved);
+    assert.equal(response.headers.get("x-opencodex-startup-cache"), "hit");
+  }
+  assert.equal(restarted.status().families["account-profile"].hits, 2);
 });
 
 test("bootstrap pins the real snapshot and ignores only app_session_id in request key", () => {

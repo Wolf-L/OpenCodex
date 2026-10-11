@@ -90,6 +90,7 @@ function classifyStartupRequest(input, init = {}, context = {}) {
       if (!principal) return null;
       let kind = null;
       if (method === "GET" && ["/backend-api/wham/accounts/check", "/backend-api/accounts/check/v4-2023-04-27"].includes(url.pathname)) kind = "accounts";
+      if (method === "GET" && ["/backend-api/me", "/backend-api/profiles/me"].includes(url.pathname)) kind = "account-profile";
       if (method === "GET") {
         const match = /^\/backend-api\/accounts\/([^/]+)\/(settings|workspace_policy(?:\/acknowledge)?)$/.exec(url.pathname);
         if (match) {
@@ -100,6 +101,12 @@ function classifyStartupRequest(input, init = {}, context = {}) {
       }
       if (kind) {
         if (init.body != null || (typeof input === "object" && input?.body != null)) return null;
+        // 侧栏另行读取用户资料；仅保存这两个精确 GET 的真实结构，资料编辑和其他用户资料仍走原服务。
+        if (kind === "account-profile") return {
+          kind, keyParts: base,
+          validateBody: (body) => accountBody(body) && !containsSecret(body)
+            && (url.pathname === "/backend-api/me" ? nonempty(body.id) : object(body.profile_details)),
+        };
         return { kind, keyParts: base, validateBody: accountBody };
       }
       if (method !== "POST" || url.pathname !== "/backend-api/wham/statsig/bootstrap") return null;
