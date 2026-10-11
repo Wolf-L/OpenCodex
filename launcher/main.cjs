@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../gateway/runner/index.cjs");
+const { linuxRuntimeArgs } = require("../gateway/runner/linux-runtime.cjs");
 const { createCompatibilityService } = require("../gateway/runtime/compatibility/service.cjs");
 const { runner: runnerPoints } = require("../gateway/runtime/modification/point-refs.cjs");
 const { createHostModificationRuntime } = require("../gateway/runtime/modification/production-runtime.cjs");
@@ -853,7 +854,10 @@ async function startGatewayOnce() {
   appendLog(`\n[launcher] starting gateway ${gatewayState.listenUrl} at ${gatewayState.startedAt}\n`);
 
   let officialRuntime;
+  let linuxArgs;
   try {
+    // 与命令行入口共享显式 Linux 开关，安全警告同时写入 Launcher 日志。
+    linuxArgs = linuxRuntimeArgs({ warn: (message) => appendLog(`${message}\n`, { urgent: true }) });
     // gateway 必须运行在官方 Electron ABI 下，否则官方 native addon（例如 better-sqlite3）会随 Codex 升级失配。
     officialRuntime = await prepareOfficialElectronRuntime({
       runtimeDir: paths.runtimeDir,
@@ -882,6 +886,7 @@ async function startGatewayOnce() {
   const officialRuntimeArgs = [
     `--user-data-dir=${officialUserDataDir}`,
     ...hiddenRuntimeGcmCommandLineArgs({ PORT: String(gatewayState.port) }),
+    ...linuxArgs,
   ];
   const childEnv = {
     ...process.env,

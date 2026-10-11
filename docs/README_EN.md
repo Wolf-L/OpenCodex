@@ -41,10 +41,9 @@ Compared with the official option, OpenCodex still has advantages in several usa
 
 ## Requirements
 
-- Node.js environment.
-- pnpm.
-- Legacy Codex Desktop or the new ChatGPT Desktop app with Codex installed locally. It does not need to be running, and it can still be used at the same time.
-- macOS / Windows / Linux (Linux requires command-line startup; see the guide below.)
+- Node.js >=22.12.0 and pnpm 10 for source deployment or development.
+- A locally installed, matching-platform Codex/ChatGPT desktop runtime. It does not need to be running; avoid operating on the same session concurrently with OpenCodex. Linux requires a complete matching-architecture desktop runtime, not only the Codex CLI.
+- macOS / Windows / Linux (Linux ARM64/x64 source deployment is supported; Android-kernel limitations are described in the guide below).
 
 ## How To Use
 
@@ -126,7 +125,9 @@ http://127.0.0.1:3737
 
 ### Linux Usage
 
-No prebuilt launcher is provided for Linux. Command-line usage is recommended. See the [Linux setup guide](LINUX_GUIDE_EN.md).
+For Linux ARM64/x64, especially Kali on an Android kernel, source-based headless deployment is recommended. Use `linux:init`, `linux:doctor`, and `linux:start`; this path defaults to `127.0.0.1:3737`, requires a Web password, and needs neither systemd nor FUSE. See the [Linux deployment guide](LINUX_GUIDE_EN.md) for runtime preparation, Xvfb/KeX, and sandbox limitations.
+
+Linux x64/ARM64 Launcher packaging and native CI are configured, including DEB and tar.gz output. This does not imply that prebuilt releases are already available or that the Android-kernel ARM64 target has been tested. Launcher packages do not bundle the official desktop runtime.
 
 ### Remote Access
 
@@ -138,7 +139,7 @@ OpenCodex itself does not provide a remote access service. If you need remote ac
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | Listen address for command-line gateway startup. |
+| `HOST` | `0.0.0.0` | Generic command-line gateway listen address; the linux:start deployment entry defaults to 127.0.0.1. |
 | `PORT` | `3737` | Listen port for command-line gateway startup. |
 | `OPENCODEX_HOST` | `127.0.0.1` | Default listen address used when the Launcher starts the gateway for the first time. |
 | `OPENCODEX_PORT` | Random available port | Default port used when the Launcher starts the gateway for the first time. |
@@ -152,8 +153,8 @@ OpenCodex itself does not provide a remote access service. If you need remote ac
 | `CODEX_WEB_LOCAL_FILE_TOKEN_TTL_MS` | `300000` | Local file preview URL token lifetime, in milliseconds. |
 | `CODEX_DESKTOP_APP_PATH` | Auto scan | Codex/ChatGPT Desktop install path or path containing `app.asar`. |
 | `CODEX_DESKTOP_EXECUTABLE_PATH` | Auto scan | Codex/ChatGPT Desktop Electron executable path override on Windows/Linux. |
-| `CODEX_APP_SERVER_BINARY_PATH` | Auto scan | Codex app-server/CLI executable path override on Windows. |
-| `CODEX_CLI_PATH` | Auto scan | Codex CLI executable path override on Windows. |
+| `CODEX_APP_SERVER_BINARY_PATH` | Auto scan | Codex app-server/CLI executable path override on Windows/Linux; takes precedence over CODEX_CLI_PATH. |
+| `CODEX_CLI_PATH` | Auto scan | Codex CLI executable path override on Windows/Linux. |
 | `CODEX_WEB_RUNTIME_DIR` | `.data/runtime` | Runtime directory for command-line gateway startup; packaged Launcher mode points this to the user data directory. |
 | `CODEX_WEB_OFFICIAL_BUNDLE_DIR` | `.data/cache/codex-official-bundle` | Official bundle extraction cache directory. |
 | `CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE` | `1` | Controls whether official Codex runtime updates are automatically scanned on startup. Set to `0` to prefer reusing the existing cache, scanning only when the cache is missing or unavailable. |

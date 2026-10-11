@@ -58,6 +58,10 @@ class CodexAsarCandidateProvider {
       ]);
     }
     return [
+      // Linux 官方 ChatGPT 与社区重打包目录并存，旧 Codex 路径继续兼容。
+      "/opt/chatgpt",
+      "/opt/ChatGPT",
+      "/opt/codex-desktop",
       "/opt/Codex",
       "/opt/codex",
       "/usr/lib/codex",
@@ -268,6 +272,17 @@ class CodexBinaryLocator {
     installRoot: string;
     resourcesDir: string;
   }): string | null {
+    if (this.platform === "linux") {
+      // 显式指定的 CLI 出错时必须中止，不能悄悄启动另一个版本的 app-server。
+      for (const name of ["CODEX_APP_SERVER_BINARY_PATH", "CODEX_CLI_PATH"]) {
+        const configuredPath = this.env[name]?.trim();
+        if (!configuredPath) continue;
+        if (!this.fileSystem.isFile(configuredPath)) {
+          throw new Error(`${name} does not point to a Linux CLI executable: ${configuredPath}. Fix or unset the override; automatic fallback is disabled.`);
+        }
+        return configuredPath;
+      }
+    }
     return this.candidates({ installRoot, resourcesDir }).find((candidate) => this.fileSystem.isFile(candidate)) || null;
   }
 
@@ -288,6 +303,16 @@ class CodexBinaryLocator {
         path.join(resourcesDir, "Codex.exe"),
         path.join(resourcesDir, "codex.cmd"),
         path.join(resourcesDir, "bin", "codex.exe"),
+      ];
+    }
+    if (this.platform === "linux") {
+      return [
+        // app.asar 直接位于安装根时，根目录 codex 可能是 Electron；只能从明确的 CLI 目录选取。
+        ...(path.resolve(resourcesDir) !== path.resolve(installRoot)
+          ? [path.join(resourcesDir, "codex"), path.join(resourcesDir, "Codex")]
+          : []),
+        path.join(resourcesDir, "bin", "codex"),
+        path.join(installRoot, "bin", "codex"),
       ];
     }
     return [
@@ -414,34 +439,58 @@ class CodexInstallLayoutResolver {
  *
  * manifest 里记录的 sourceAsarPath 是快速路径：文件存在就直接使用。
  * 如果记录文件不存在，再走 CodexAsarCandidateProvider 生成的跨平台搜索候选。
+ * Linux 显式配置的安装路径例外：始终优先校验该路径，不允许旧缓存覆盖操作者的架构/版本选择。
  */
 class CodexAsarScanner {
   constructor({
-    configuredPath = process.env.CODEX_DESKTOP_APP_PATH || "",
+    env = process.env,
+    configuredPath = env.CODEX_DESKTOP_APP_PATH || "",
     defaultCandidates = null,
     fileSystem = new OfficialBundleFileSystem(),
     candidateProvider = null,
     layoutResolver = null,
+    platform = process.platform,
+    homeDir = os.homedir(),
   }: {
+    env?: Record<string, string | undefined>;
     configuredPath?: string;
     defaultCandidates?: string[] | null;
     fileSystem?: OfficialBundleFileSystem;
     candidateProvider?: CodexAsarCandidateProvider | null;
     layoutResolver?: CodexInstallLayoutResolver | null;
+    platform?: string;
+    homeDir?: string;
   } = {}) {
     this.fileSystem = fileSystem;
+    this.platform = platform;
+    this.configuredPath = configuredPath.trim();
     this.candidateProvider =
       candidateProvider ||
       new CodexAsarCandidateProvider({
         fileSystem,
         configuredPath,
         defaultCandidates,
+        platform,
+        env,
+        homeDir,
       });
-    this.layoutResolver = layoutResolver || new CodexInstallLayoutResolver({ fileSystem });
+    this.layoutResolver = layoutResolver || new CodexInstallLayoutResolver({
+      fileSystem,
+      platform,
+      // 注入的环境必须一路传到 CLI 定位器，不能让测试或隔离启动意外读取全局覆盖值。
+      binaryLocator: new CodexBinaryLocator({ fileSystem, platform, env, homeDir }),
+    });
     this.skippedDirectoryNames = new Set(["node_modules", "Cache", "GPUCache", "logs", "tmp", "temp"]);
   }
 
   find({ cachedAsarPath = "" }: { cachedAsarPath?: string | null } = {}): any {
+    if (this.platform === "linux" && this.configuredPath) {
+      // Linux 显式路径代表操作者选定的架构/版本，旧缓存和默认安装位置不能覆盖该选择。
+      const configuredCandidate = this.fileSystem.normalizePath(this.configuredPath);
+      const configuredLayout = this.layoutFromCandidate(configuredCandidate);
+      if (configuredLayout) return configuredLayout;
+      throw new Error(`CODEX_DESKTOP_APP_PATH does not contain an official Linux app.asar: ${configuredCandidate}. Fix or unset the override; automatic fallback is disabled.`);
+    }
     const cachedLayout = this.layoutFromCachedAsarPath(cachedAsarPath);
     if (cachedLayout) return cachedLayout;
 

@@ -197,28 +197,32 @@ function windowsElectronExecutableCandidates(appRoot, logger = null) {
   ]);
 }
 
-function linuxElectronExecutableCandidates(appRoot) {
+function linuxElectronExecutableCandidates(appRoot, env = process.env) {
   return uniqueNonEmpty([
-    process.env.CODEX_DESKTOP_EXECUTABLE_PATH,
-    path.join(appRoot, "codex"),
-    path.join(appRoot, "Codex"),
-    path.join(appRoot, "codex-desktop"),
-    // 社区 Linux 包的原始 Electron layout 可能直接保留 electron 文件名。
-    path.join(appRoot, "electron"),
-    path.join(path.dirname(appRoot), "codex"),
-    path.join(path.dirname(appRoot), "Codex"),
-    path.join(path.dirname(appRoot), "electron"),
+    env.CODEX_DESKTOP_EXECUTABLE_PATH?.trim(),
+    // 优先使用明确的桌面入口，避免根目录的同名 codex CLI 抢先被选中。
+    ...[appRoot, path.dirname(appRoot)].flatMap((root) => [
+      path.join(root, "chatgpt"),
+      path.join(root, "ChatGPT"),
+      path.join(root, "electron"),
+      path.join(root, "codex-desktop"),
+    ]),
+    ...[appRoot, path.dirname(appRoot)].flatMap((root) => [path.join(root, "codex"), path.join(root, "Codex")]),
   ]);
 }
 
-function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null) {
+function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null, { platform = process.platform, env = process.env } = {}) {
   const appRoot = scannedLayout.installRoot;
   const resourcesDir = scannedLayout.resourcesDir || resourcesDirForPortableAppRoot(appRoot);
   const asarPath = scannedLayout.asarPath || path.join(resourcesDir, "app.asar");
   const executableCandidates =
-    process.platform === "win32"
+    platform === "win32"
       ? windowsElectronExecutableCandidates(appRoot, logger)
-      : linuxElectronExecutableCandidates(appRoot);
+      : linuxElectronExecutableCandidates(appRoot, env);
+  const explicitLinuxExecutable = platform === "linux" ? env.CODEX_DESKTOP_EXECUTABLE_PATH?.trim() : "";
+  if (explicitLinuxExecutable && !isFile(explicitLinuxExecutable)) {
+    throw new Error(`CODEX_DESKTOP_EXECUTABLE_PATH does not point to a Linux desktop executable: ${explicitLinuxExecutable}. Fix or unset the override; automatic fallback is disabled.`);
+  }
   const executablePath = executableCandidates.find(isFile) || "";
   const runtimeRoot = executablePath ? path.dirname(executablePath) : appRoot;
   const asar = statSummary(asarPath);
@@ -226,7 +230,7 @@ function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null) {
   const runtime = statSummary(runtimeRoot);
   if (!asar.isFile || !executable.isFile || !runtime.isDirectory) {
     logJsonLine(logger, "official Electron candidate layout rejected:", {
-      platform: process.platform,
+      platform,
       appRoot,
       resourcesDir,
       asarPath,
@@ -240,12 +244,14 @@ function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null) {
     return null;
   }
   return {
-    platform: process.platform,
+    platform,
     appRoot,
     resourcesDir,
     asarPath,
     executablePath,
     runtimeRoot,
+    // Linux 预检同时验证 CLI，与 scanner / bundle provider 使用同一个选择结果。
+    ...(platform === "linux" ? { codexBinaryPath: scannedLayout.codexBinaryPath } : {}),
   };
 }
 
@@ -283,6 +289,7 @@ module.exports = {
     appxApplicationDefinitions,
     linuxElectronExecutableCandidates,
     macRuntimeLayoutFromAppRoot,
+    portableRuntimeLayoutFromInstallLayout,
     safeAppxExecutablePath,
     windowsElectronExecutableCandidates,
     windowsManifestExecutablePath,

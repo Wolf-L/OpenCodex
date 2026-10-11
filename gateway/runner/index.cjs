@@ -1,4 +1,5 @@
 const { findOfficialRuntimeLayout } = require("./official-layout.cjs");
+const { assertLinuxRuntimeLayout } = require("./linux-runtime.cjs");
 const { createMacRunner } = require("./platform/macos.cjs");
 const { createPortableRunner } = require("./platform/portable.cjs");
 const { createCompatibilityService } = require("../runtime/compatibility/service.cjs");
@@ -6,6 +7,8 @@ const { createHostModificationRuntime } = require("../runtime/modification/produ
 
 async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, logger }) {
   const layout = findOfficialRuntimeLayout({ officialBundleDir, logger });
+  // 先检查源 ELF 架构与权限，再复制运行时；其它平台不受 Linux 预检影响。
+  assertLinuxRuntimeLayout(layout);
   let compatibilityService = null;
   try {
     compatibilityService = createCompatibilityService();

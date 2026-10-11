@@ -121,7 +121,15 @@ http://127.0.0.1:3737
 
 ### Linux使用
 
-无预打包好的启动器，建议命令行使用，具体见 [配置步骤](docs/LINUX_GUIDE.md)
+支持 Linux x64 / ARM64 源码部署，并提供分架构打包与 CI 配置。Kali / Android 内核环境优先使用无需 systemd/FUSE 的命令行入口：
+
+```bash
+pnpm run linux:init
+pnpm run linux:doctor
+pnpm run linux:start
+```
+
+需先准备匹配架构的 Linux 桌面运行时和 Node >=22.12.0；完整安装步骤、安全限制与目标设备验证边界见 [Linux / Kali ARM64 部署指南](docs/LINUX_GUIDE.md)。
 
 ### 远程访问
 
@@ -133,7 +141,7 @@ OpenCodex本身不提供远程访问服务，如果需要在其他设备中远�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | 命令行 gateway 监听地址。 |
+| `HOST` | `0.0.0.0` | 通用命令行 gateway 监听地址；`linux:start` 安全部署入口默认为 `127.0.0.1`。 |
 | `PORT` | `3737` | 命令行 gateway 监听端口。 |
 | `OPENCODEX_HOST` | `127.0.0.1` | Launcher 首次启动 gateway 时使用的默认监听地址。 |
 | `OPENCODEX_PORT` | 随机可用端口 | Launcher 首次启动 gateway 时使用的默认端口。 |
@@ -147,8 +155,8 @@ OpenCodex本身不提供远程访问服务，如果需要在其他设备中远�
 | `CODEX_WEB_LOCAL_FILE_TOKEN_TTL_MS` | `300000` | 本地文件预览 URL token 有效期，单位毫秒。 |
 | `CODEX_DESKTOP_APP_PATH` | 自动扫描 | 指定 Codex/ChatGPT Desktop 安装路径或 `app.asar` 所在路径。 |
 | `CODEX_DESKTOP_EXECUTABLE_PATH` | 自动扫描 | Windows/Linux 下指定 Codex/ChatGPT Desktop Electron 可执行文件路径。 |
-| `CODEX_APP_SERVER_BINARY_PATH` | 自动扫描 | Windows 下指定 Codex app-server/CLI 可执行文件路径。 |
-| `CODEX_CLI_PATH` | 自动扫描 | Windows 下指定 Codex CLI 可执行文件路径。 |
+| `CODEX_APP_SERVER_BINARY_PATH` | 自动扫描 | Windows/Linux 下指定 Codex app-server/CLI 可执行文件路径，优先于 CODEX_CLI_PATH。 |
+| `CODEX_CLI_PATH` | 自动扫描 | Windows/Linux 下指定 Codex CLI 可执行文件路径。 |
 | `CODEX_WEB_RUNTIME_DIR` | `.data/runtime` | 命令行 gateway 运行目录；打包态由 Launcher 指向用户数据目录。 |
 | `CODEX_WEB_OFFICIAL_BUNDLE_DIR` | `.data/cache/codex-official-bundle` | 指定官方 bundle 解包缓存目录。 |
 | `CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE` | `1` | 控制是否在启动时自动扫描官方 Codex 运行时更新；设为 `0` 后优先复用现有缓存，仅在缓存缺失或不可用时扫描。 |

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../runner/index.cjs");
+const { linuxRuntimeArgs } = require("../runner/linux-runtime.cjs");
 const {
   GATEWAY_RESTART_SUPPORTED_ENV,
   createGatewayExitHandler,
@@ -96,6 +97,8 @@ function spawnGateway(officialRuntime, officialRuntimeArgs) {
 }
 
 async function main() {
+  // 先拒绝不安全的 root 默认启动，避免复制运行时后才由 Chromium 给出难以理解的错误。
+  const linuxArgs = linuxRuntimeArgs();
   ensureDir(runtimeDir);
   ensureDir(reportsDir);
   ensureDir(officialBundleDir);
@@ -119,6 +122,7 @@ async function main() {
   const officialRuntimeArgs = [
     `--user-data-dir=${officialUserDataDir}`,
     ...hiddenRuntimeGcmCommandLineArgs(process.env),
+    ...linuxArgs,
   ];
   spawnGateway(officialRuntime, officialRuntimeArgs);
 

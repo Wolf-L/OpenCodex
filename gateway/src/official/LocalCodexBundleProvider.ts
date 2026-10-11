@@ -39,6 +39,7 @@ type LocalCodexBundleProviderOptions = {
   logger?: any;
   fileSystem?: any;
   env?: Record<string, string | undefined>;
+  platform?: string;
   compatibilityService?: any;
 };
 
@@ -63,6 +64,8 @@ class LocalCodexBundleProvider {
     const fileSystem = options.fileSystem || new OfficialBundleFileSystem();
     const archive = new AsarArchiveReader();
     this.env = options.env || process.env;
+    this.platform = options.platform || process.platform;
+    this.appPathEnv = options.appPathEnv || this.env.CODEX_DESKTOP_APP_PATH || "";
     this.defaultBundleDir = options.defaultBundleDir || DEFAULT_BUNDLE_DIR;
     this.bundleDirEnv =
       options.bundleDirEnv ||
@@ -79,9 +82,11 @@ class LocalCodexBundleProvider {
       compatibilityService: this.compatibilityService,
     }).coordinator;
     this.scanner = new CodexAsarScanner({
-      configuredPath: options.appPathEnv || this.env.CODEX_DESKTOP_APP_PATH || "",
+      configuredPath: this.appPathEnv,
       defaultCandidates: options.appCandidates || null,
       fileSystem,
+      platform: this.platform,
+      env: this.env,
     });
     this.sourceInfoReader = new CodexBundleSourceInfoReader({ logger: this.logger, archive, fileSystem });
     this.extractor = new AsarWebviewExtractor({ archive, fileSystem });
@@ -100,7 +105,13 @@ class LocalCodexBundleProvider {
      */
     const cache = this.createCache(projectRoot);
     const manifest = cache.readManifest();
-    if (!this.autoScanUpgrade) {
+    // 显式 Linux 安装/CLI 路径优先于旧缓存；关闭自动扫描不能把新配置静默替换成旧的二进制。
+    const explicitLinuxPaths = this.platform === "linux" && [
+      this.appPathEnv,
+      this.env.CODEX_APP_SERVER_BINARY_PATH,
+      this.env.CODEX_CLI_PATH,
+    ].some((value) => typeof value === "string" && value.trim());
+    if (!this.autoScanUpgrade && !explicitLinuxPaths) {
       const blockReason = cache.reuseWithoutSourceScanBlockReason(manifest);
       if (!blockReason) {
         return this.resultFromCachedManifest({ cache, manifest });

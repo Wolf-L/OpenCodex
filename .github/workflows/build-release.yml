@@ -188,6 +188,65 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
+  build-linux:
+    name: Build Linux installers (${{ matrix.arch }})
+    needs: metadata
+    if: needs.metadata.outputs.is_release == 'true' || needs.metadata.outputs.should_build_artifacts == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Verify native Linux architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          # ARM64 产物必须由原生 ARM64 Node 构建，避免误用 x64 依赖或模拟器结果。
+          node -e "if (process.platform !== 'linux' || process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and test Linux deployment support
+        run: |
+          pnpm run build
+          # 这里只测试 Linux 适配，既不启动真实账户，也不掩盖已有的全量测试基线问题。
+          node --test gateway/test/linux-runtime.test.cjs gateway/test/linux-deployment.test.cjs gateway/test/linux-packaging.test.cjs
+
+      - name: Build DEB and portable archive
+        run: |
+          # Android/chroot 环境优先使用无需 FUSE 的压缩包；仅后续 release job 可以发布。
+          pnpm exec electron-builder --linux deb tar.gz --${{ matrix.arch }} --publish never
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: opencodex-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            release/*-linux-${{ matrix.arch }}.deb
+            release/*-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
   release:
     name: Create draft release
     if: needs.metadata.outputs.is_release == 'true'
@@ -195,6 +254,7 @@ jobs:
       - metadata
       - build-macos
       - build-windows
+      - build-linux
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -216,18 +276,31 @@ jobs:
           shopt -s nullglob
           dmg_files=(release-assets/*.dmg)
           exe_files=(release-assets/*.exe)
+          deb_files=(release-assets/*-linux-*.deb)
+          tar_files=(release-assets/*-linux-*.tar.gz)
 
-          # 当前配置应产出 Intel/Apple Silicon 两个 DMG 和一个 Windows 安装包。
-          if (( ${#dmg_files[@]} != 2 || ${#exe_files[@]} != 1 )); then
-            echo "Unexpected assets: ${#dmg_files[@]} DMG, ${#exe_files[@]} EXE" >&2
+          # 必须同时具备 macOS 双架构、Windows、Linux 双架构的完整产物。
+          if (( ${#dmg_files[@]} != 2 || ${#exe_files[@]} != 1 || ${#deb_files[@]} != 2 || ${#tar_files[@]} != 2 )); then
+            echo "Unexpected assets: ${#dmg_files[@]} DMG, ${#exe_files[@]} EXE, ${#deb_files[@]} DEB, ${#tar_files[@]} tar.gz" >&2
             exit 1
           fi
+
+          # 不能仅检查数量，两个同架构包也不算完整的 Linux 发布。
+          for arch in x64 arm64; do
+            for ext in deb tar.gz; do
+              expected="release-assets/OpenCodex-${RELEASE_VERSION}-linux-${arch}.${ext}"
+              if [[ ! -f "$expected" ]]; then
+                echo "Missing Linux asset: $expected" >&2
+                exit 1
+              fi
+            done
+          done
 
       - name: Create or update draft release
         shell: bash
         run: |
           shopt -s nullglob
-          assets=(release-assets/*.dmg release-assets/*.exe)
+          assets=(release-assets/*.dmg release-assets/*.exe release-assets/*-linux-*.deb release-assets/*-linux-*.tar.gz)
 
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             # 重跑流水线时仅更新已有草稿，避免覆盖已经正式发布的 Release。

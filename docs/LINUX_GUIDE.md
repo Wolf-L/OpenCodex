@@ -1,178 +1,209 @@
-# Linux运行指南
+# Linux 部署指南（含 Kali / Android 内核 / ARM64）
 
-OpenCodex 本身只是一个 Codex 桌面运行时中间层，通过 Xvfb 可使社区转换的 Electron 运行时在无显示器的 Linux 服务器上运行。
+本文适用于 Linux `arm64` / `x64`，重点覆盖 **Kali GNU/Linux Rolling 2026.1、Linux 6.1.138-android14、aarch64**。这是 GNU/Linux 部署方案，不是 Android APK。该目标机尚未实测，不能把预检通过等同于设备兼容认证。
 
-## 原理
+> Android 内核版本不能单独判断你用的是原生系统、rooted chroot、NetHunter 还是 PRoot。Rootless/PRoot 的 namespace、seccomp、ptrace 和后台进程限制可能导致 Electron 或 Codex 执行沙箱不可用。脚本不会自动关闭安全机制；不满足条件时应停止部署或换用支持的 Linux 主机。
 
-Codex Desktop 基于 Electron，需要一个 X Window 显示环境渲染界面。Xvfb（X Virtual Framebuffer）在内存中模拟一个虚拟显示器，Electron 将画面输出到虚拟显示器上，无需物理屏幕或桌面环境。
+## 本次适配提供什么
 
-```
-无头服务器                 用户浏览器
-┌──────────────────┐      ┌─────────────┐
-│  Xvfb :99        │      │             │
-│ (虚拟 framebuffer)│      │ 手机/平板/   │
-│       ↑          │      │ 另一台电脑    │
-│  Codex Desktop   │◄────►│             │
-│  (Electron)      │ HTTP │             │
-│       ↑          │ +WS  │             │
-│  OpenCodex       │      │             │
-│  Gateway         │ ────►│             │
-└──────────────────┘      └─────────────┘
-```
+- Linux ARM64 / x64 的 Electron、CLI ELF 架构与执行权限检查，错误路径不静默回退。
+- Linux 下生效的 `CODEX_CLI_PATH` / `CODEX_APP_SERVER_BINARY_PATH`；支持 ChatGPT 和社区包布局。
+- `linux:init` 创建私有访问配置；`linux:doctor` 只读诊断；`linux:start` 前台启动与统一进程清理。
+- 有 X11 / KeX 时复用 `DISPLAY`，否则用带 xauth 的 `xvfb-run` 自动分配显示号；不使用 `-ac`。
+- 不要求 systemd、FUSE 或 AppImage；默认只监听 `127.0.0.1:3737`，即使本机访问也要求密码。
+- Linux ARM64 的 DEB / tar.gz 打包入口及原生 ARM64 CI。**启动器包不包含官方桌面运行时或登录凭据。**
 
-## 前置条件
+## 1. 在 Kali 内确认用户空间
 
-安装 Xvfb：
+以下命令在 **Kali 的终端内**执行，不是在 Termux 外层直接运行：
 
 ```bash
-# Debian/Ubuntu
-sudo apt install xvfb
-
-# CentOS/RHEL/Fedora
-sudo yum install xorg-x11-server-Xvfb
+uname -sm
+cat /etc/os-release
+dpkg --print-architecture
+node -p 'process.platform + "/" + process.arch + " node=" + process.versions.node'
+id -u
 ```
 
-另需 Node.js、pnpm 以及 Codex Desktop Linux 版。
+你的目标应为 `aarch64`、`arm64`、`linux/arm64`。需要 **glibc、Node >= 22.12.0（推荐 24 LTS）、pnpm 10**。仅 ARM64 内核不够，不能混用 x64 Node / Windows 文件 / Termux 的 Android Node。
 
-## 获取 Codex Desktop Linux
+尽量以普通用户运行，勿用 root 启动 Electron。PRoot 中显示 uid 0 不等于获得 Android 主机的真正 root 或 namespace 权限。NetHunter Rootless 与 KeX 的背景说明见 [Kali 官方文档](https://www.kali.org/docs/nethunter/nethunter-rootless/)。
 
-OpenAI 当前仅提供 macOS/Windows 桌面应用。Linux 运行时由社区项目 [ilysenko/codex-desktop-linux](https://github.com/ilysenko/codex-desktop-linux) 从上游 macOS DMG 转换；社区产物继续使用 `codex-app` / `codex-desktop` 命名，新版 DMG 中的动态 main 同样可被 OpenCodex 识别：
+仓库、官方运行时和缓存都放在 Kali 私有的 `$HOME` 中，不要放 `/sdcard` 或 `/storage/emulated/0`：共享存储可能禁止执行或不支持所需权限/符号链接。
+
+## 2. 安装依赖
+
+在有包管理权限的 Kali 终端安装；已有依赖不会被部署脚本自动改动。若当前就是 Kali 内的 root，下面两条 apt 命令去掉 `sudo`，之后仍应切换普通用户运行 OpenCodex。
 
 ```bash
+sudo apt update
+sudo apt install -y git curl ca-certificates nodejs npm python3 make g++ \
+  gpgv dpkg-dev xz-utils xvfb xauth dbus \
+  libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libx11-xcb1 \
+  libxss1 libdrm2 libxkbcommon0 libxshmfence1
+```
+
+这是 Kali rolling 常见基础依赖，不保证覆盖未来官方桌面包的全部动态库；包名变化时以 Kali 仓库和所下载桌面包的依赖声明为准。不要对来源不明的二进制直接执行 `ldd`。若 apt 提供的 Node 太旧，应先通过可信的 Node 安装方式升级到上述版本。
+
+无需全局 npm 写权限的 pnpm 安装方式：
+
+```bash
+npm install --prefix "$HOME/.local" --global pnpm@10.33.2
+export PATH="$HOME/.local/bin:$PATH"
+node --version
+pnpm --version
+```
+
+后续新开终端也需要上述 PATH，或将该 PATH 设置加入自己的 shell 配置。
+
+## 3. 准备匹配架构的 Linux 桌面运行时
+
+OpenCodex 不是纯 Node HTTP 服务：隐藏运行时仍需 Linux Electron、`resources/app.asar`、配套 `.node` 原生模块和 Codex CLI。**只安装 npm 的 Codex CLI，或只拷贝 Windows/macOS 的 app.asar，都不够。**
+
+可以使用可信来源的完整 Linux ARM64 桌面包，或社区项目 [codex-desktop-linux](https://github.com/ilysenko/codex-desktop-linux)。截至本指南核对时，该社区项目采用签名稳定仓库中的 Linux `.deb`，支持 amd64/arm64，不再走旧的 macOS DMG 转换流程；详细信任与构建说明见其 [上游构建文档](https://github.com/ilysenko/codex-desktop-linux/blob/main/docs/build-and-packaging.md)。社区项目并非 OpenAI 官方发行。
+
+以下构建的是本地应用目录，不安装系统服务、不启动桌面：
+
+```bash
+mkdir -p "$HOME/src"
+cd "$HOME/src"
 git clone https://github.com/ilysenko/codex-desktop-linux.git
 cd codex-desktop-linux
-make bootstrap-native
+# 先审阅该项目的安装脚本和依赖说明；不要跳过签名校验。
+make build-app
 ```
 
-产物位于 `codex-app/` 目录，结构为：
+预期生成 `$HOME/src/codex-desktop-linux/codex-app/`。其当前布局以 `ChatGPT` 为 Electron 入口，并携带 `resources/codex`。若上游提示缺依赖，按它的说明补齐；不要使用来源不明的预改包或任意关闭校验。
 
-```
-codex-app/
-├── electron        # Electron 二进制
-├── resources/
-│   └── app.asar    # Codex Desktop 应用代码
-├── locales/
-└── ...
-```
+- 已安装社区原生包时通常使用 `/opt/codex-desktop`。
+- 已持有可信的 ARM64 `.deb` 时，可以按上游文档用 `UPSTREAM_DEB=/absolute/path/...deb make build-app`；本地包方式跳过签名仓库发现，**来源验证由你负责**。
+- 不需要运行 `make run-app`、`make install-native` 或启用更新服务来使用 OpenCodex。
+- 第三方可选特性默认不启用；OpenCodex 直接复用 ELF，不执行社区 `start.sh` 的 feature hooks，因此不要假设其桌面增强特性会生效。
 
-OpenCodex 默认期望 `CODEX_DESKTOP_APP_PATH` 指向此目录。
-
-## 启动 Xvfb
+## 4. 安装 OpenCodex 源码
 
 ```bash
-Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
+cd "$HOME/src"
+git clone https://github.com/Wolf-L/OpenCodex.git
+cd OpenCodex
+
+# 源码无头部署使用上一节的官方 Electron，无须再下载 Launcher 开发用 Electron。
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
+pnpm run build
+
+export CODEX_DESKTOP_APP_PATH="$HOME/src/codex-desktop-linux/codex-app"
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `:99` | 显示编号，通过 `DISPLAY=:99` 引用 |
-| `-screen 0 1920x1080x24` | 分辨率 1920×1080，24 位色深 |
-| `-ac` | 关闭访问控制 |
-| `+extension GLX` | 启用 GLX 扩展（某些 Electron 应用需要） |
-| `+render` | 启用 Render 扩展 |
-| `-noreset` | 不自动重置 |
-
-确认运行：
+默认自动发现该目录下的桌面 ELF 与 CLI；只有非标准布局才需要下面两个覆盖变量，**必须指向实际 ELF，不是 shell 包装器**：
 
 ```bash
-pgrep -a Xvfb
+# 示例：确认这些文件确实存在且为 Linux ARM64 后才设置。
+# export CODEX_DESKTOP_EXECUTABLE_PATH="$CODEX_DESKTOP_APP_PATH/ChatGPT"
+# export CODEX_CLI_PATH="$CODEX_DESKTOP_APP_PATH/resources/codex"
 ```
 
-## 环境变量
+`CODEX_APP_SERVER_BINARY_PATH` 优先于 `CODEX_CLI_PATH`。改用自动发现时应 `unset` 旧覆盖变量，不要留下失效路径。不要让 CLI 指向 Electron 本身。
 
-启动前需设置的关键环境变量：
+## 5. 初始化、诊断、启动
 
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `DISPLAY` | Xvfb 显示编号 | `:99` |
-| `CODEX_DESKTOP_APP_PATH` | 社区转换的桌面运行时目录（含 `app.asar`） | `/tmp/codex-desktop-linux/codex-app` |
-| `CODEX_DESKTOP_EXECUTABLE_PATH` | Electron 可执行文件路径 | `/tmp/codex-desktop-linux/codex-app/electron` |
-| `CODEX_CLI_PATH` | Codex CLI 二进制路径 | `/opt/codex-cli/codex` |
-| `CODEX_HOME` | Codex 配置目录 | `~/.codex` |
-
-`DISPLAY` 指向 Xvfb。其余变量让 OpenCodex 知道 Electron 和 Codex CLI 的位置，以及配置文件存放路径。
-
-## 修改 Electron 启动参数
-
-原始仓库 `gateway/dev/run-gateway.cjs` 中仅传入 `--user-data-dir`：
-
-```js
-const officialRuntimeArgs = [`--user-data-dir=${officialUserDataDir}`];
-```
-
-在无头 Linux 上需改为：
-
-```js
-const officialRuntimeArgs = [
-  `--user-data-dir=${officialUserDataDir}`,
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-];
-```
-
-| 参数 | 说明 |
-|------|------|
-| `--no-sandbox` | 服务器环境下 Chrome 沙箱通常不可用（root 运行或容器环境），不加会导致 Electron 启动失败 |
-| `--disable-setuid-sandbox` | 配合 `--no-sandbox` 禁用 setuid 辅助进程 |
-| `--disable-dev-shm-usage` | 避免 `/dev/shm` 过小（容器默认 64MB）导致崩溃，改用普通内存 |
-
-## 启动 OpenCodex
+在同一个 Kali 终端、OpenCodex 仓库目录内：
 
 ```bash
-export DISPLAY=:99
-export CODEX_DESKTOP_APP_PATH=/tmp/codex-desktop-linux/codex-app
-export CODEX_DESKTOP_EXECUTABLE_PATH=/tmp/codex-desktop-linux/codex-app/electron
-export CODEX_CLI_PATH=/opt/codex-cli/codex
-
-cd /path/to/OpenCodex
-pnpm install
-PORT=这里填端口 pnpm run web:dev
+pnpm run linux:init       # 两次输入至少 12 字符的 Web 密码，不回显；不覆盖已有文件
+pnpm run linux:doctor     # 只读检查，不启动 Electron、不调用模型、不执行被检查的二进制
+pnpm run linux:start --dry-run
+pnpm run linux:start
 ```
 
-强烈建议设置密码，先编辑 `config.yaml`：
+启动不自动重编译；更新源码后必须重新 `pnpm run build`。`doctor` / `start` 遇到 ERROR 会退出非零；WARN 仍需结合设备实际情况处理。doctor 在依赖安装前也可直接运行 `node scripts/linux-doctor.cjs`，此时缺少运行时/构建/配置的错误是正常的。
 
-```yaml
-auth:
-  password: "你的密码"
+默认状态目录：
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/opencodex/
+  config.yaml        # mode 0600，Web 访问密码的 sha256-v1 格式，与现有 gateway 一致
+  runtime/
+  reports/
+  cache/official-bundle/
+  official-user-data/
 ```
 
-访问 `http://服务器IP:端口` 即可使用。
+哈希文件也应当作秘密保护，不能上传。`linux:init` 不处理账号密码，不改写 `~/.codex`；OpenCodex 仍使用 `CODEX_HOME`（默认 `~/.codex`）中的 Codex 账号数据。首次模型访问还需要你按可信客户端流程完成自己的登录，Web 密码不能代替模型账号认证。不要让官方桌面与 OpenCodex 同时操作同一会话。
 
-## 与 systemd 集成
-
-```ini
-# /etc/systemd/system/xvfb.service
-[Unit]
-Description=X Virtual Frame Buffer Service
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+如需自定义位置，**初始化、诊断和启动必须使用相同的环境变量**：
 
 ```bash
-sudo systemctl enable --now xvfb.service
+export OPENCODEX_LINUX_DATA_DIR="$HOME/.local/state/opencodex-kali"
+# 已有访问配置可显式复用；必须是有效 auth.password，且 chmod 600。
+# export CODEX_WEB_CONFIG_PATH="$HOME/private/opencodex.yaml"
 ```
 
-## 常见问题
+不要复制带 `your-password` 的示例配置后直接启动。自动化初始化可用 `node scripts/linux-init.cjs --password-stdin` 从受保护的 stdin 输入；不要把密码放在命令行参数、shell 历史或环境模板中。
 
-### Electron 无法启动 / "Cannot open display"
+## 6. Android 内核上的显示与沙箱
 
-- 确认 Xvfb 是否运行：`pgrep -a Xvfb`
-- 确认 `DISPLAY` 已设置：`echo $DISPLAY`
-- 测试连接：`xdpyinfo -display :99`
-- Xvfb 启动后未完全就绪，添加 `sleep 2` 等待
+| 情形 | 行为 / 建议 |
+| --- | --- |
+| 已进入 KeX / X11 会话，`DISPLAY` 有效 | 默认复用现有显示，不创建 Xvfb |
+| 没有 `DISPLAY` | 自动 `xvfb-run` + xauth，自动显示号并关闭 X11 TCP；可配合临时 D-Bus 会话 |
+| 想强制无头，不受当前桌面影响 | `OPENCODEX_LINUX_HEADLESS=1 pnpm run linux:start` |
+| 只想用已有显示 | `OPENCODEX_LINUX_HEADLESS=0 pnpm run linux:start`，无 `DISPLAY` 则失败 |
+| 只有 Wayland | 当前部署入口优先 X11/XWayland，或强制 Xvfb；不把 Wayland 变量当作 X11 已就绪 |
+| GPU / EGL 初始化失败 | 可显式设置 `OPENCODEX_LINUX_DISABLE_GPU=1` 后重试，不保证 Android GPU 加速 |
+| `/dev/shm` 太小或不可用 | 可显式设置 `OPENCODEX_LINUX_DISABLE_DEV_SHM=1`，使用 Chromium 临时文件后备；需可写临时目录和足够空间 |
+| uid 0 | 默认拒绝启动；优先使用普通用户和支持的内核 |
+| PRoot / namespace / seccomp 失败 | 不是“缺一个 npm 包”；普通用户也未必能解决，建议迁移到支持沙箱的主机 |
 
-### 渲染异常 / 白屏
+**无头不等于需要关闭沙箱。** `OPENCODEX_LINUX_NO_SANDBOX=1` 是单次显式的高风险兼容开关，会把 `--no-sandbox` 传给隐藏 Electron，并输出警告；不建议生产使用。它降低恶意页面/依赖攻击时的进程隔离，不能将 Xvfb、PRoot 或普通密码认证变成替代沙箱。[Electron 官方沙箱说明](https://www.electronjs.org/docs/latest/tutorial/sandbox/)
 
-部分 Electron 应用依赖 GPU 加速，Xvfb 默认软件渲染可能不兼容。尝试禁用 GLX 扩展：
+脚本不会自动打开该开关、修改系统 user namespace / AppArmor / setuid 配置，也**不会**因此关闭 Codex 命令执行沙箱或更改审批策略。两层沙箱分别受内核能力限制；即便页面启动，执行任务仍可能失败。若必须在受限环境尝试，先理解风险并隔离数据，不要把禁用沙箱作为公开服务的默认配置。
+
+按 Ctrl-C 停止前台服务，会向独立进程组转发退出信号，并清理 Xvfb / D-Bus / 子进程；拒绝退出的进程会在宽限期后强制终止。可手动放到 tmux 内运行，但 Android 的省电/后台杀进程策略仍可能结束整个 Kali 会话，不承诺自动保活。
+
+## 7. 手机 / 其他设备访问
+
+同一设备浏览器打开 **http://127.0.0.1:3737**。其他设备优先使用已经配置好的 SSH 隧道：
 
 ```bash
-Xvfb :99 -screen 0 1920x1080x24 -ac -extension GLX &
+# 在访问端运行；替换成你的 Kali 用户/SSH 地址。先自行配置并验证 SSH 登录。
+ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 ```
+
+然后在访问端打开相同的本机 URL。脚本不安装或开放 SSH。
+
+确实需要监听可信局域网时，可以显式 `HOST=0.0.0.0 pnpm run linux:start`；依然必须配置访问密码，并由你配置防火墙及 HTTPS/VPN。HTTP 密码哈希/会话令牌仍具有认证价值，不能把裸 HTTP 暴露公网。不要为排错关闭 Web 密码。
+
+## 8. ARM64 启动器打包（可选）
+
+Android/Kali 无头部署优先使用上面的源码入口。桌面 Launcher 本身也需要显示与正常 Chromium 沙箱，root 下它可能在应用脚本运行前就退出；不要用 GUI 包代替诊断。
+
+在原生 Linux ARM64、已安装开发依赖和 Electron 的环境构建：
+
+```bash
+# 若先前设置过 ELECTRON_SKIP_BINARY_DOWNLOAD，使用独立构建环境正常安装开发依赖。
+pnpm install --frozen-lockfile
+pnpm run launcher:pack:linux:arm64
+pnpm run launcher:dist:linux:arm64
+```
+
+产物是 `release/OpenCodex-<version>-linux-arm64.deb` 和 `.tar.gz`；tar.gz 不依赖 FUSE。既有 `launcher:*:linux` 保持 x64 默认，x64 也有显式后缀入口。CI 分别使用原生 x64 / ARM64 Linux runner；配置存在不代表每次打包已经成功，也不意味着目标 Android 内核通过测试。包中仍不含官方运行时。
+
+## 9. 排错与可分享报告
+
+```bash
+node scripts/linux-doctor.cjs --json > linux-doctor.json
+```
+
+诊断不读取模型密钥、不转储整个环境、不输出密码或哈希；它会包含本地路径/内核版本，分享前仍请人工脱敏。
+
+| 错误 | 优先检查 |
+| --- | --- |
+| `Expected a Linux ELF64` / `architecture mismatch` | 安装同架构 Linux 桌面/CLI，不要指向包装脚本、Windows exe、macOS 文件或 x64 包 |
+| 找不到 `app.asar` / CLI | 完整桌面包是否解包，`CODEX_DESKTOP_APP_PATH` 与覆盖路径是否正确 |
+| 有文件却 `Permission denied` / `ENOENT` | 执行权限、noexec 挂载、动态加载器是否匹配；移到 Kali 私有文件系统，勿盲目 chmod 全盘 |
+| `.node` / shared library / ABI 错误 | 保持 Electron、ASAR、原生模块来自同一个受信的 Linux ARM64 包，不用任意 Electron 替代 |
+| `Missing X server` / display 错误 | 旧 DISPLAY 可能失效；进入正确 KeX 会话或强制 Xvfb，确认 xauth 已安装 |
+| `No usable sandbox` / root / seccomp | 优先普通用户与受支持内核；PRoot 不保证可运行，参见沙箱章节 |
+| 预检成功但页面/任务失败 | 预检只读静态检查，不验证 Electron ABI、运行库完整性、账号网络、OWL 功能或 Codex 执行沙箱 |
+
+验证边界：本次改动已覆盖离线 ELF/路径/安全选项测试、Windows 回归检查，以及本地 Kali WSL **x64** 的权限/进程启动与退出测试；它们不能替代你这台 **Android 内核 ARM64** 设备上的运行验证。
