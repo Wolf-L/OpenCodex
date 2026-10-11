@@ -231,7 +231,7 @@ jobs:
         run: |
           pnpm run build
           # 这里只测试 Linux 适配，既不启动真实账户，也不掩盖已有的全量测试基线问题。
-          node --test gateway/test/linux-runtime.test.cjs gateway/test/linux-deployment.test.cjs gateway/test/linux-packaging.test.cjs
+          node --test gateway/test/gateway-listen.test.cjs gateway/test/linux-runtime.test.cjs gateway/test/linux-deployment.test.cjs gateway/test/linux-packaging.test.cjs
 
       - name: Build DEB and portable archive
         run: |

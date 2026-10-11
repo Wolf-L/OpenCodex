@@ -18,6 +18,7 @@ const {
 const { createBoundedLogWriter } = require("./log-writer.cjs");
 const { openPwaOrBrowser } = require("./pwa-launcher.cjs");
 const { OPENCODEX_VERSION_LABEL } = require("../shared/app-version.cjs");
+const { DEFAULT_GATEWAY_HOST, normalizeLauncherHostMode } = require("../shared/gateway-listen.cjs");
 const { PREFERRED_LANGUAGES_ENV, formatMessage, resolveOpenCodexI18n } = require("../shared/i18n/index.cjs");
 const {
   GATEWAY_RESTART_SUPPORTED_ENV,
@@ -32,7 +33,7 @@ const packageMetadata = require("../package.json");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 
-const DEFAULT_HOST = process.env.OPENCODEX_HOST || "127.0.0.1";
+const DEFAULT_HOST = process.env.OPENCODEX_HOST || DEFAULT_GATEWAY_HOST;
 const DEFAULT_PORT = normalizePort(process.env.OPENCODEX_PORT);
 const PLUGIN_DIRS_ENV = "OPENCODEX_PLUGIN_DIRS";
 const OFFICIAL_AUTO_SCAN_UPGRADE_ENV = "CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE";
@@ -247,7 +248,7 @@ function offlineCompatibilitySummary(filePath) {
 }
 
 function normalizeHostMode(value) {
-  return value === "lan" ? "lan" : "local";
+  return normalizeLauncherHostMode(value, DEFAULT_HOST);
 }
 
 function normalizePort(value) {
@@ -288,7 +289,7 @@ function splitConfiguredPluginDirs(value) {
 
 function defaultSettings() {
   return {
-    hostMode: DEFAULT_HOST === "0.0.0.0" ? "lan" : "local",
+    hostMode: normalizeHostMode(),
     port: DEFAULT_PORT,
     pluginDirs: "",
     preventSleep: true,

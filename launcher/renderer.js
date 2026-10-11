@@ -122,11 +122,12 @@ function formatDateTime(value) {
 
 function selectedHostMode() {
   const checked = document.querySelector('input[name="hostMode"]:checked');
-  return checked ? checked.value : "local";
+  return checked ? checked.value : "lan";
 }
 
 function renderHostMode(hostMode) {
-  const value = pendingHostMode || (hostMode === "lan" ? "lan" : "local");
+  // 初始状态或旧配置缺少模式时，与所有平台的主进程默认局域网保持一致。
+  const value = pendingHostMode || (hostMode === "local" ? "local" : "lan");
   for (const input of document.querySelectorAll('input[name="hostMode"]')) {
     input.checked = input.value === value;
     input.disabled = !!pendingHostMode;

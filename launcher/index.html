@@ -68,7 +68,8 @@
                     <span data-i18n="launcher.settings.host.local">本机</span>
                   </label>
                   <label>
-                    <input type="radio" name="hostMode" value="lan" />
+                    <!-- 首帧采用局域网默认值；收到状态后仍以保存的模式为准。 -->
+                    <input type="radio" name="hostMode" value="lan" checked />
                     <span data-i18n="launcher.settings.host.lan">局域网</span>
                   </label>
                 </div>
@@ -197,7 +198,7 @@
             </div>
             <div class="setting-item">
               <div class="setting-label" data-i18n="launcher.gateway.listen">监听</div>
-              <div class="setting-value" id="gatewayListen">127.0.0.1:3737</div>
+              <div class="setting-value" id="gatewayListen">0.0.0.0:3737</div>
             </div>
             <div class="setting-item">
               <div class="setting-label" data-i18n="launcher.gateway.appServer">应用服务</div>

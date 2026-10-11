@@ -2,6 +2,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
+const { DEFAULT_GATEWAY_HOST } = require("../../../shared/gateway-listen.cjs");
 
 // gateway 的运行目录集中在这里定义，其他模块只消费常量，避免散落 process.env 读取。
 // 当前文件位于 gateway/runtime/core，项目根目录需要回退三级。
@@ -31,7 +32,7 @@ const CODEX_WEB_PICKED_FILES_MAX_TOTAL_BYTES = positiveIntegerFromEnv(
 );
 const CODEX_WEB_PICKED_FILE_TTL_MS = positiveIntegerFromEnv("CODEX_WEB_PICKED_FILE_TTL_MS", 24 * 60 * 60 * 1000);
 const PORT = Number(process.env.PORT || 3737);
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = process.env.HOST || DEFAULT_GATEWAY_HOST;
 // 每次 gateway 进程启动都会生成新标识，认证页据此确认重启后接入的确实是新实例。
 const GATEWAY_INSTANCE_ID = crypto.randomBytes(16).toString("hex");
 // 配置路径支持 launcher 显式传入，避免 Electron cwd 变化时误读项目根目录的 config.yaml。

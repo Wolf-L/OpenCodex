@@ -133,7 +133,9 @@ pnpm run linux:start
 
 ### 远程访问
 
-OpenCodex本身不提供远程访问服务，如果需要在其他设备中远程访问，请使用Tailscale、ZeroTier、Cloudflare Tunnel、企业自建 VPN 等方式搭建网络，然后在启动器中打开局域网模式进行访问。
+Windows/macOS/Linux 启动器、通用命令行入口和 Linux 部署入口均默认允许局域网访问（监听 `0.0.0.0`）。同一局域网设备访问 `http://<运行设备的局域网IP>:<端口>`；启动器会显示实际地址和端口，命令行默认端口为 `3737`。已有明确保存的本机模式不会被覆盖，可在启动器中切换到局域网。
+
+监听所有 IPv4 网卡不等于仅允许局域网：请设置访问密码、限制防火墙到可信网段，不要开放公网端口映射。跨网络访问可使用已配置的 VPN 或 SSH 隧道；程序不会自动配置防火墙或路由器，也不会关闭已有密码。
 
 > 也可以使用公网，但不建议把 OpenCodex 直接暴露到公网，还是推荐上述工具，更加安全可控
 
@@ -141,9 +143,9 @@ OpenCodex本身不提供远程访问服务，如果需要在其他设备中远�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | 通用命令行 gateway 监听地址；`linux:start` 安全部署入口默认为 `127.0.0.1`。 |
+| `HOST` | `0.0.0.0` | 通用命令行 gateway 监听地址；`linux:start` 也默认允许局域网访问，仍强制要求密码；可设 `HOST=127.0.0.1` 限制到本机。 |
 | `PORT` | `3737` | 命令行 gateway 监听端口。 |
-| `OPENCODEX_HOST` | `127.0.0.1` | Launcher 首次启动 gateway 时使用的默认监听地址。 |
+| `OPENCODEX_HOST` | `0.0.0.0` | Windows/macOS/Linux Launcher 首次启动默认为局域网模式；显式设置及已保存模式优先。 |
 | `OPENCODEX_PORT` | 随机可用端口 | Launcher 首次启动 gateway 时使用的默认端口。 |
 | `OPENCODEX_PREFERRED_LANGUAGES` | `zh-CN` | OpenCodex 自有界面语言首选列表，支持 JSON 数组或逗号分隔，例如 `["zh-Hans-CN","en-CN"]`。Launcher 会自动传入系统首选语言。 |
 | `OPENCODEX_PLUGIN_DIRS` | 空 | 外部插件根目录，结构需与 `web-shell/plugins` 一致；多个目录可用系统路径分隔符或 JSON 数组传入。 |

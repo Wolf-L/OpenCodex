@@ -10,7 +10,7 @@
 - Linux 下生效的 `CODEX_CLI_PATH` / `CODEX_APP_SERVER_BINARY_PATH`；支持 ChatGPT 和社区包布局。
 - `linux:init` 创建私有访问配置；`linux:doctor` 只读诊断；`linux:start` 前台启动与统一进程清理。
 - 有 X11 / KeX 时复用 `DISPLAY`，否则用带 xauth 的 `xvfb-run` 自动分配显示号；不使用 `-ac`。
-- 不要求 systemd、FUSE 或 AppImage；默认只监听 `127.0.0.1:3737`，即使本机访问也要求密码。
+- 不要求 systemd、FUSE 或 AppImage；默认监听 `0.0.0.0:3737`，允许局域网访问，本机和远程访问都必须输入密码。
 - Linux ARM64 的 DEB / tar.gz 打包入口及原生 ARM64 CI。**启动器包不包含官方桌面运行时或登录凭据。**
 
 ## 1. 在 Kali 内确认用户空间
@@ -162,16 +162,35 @@ export OPENCODEX_LINUX_DATA_DIR="$HOME/.local/state/opencodex-kali"
 
 ## 7. 手机 / 其他设备访问
 
-同一设备浏览器打开 **http://127.0.0.1:3737**。其他设备优先使用已经配置好的 SSH 隧道：
+默认启动即允许局域网访问：
 
 ```bash
-# 在访问端运行；替换成你的 Kali 用户/SSH 地址。先自行配置并验证 SSH 登录。
+pnpm run linux:start
+```
+
+同一局域网的设备在浏览器打开 **http://<Kali设备的局域网IPv4地址>:3737**，然后输入初始化时设置的 Web 密码。例如设备地址为 `192.168.1.10` 时，访问 `http://192.168.1.10:3737`。同一设备仍可打开 **http://127.0.0.1:3737**。不要在浏览器里填 `0.0.0.0`，它只是监听地址。
+
+如果以前导出过 `HOST=127.0.0.1`，需先 `unset HOST`，或明确启动：
+
+```bash
+HOST=0.0.0.0 pnpm run linux:start
+```
+
+**`0.0.0.0` 监听所有 IPv4 网卡，不只局域网。** 脚本不会修改防火墙或路由器；请仅允许可信局域网访问 TCP 3737，不要做公网端口映射。多网卡设备可用 `HOST=<实际局域网IPv4地址>` 限定监听网卡。Android/PRoot 的网络隔离、防火墙、Wi-Fi 访客网络或 AP 隔离可能阻止连接，允许监听不等于已验证目标设备间连通。
+
+不可信网络应使用 HTTPS/VPN 或 SSH 隧道；HTTP 密码哈希/会话令牌仍具有认证价值，不要为排错关闭密码。
+
+若希望恢复仅本机访问，或只通过已经配置好的 SSH 隧道接入：
+
+```bash
+# Kali 上仅监听回环
+HOST=127.0.0.1 pnpm run linux:start
+
+# 在访问端运行；替换成实际 Kali 用户/SSH 地址，先自行配置并验证 SSH 登录。
 ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 ```
 
-然后在访问端打开相同的本机 URL。脚本不安装或开放 SSH。
-
-确实需要监听可信局域网时，可以显式 `HOST=0.0.0.0 pnpm run linux:start`；依然必须配置访问密码，并由你配置防火墙及 HTTPS/VPN。HTTP 密码哈希/会话令牌仍具有认证价值，不能把裸 HTTP 暴露公网。不要为排错关闭 Web 密码。
+然后在访问端打开 `http://127.0.0.1:3737`。脚本不安装或开放 SSH。
 
 ## 8. ARM64 启动器打包（可选）
 

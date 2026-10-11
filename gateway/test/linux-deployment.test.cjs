@@ -19,14 +19,39 @@ function fixture(t) {
   return dir;
 }
 
-test("deployment defaults are loopback and private XDG state, without changing account paths", () => {
+test("deployment defaults allow LAN and retain private XDG state without changing account paths", () => {
   const home = path.resolve("test-home");
   const env = deploymentEnvironment({ CODEX_HOME: "/existing/account" }, home);
-  assert.equal(env.HOST, "127.0.0.1");
+  assert.equal(env.HOST, "0.0.0.0");
   assert.equal(env.PORT, "3737");
   assert.equal(env.CODEX_HOME, "/existing/account");
   assert.equal(env.CODEX_WEB_CONFIG_PATH, path.join(home, ".local/state/opencodex/config.yaml"));
   assert.equal(env.OPENCODEX_LINUX_NO_SANDBOX, undefined);
+});
+
+test("LAN binding is passed to the child and explicit loopback remains available", () => {
+  // 验证传入子进程的配置，不启动服务或在测试机开放网络端口。
+  for (const host of [undefined, "127.0.0.1", "192.168.1.10"]) {
+    const env = deploymentEnvironment({ ...(host ? { HOST: host } : {}), DISPLAY: ":1", DBUS_SESSION_BUS_ADDRESS: "fixture-session" });
+    assert.equal(buildLaunchPlan(env).env.HOST, host || "0.0.0.0");
+  }
+});
+
+test("LAN default warns about interfaces and still blocks absent or placeholder authentication", (t) => {
+  const home = fixture(t);
+  const env = deploymentEnvironment({ DISPLAY: ":1" }, home);
+  const collect = () => collectDiagnostics({ env, platform: "linux", arch: "arm64", uid: 1000, glibc: "2.41", appRoot: home, lookup: () => "" });
+  let report = collect();
+  assert.equal(report.checks.find((x) => x.id === "remote-listen").status, "warn");
+  assert.equal(report.checks.find((x) => x.id === "auth").status, "error");
+  assert.equal(report.ok, false);
+  fs.mkdirSync(path.dirname(env.CODEX_WEB_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(env.CODEX_WEB_CONFIG_PATH, 'auth:\n  password: "your-password"\n', { mode: 0o600 });
+  report = collect();
+  assert.equal(report.checks.find((x) => x.id === "auth").status, "error");
+  assert.equal(report.ok, false);
+  env.HOST = "127.0.0.1";
+  assert.equal(collect().checks.some((x) => x.id === "remote-listen"), false);
 });
 
 test("deployment honors explicitly chosen paths and listen address", () => {

@@ -10,7 +10,7 @@ This guide covers Linux `arm64` and `x64`, with particular attention to **Kali G
 - Linux support for `CODEX_CLI_PATH` and `CODEX_APP_SERVER_BINARY_PATH`, including ChatGPT and community package layouts.
 - `linux:init` for private access configuration, read-only `linux:doctor`, and foreground `linux:start` with child-process cleanup.
 - Reuse of an existing X11/KeX `DISPLAY`, or automatic display allocation through `xvfb-run` with xauth. No `-ac` access-control bypass.
-- No systemd, FUSE, or AppImage requirement. Default listen address: `127.0.0.1:3737`; a password is required even for local access.
+- No systemd, FUSE, or AppImage requirement. Default listen address: `0.0.0.0:3737`, allowing LAN access; both local and remote access require a password.
 - ARM64 DEB/tar.gz packaging commands and native ARM64 CI. **Launcher packages do not include the official desktop runtime or account credentials.**
 
 ## 1. Check the Kali Userspace
@@ -160,18 +160,31 @@ The scripts do not enable this switch automatically or modify system user namesp
 
 Ctrl-C stops the foreground service, forwards termination to the separate process group, and cleans up Xvfb, D-Bus, and child processes. Processes that refuse to exit are forcibly terminated after a grace period. You may run it manually in tmux, but Android power management can still terminate the entire Kali session; automatic background survival is not guaranteed.
 
-## 7. Access From a Phone or Another Computer
+## 7. Access from phones and other devices
 
-On the same device, open **http://127.0.0.1:3737**. For other devices, prefer an already configured SSH tunnel:
+`pnpm run linux:start` now allows LAN access by default. On another device on the same LAN, open **http://<Kali-device-LAN-IPv4>:3737** and enter the initialized Web password. For example, if Kali uses `192.168.1.10`, open `http://192.168.1.10:3737`. Local access remains available at **http://127.0.0.1:3737**. Do not use `0.0.0.0` as the browser address.
+
+If an earlier shell still exports `HOST=127.0.0.1`, run `unset HOST` first, or explicitly start with:
 
 ```bash
-# Run on the accessing device. Replace the Kali username/address and verify SSH login first.
+HOST=0.0.0.0 pnpm run linux:start
+```
+
+**`0.0.0.0` listens on every IPv4 interface, not only LAN interfaces.** The scripts do not modify firewalls or routers. Allow TCP 3737 only from trusted LAN subnets, and do not forward the port from the public Internet. On multi-interface hosts, use `HOST=<actual-LAN-IPv4>` to bind only that address. Android/PRoot networking, firewalls, guest Wi-Fi, or AP isolation may still block connectivity; a configured listener does not prove device-to-device access works.
+
+Use HTTPS/VPN or an SSH tunnel on untrusted networks. HTTP password hashes/session tokens remain authentication secrets; do not disable the Web password for troubleshooting.
+
+To restore local-only access, optionally with an already configured SSH tunnel:
+
+```bash
+# On Kali
+HOST=127.0.0.1 pnpm run linux:start
+
+# On the accessing device; replace with your verified Kali SSH login.
 ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 ```
 
-Then open the same localhost URL on that device. The scripts do not install or expose SSH.
-
-If you explicitly need a trusted-LAN listener, use `HOST=0.0.0.0 pnpm run linux:start`. A Web password remains mandatory; configure firewall and HTTPS/VPN protection yourself. Password hashes and session tokens transmitted over HTTP still have authentication value: do not expose plain HTTP to the public Internet. Do not disable Web authentication to troubleshoot.
+Then open `http://127.0.0.1:3737` on the accessing device. The scripts do not install or expose SSH.
 
 ## 8. Optional ARM64 Launcher Packaging
 

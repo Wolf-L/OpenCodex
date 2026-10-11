@@ -125,13 +125,15 @@ http://127.0.0.1:3737
 
 ### Linux Usage
 
-For Linux ARM64/x64, especially Kali on an Android kernel, source-based headless deployment is recommended. Use `linux:init`, `linux:doctor`, and `linux:start`; this path defaults to `127.0.0.1:3737`, requires a Web password, and needs neither systemd nor FUSE. See the [Linux deployment guide](LINUX_GUIDE_EN.md) for runtime preparation, Xvfb/KeX, and sandbox limitations.
+For Linux ARM64/x64, especially Kali on an Android kernel, source-based headless deployment is recommended. Use `linux:init`, `linux:doctor`, and `linux:start`; this path defaults to `0.0.0.0:3737` for LAN access, requires a Web password, and needs neither systemd nor FUSE. See the [Linux deployment guide](LINUX_GUIDE_EN.md) for runtime preparation, Xvfb/KeX, and sandbox limitations.
 
 Linux x64/ARM64 Launcher packaging and native CI are configured, including DEB and tar.gz output. This does not imply that prebuilt releases are already available or that the Android-kernel ARM64 target has been tested. Launcher packages do not bundle the official desktop runtime.
 
 ### Remote Access
 
-OpenCodex itself does not provide a remote access service. If you need remote access from another device, use Tailscale, ZeroTier, Cloudflare Tunnel, a company VPN, or a similar network solution, then enable LAN mode in the Launcher.
+Windows/macOS/Linux Launchers, the generic command-line gateway, and the Linux deployment entry now default to LAN access (`0.0.0.0`). Devices on the same LAN can open `http://<host-LAN-IP>:<port>`. The Launcher displays its actual address and port; the command-line port defaults to `3737`. An explicitly saved local-only mode is preserved and can be switched to LAN in the Launcher.
+
+All-interface listening is not a LAN-only firewall rule. Set an access password, restrict the firewall to trusted subnets, and do not forward the port to the public Internet. Use an already configured VPN or SSH tunnel for cross-network access. The application does not configure firewalls or routers, or disable existing passwords.
 
 > Public network access is also possible, but directly exposing OpenCodex to the public Internet is not recommended. The tools above are safer and easier to control.
 
@@ -139,9 +141,9 @@ OpenCodex itself does not provide a remote access service. If you need remote ac
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | Generic command-line gateway listen address; the linux:start deployment entry defaults to 127.0.0.1. |
+| `HOST` | `0.0.0.0` | Generic command-line gateway listen address; linux:start also allows LAN access by default and still requires a password. Set HOST=127.0.0.1 for local-only access. |
 | `PORT` | `3737` | Listen port for command-line gateway startup. |
-| `OPENCODEX_HOST` | `127.0.0.1` | Default listen address used when the Launcher starts the gateway for the first time. |
+| `OPENCODEX_HOST` | `0.0.0.0` | Windows/macOS/Linux Launcher defaults to LAN mode on first startup; explicit settings and saved modes take precedence. |
 | `OPENCODEX_PORT` | Random available port | Default port used when the Launcher starts the gateway for the first time. |
 | `OPENCODEX_PREFERRED_LANGUAGES` | `zh-CN` | Preferred language list for OpenCodex-owned UI, as a JSON array or comma-separated list, for example `["zh-Hans-CN","en-CN"]`. The Launcher automatically passes the system preferred languages. |
 | `OPENCODEX_PLUGIN_DIRS` | Empty | External plugin root directories matching the `web-shell/plugins` layout; pass multiple roots with the platform path delimiter or a JSON array. |

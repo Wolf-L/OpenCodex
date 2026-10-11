@@ -66,7 +66,7 @@ function collectDiagnostics({
   add("dbus", env.DBUS_SESSION_BUS_ADDRESS || lookup("dbus-run-session") ? "ok" : "warn", env.DBUS_SESSION_BUS_ADDRESS ? "使用现有 D-Bus 会话" : lookup("dbus-run-session") ? "启动时创建临时 D-Bus 会话，无需 systemd" : "缺少 dbus-run-session；建议安装 dbus 包");
   const port = Number(env.PORT);
   add("listen", Number.isInteger(port) && port >= 1 && port <= 65535 ? "ok" : "error", `监听 ${env.HOST}:${env.PORT}`);
-  if (!["127.0.0.1", "::1", "localhost"].includes(env.HOST)) add("remote-listen", "warn", "显式启用了远程监听：需防火墙与 HTTPS/VPN；不应裸露到公网，优先 SSH 隧道");
+  if (!["127.0.0.1", "::1", "localhost"].includes(env.HOST)) add("remote-listen", "warn", "已允许网络访问；0.0.0.0 会监听所有 IPv4 网卡，不只局域网。必须保留访问密码，并用防火墙限制可信网段；不要直接暴露公网，需要时使用 HTTPS/VPN 或 SSH 隧道");
   const auth = inspectAuthConfig(env.CODEX_WEB_CONFIG_PATH, { checkMode: platform === "linux" });
   add("auth", auth.ok ? "ok" : "error", auth.message);
   for (const key of ["CODEX_WEB_RUNTIME_DIR", "CODEX_WEB_REPORTS_DIR", "CODEX_WEB_OFFICIAL_BUNDLE_DIR", "CODEX_WEB_OFFICIAL_USER_DATA_DIR"]) {

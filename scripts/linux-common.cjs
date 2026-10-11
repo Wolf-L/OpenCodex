@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { findAuthPasswordScalar } = require("../shared/auth-config.cjs");
+const { DEFAULT_GATEWAY_HOST } = require("../shared/gateway-listen.cjs");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const PLACEHOLDERS = ["your-password", "your_password", "password", "changeme", "change-me"];
@@ -15,7 +16,8 @@ function deploymentEnvironment(env = process.env, home = os.homedir()) {
   const root = path.resolve(env.OPENCODEX_LINUX_DATA_DIR || path.join(env.XDG_STATE_HOME || path.join(home, ".local", "state"), "opencodex"));
   return {
     ...env,
-    HOST: env.HOST || "127.0.0.1",
+    // 按部署要求默认允许局域网接入；密码预检仍强制执行，可显式 HOST=127.0.0.1 收回到本机。
+    HOST: env.HOST || DEFAULT_GATEWAY_HOST,
     PORT: env.PORT || "3737",
     OPENCODEX_LINUX_DATA_DIR: root,
     CODEX_WEB_RUNTIME_DIR: path.resolve(env.CODEX_WEB_RUNTIME_DIR || path.join(root, "runtime")),
