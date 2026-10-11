@@ -23,7 +23,7 @@ const { gzipIfUseful, send } = require("./http-utils.cjs");
 const { OPENCODEX_VERSION_LABEL } = require("../../../shared/app-version.cjs");
 const { runtimeCompatibilityMessagesForLocale } = require("../../../shared/i18n/index.cjs");
 const { createHostModificationRuntime } = require("../modification/production-runtime.cjs");
-const { CUE_WARMUP_TOKEN, patchDictationCueWarmup } = require("./dictation-cue-warmup.cjs");
+const { CUE_SOUNDS_TOKEN, patchDictationCueSounds } = require("./dictation-cue-sounds.cjs");
 
 const configuredPatchedAssetCacheMaxBytes = Number(
   process.env.CODEX_WEB_PATCHED_ASSET_CACHE_MAX_BYTES || 96 * 1024 * 1024
@@ -34,7 +34,7 @@ const PATCHED_ASSET_CACHE_MAX_BYTES = Math.max(
     ? configuredPatchedAssetCacheMaxBytes
     : 96 * 1024 * 1024
 );
-const PATCHED_ASSET_PATCH_REVISION = "13";
+const PATCHED_ASSET_PATCH_REVISION = "14";
 const ASYNC_PATCH_MIN_BYTES = 512 * 1024;
 const OFFICIAL_ASSET_PATCH_WORKER_IDLE_MS = 30_000;
 const OFFICIAL_ASSET_PATCH_WORKER_PATH = path.join(__dirname, "official-asset-patch-worker.cjs");
@@ -341,6 +341,7 @@ function createStaticAssetService({
   const patchedOfficialPrefixes = Array.from(
     new Set([
       PATCHED_OFFICIAL_PREFIX,
+      "/official-patched-v10/",
       "/official-patched-v9/",
       "/official-patched-v8/",
       "/official-patched-v7/",
@@ -386,7 +387,7 @@ function createStaticAssetService({
     [staticPoints.historyTurnSignals, patchAppServerManagerSignalsChunk],
     [staticPoints.applicationMenu, patchApplicationMenuCapabilityCheck],
     [staticPoints.appServerRequestScheduling, patchAppServerRequestScheduling],
-    [staticPoints.dictationCueWarmup, patchDictationCueWarmupCompatibleSource],
+    [staticPoints.dictationCueSounds, patchDictationCueSoundsCompatibleSource],
     [staticPoints.pluginImageLazyLoad, patchPluginSummaryImageInlining],
     [staticPoints.openInFolderLocale, patchOpenInFolderLocaleMessage],
     ...dynamicHtmlPoints.map((point) => [point, () => undefined]),
@@ -416,7 +417,7 @@ function createStaticAssetService({
   const patchHistorySignalsCompatible = capabilityFor(staticPoints.historyTurnSignals);
   const patchApplicationMenuCompatible = capabilityFor(staticPoints.applicationMenu);
   const patchRequestSchedulingCompatible = capabilityFor(staticPoints.appServerRequestScheduling);
-  const patchCueWarmupCompatible = capabilityFor(staticPoints.dictationCueWarmup);
+  const patchCueSoundsCompatible = capabilityFor(staticPoints.dictationCueSounds);
   const patchPluginImageCompatible = capabilityFor(staticPoints.pluginImageLazyLoad);
   const patchOpenInFolderLocaleCompatible = capabilityFor(staticPoints.openInFolderLocale);
 
@@ -1512,10 +1513,10 @@ ${pluginGatewayStateBootstrapScript()}
       .replace(APP_SERVER_BACKGROUND_METHODS_RE, `new Set([${backgroundMethods}])`);
   }
 
-  function patchDictationCueWarmupCompatibleSource(source) {
-    return patchDictationCueWarmup(source, () => {
+  function patchDictationCueSoundsCompatibleSource(source) {
+    return patchDictationCueSounds(source, () => {
       failCompatibilityPoint(
-        staticPoints.dictationCueWarmup,
+        staticPoints.dictationCueSounds,
         "Official dictation cue lifecycle did not match"
       );
     });
@@ -1555,7 +1556,7 @@ ${pluginGatewayStateBootstrapScript()}
       /\/app-server-manager-signals-[^/]+\.js$/.test(reqPath) ||
       data.includes(APPLICATION_MENU_TOKEN) ||
       data.includes(APP_SERVER_REQUEST_CLIENT_DISPATCH_ERROR) ||
-      data.includes(CUE_WARMUP_TOKEN) ||
+      data.includes(CUE_SOUNDS_TOKEN) ||
       (!loopback &&
         (data.includes(OPEN_IN_FOLDER_LOCALE_TOKEN) ||
           (data.includes("composerIconPath") && data.includes("read-file-binary"))))
@@ -1575,7 +1576,7 @@ ${pluginGatewayStateBootstrapScript()}
       : source;
     patched = patchApplicationMenuCompatible(patched);
     patched = patchRequestSchedulingCompatible(patched);
-    patched = patchCueWarmupCompatible(patched);
+    patched = patchCueSoundsCompatible(patched);
     if (!loopback) {
       patched = patchPluginImageCompatible(patched);
       patched = patchOpenInFolderLocaleCompatible(patched, options.downloadMessage || downloadFileMessage());

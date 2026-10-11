@@ -73,7 +73,7 @@ const staticRenderer = Object.freeze({
   historyTurnSignals: requiredPoint("static.cache.renderer.history-turn-signals"),
   applicationMenu: requiredPoint("static.cache.renderer.application-menu"),
   appServerRequestScheduling: requiredPoint("static.cache.renderer.app-server-request-scheduling"),
-  dictationCueWarmup: requiredPoint("static.cache.renderer.dictation-cue-warmup"),
+  dictationCueSounds: requiredPoint("static.cache.renderer.dictation-cue-sounds"),
   pluginImageLazyLoad: requiredPoint("static.cache.renderer.plugin-image-lazy-load"),
   openInFolderLocale: requiredPoint("static.cache.renderer.open-in-folder-locale"),
 });
