@@ -70,6 +70,7 @@ const CODEX_BRIDGE_POLYFILL_PATH = "/codex-bridge-polyfill.js";
 const CODEX_REMOTE_FILE_ACTIONS_PATH = "/codex-remote-file-actions.js";
 const CODEX_WORKSPACE_ROOT_PICKER_CSS_PATH = "/codex-workspace-root-picker.css";
 const CODEX_WORKSPACE_ROOT_PICKER_PATH = "/codex-workspace-root-picker.js";
+const CODEX_MOBILE_LAYOUT_CSS_PATH = "/codex-mobile-layout.css";
 const CODEX_TOOLTIP_DISMISS_GUARD_PATH = "/codex-tooltip-dismiss-guard.js";
 const FAVICON_PATH = "/favicon.ico";
 const PWA_MANIFEST_PATH = "/manifest.webmanifest";
@@ -294,6 +295,7 @@ const WEB_SHELL_STATIC_FILES = new Map([
   [CODEX_REMOTE_FILE_ACTIONS_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-remote-file-actions.js")],
   [CODEX_WORKSPACE_ROOT_PICKER_CSS_PATH, path.join(WEB_SHELL_DIR, "codex-workspace-root-picker.css")],
   [CODEX_WORKSPACE_ROOT_PICKER_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-workspace-root-picker.js")],
+  [CODEX_MOBILE_LAYOUT_CSS_PATH, path.join(WEB_SHELL_DIR, "codex-mobile-layout.css")],
   [CODEX_TOOLTIP_DISMISS_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-tooltip-dismiss-guard.js")],
 ]);
 
@@ -946,7 +948,8 @@ function createStaticAssetService({
      * - manifest/移动 Web App 元数据，允许入口安装为独立窗口壳。
      * - bridge polyfill，把 Electron API 转成 HTTP/WS 调用。
      */
-    let html = rawHtml;
+    // 只去重本层拥有的样式节点；重复处理入口时不能把移动样式改写成官方资源路径。
+    let html = rawHtml.replace(/<link\b(?=[^>]*\sid\s*=\s*["']codex-mobile-layout-styles["'])[^>]*>/gi, "");
     const i18n = currentI18n();
     // 官方 HTML 是 Electron renderer 用的，浏览器里需要补 locale、移动端 viewport 和站点图标。
     html = patchHtmlLangCompatible(html, i18n.locale);
@@ -1023,6 +1026,11 @@ function createStaticAssetService({
       // aside 与 #root 保持相邻，加载期 CSS 才能把官方 Logo 居中到主内容区域。
       html = html.replace(/<body([^>]*)>/i, `<body$1>\n    ${previewMarkup}`);
     }
+    // 移动端覆盖放在官方样式之后；CSS 内部限定窄屏，不改变桌面布局或运行时交互。
+    html = html.replace(
+      /<\/head\s*>/i,
+      `    <link id="codex-mobile-layout-styles" rel="stylesheet" href="${CODEX_MOBILE_LAYOUT_CSS_PATH}">\n  </head>`
+    );
     return patchOfficialHtmlForWeb(html);
   }
 
@@ -1150,9 +1158,10 @@ function createStaticAssetService({
   }
 
   function patchHtmlViewport(rawHtml) {
+    // 保留键盘与安全区适配，但不禁止用户通过双指缩放阅读内容。
     return rawHtml.replace(
       /<meta([^>]*\bname=["']viewport["'][^>]*)>/i,
-      '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />'
+      '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />'
     );
   }
 

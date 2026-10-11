@@ -287,6 +287,90 @@ function runtimeBootstrapSource(service) {
   return res.body.toString("utf-8");
 }
 
+test("mobile layout stylesheet is served through the fixed public asset mapping with revalidation", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  const reqPath = "/codex-mobile-layout.css";
+  const file = path.resolve(__dirname, "..", "..", "web-shell", "codex-mobile-layout.css");
+  assert.equal(service.isPublicStaticPath(reqPath), true);
+  assert.equal(service.staticFile(reqPath), file);
+  const response = serveOfficialAssetResponse(service, reqPath);
+  assert.equal(response.status, 200);
+  assert.match(response.headers["content-type"], /^text\/css/);
+  assert.equal(response.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.deepEqual(response.body, fs.readFileSync(file));
+  const validated = serveOfficialAssetResponse(service, reqPath, "localhost:3737", {
+    "if-none-match": response.headers.etag,
+  });
+  assert.equal(validated.status, 304);
+  assert.equal(validated.body.length, 0);
+});
+
+test("mobile layout asset does not widen public path or file access", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  // 固定映射不接受近似文件名、嵌套路径或编码穿越，不把 CSS 入口扩展为目录权限。
+  for (const reqPath of [
+    "/codex-mobile-layout.css/../config.yaml",
+    "/codex-mobile-layout.css/extra",
+    "/codex-mobile-layout.css.bak",
+    "/codex-mobile-layout.css%2f..%2fconfig.yaml",
+    "/codex-mobile-layout.css\\..\\config.yaml",
+    "/CODEX-MOBILE-LAYOUT.CSS",
+    "/web-shell/codex-mobile-layout.css",
+  ]) {
+    assert.equal(service.isPublicStaticPath(reqPath), false, reqPath);
+    assert.equal(service.staticFile(reqPath), null, reqPath);
+  }
+});
+
+test("renderer injects one mobile stylesheet after official styles and removes only its own prior link", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const file = path.join(webviewDir, "index.html");
+  // 模拟缓存或上游入口已带有相同保留 ID；只去重移动层，不碰其他 stylesheet。
+  for (const priorLink of ["", '<link href="/codex-mobile-layout.css" rel="stylesheet" id="codex-mobile-layout-styles">']) {
+    fs.writeFileSync(file, `<html><head>${priorLink}<link rel="stylesheet" href="./assets/app-ABCDEFGH.css"><title>Codex</title></head><body></body></html>`);
+    const html = createService(webviewDir).createRendererResponse();
+    assert.equal((html.match(/id="codex-mobile-layout-styles"/g) || []).length, 1);
+    assert.equal((html.match(/href="\/codex-mobile-layout\.css"/g) || []).length, 1);
+    assert.ok(html.indexOf('id="codex-mobile-layout-styles"') > html.indexOf("assets/app-ABCDEFGH.css"));
+    assert.ok(html.indexOf('id="codex-mobile-layout-styles"') < html.indexOf("</head>"));
+    assert.doesNotMatch(html, /href="\/official\/codex-mobile-layout\.css"/);
+  }
+});
+
+test("official renderer and authentication viewport permit pinch zoom while preserving mobile insets", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  fs.writeFileSync(path.join(webviewDir, "index.html"), '<html><head><meta name="viewport" content="width=device-width, maximum-scale=1, user-scalable=no"><title>Codex</title></head><body></body></html>');
+  const service = createService(webviewDir);
+  const authResponse = makeResponseRecorder();
+  service.serveWebShellIndex(authResponse);
+  assert.equal(authResponse.status, 200);
+  // 同时检查真实响应，避免只改源码却被运行时重写重新禁用缩放。
+  for (const html of [service.createRendererResponse(), authResponse.body.toString("utf8")]) {
+    const viewport = /<meta\b[^>]*name="viewport"[^>]*>/i.exec(html)?.[0];
+    assert.ok(viewport);
+    assert.match(viewport, /width=device-width, initial-scale=1/);
+    assert.match(viewport, /viewport-fit=cover/);
+    assert.match(viewport, /interactive-widget=resizes-content/);
+    assert.doesNotMatch(viewport, /maximum-scale|user-scalable|minimum-scale/);
+  }
+});
+
+test("workspace root picker confines touch targets and safe-area sheet layout to phones", () => {
+  const css = fs.readFileSync(path.resolve(__dirname, "..", "..", "web-shell", "codex-workspace-root-picker.css"), "utf8");
+  const phoneIndex = css.indexOf("@media (max-width: 640px)");
+  assert.ok(phoneIndex > 0);
+  const desktop = css.slice(0, phoneIndex);
+  const phone = css.slice(phoneIndex);
+  assert.match(desktop, /\.codex-web-workspace-root-button\s*\{[^}]*height: 32px/s);
+  assert.match(phone, /\.codex-web-workspace-root-close\s*\{[^}]*width: 44px;[^}]*height: 44px/s);
+  assert.match(phone, /\.codex-web-workspace-root-button\s*\{[^}]*min-height: 44px/s);
+  assert.match(phone, /\.codex-web-workspace-root-input\s*\{[^}]*height: 44px;[^}]*font-size: 16px/s);
+  assert.match(phone, /\.codex-web-workspace-root-panel\s*\{[^}]*max-height: 100%;[^}]*overflow-y: auto/s);
+  assert.match(phone, /env\(safe-area-inset-bottom, 0px\)/);
+  assert.match(phone, /align-items: flex-end/);
+  assert.match(phone, /overscroll-behavior: contain/);
+});
+
 test("runtime compatibility diagnostics are public, grouped, explained, and reported before feature scripts", (t) => {
   const webviewDir = makeOfficialWebviewDir(t);
   const service = createService(webviewDir);

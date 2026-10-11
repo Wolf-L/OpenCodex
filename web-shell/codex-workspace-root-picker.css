@@ -156,12 +156,35 @@
   opacity: 0.64;
 }
 
-/* 窄屏只收缩容器，不放大控件；这样移动端也能维持 compact 弹窗比例。 */
+/* 手机改为底部抽屉，安全区留白只作用于弹窗自身，不叠加官方输入区的键盘补偿。 */
 @media (max-width: 640px) {
+  .codex-web-workspace-root-backdrop {
+    box-sizing: border-box;
+    align-items: flex-end;
+    padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) 0 max(8px, env(safe-area-inset-left, 0px));
+  }
+
   .codex-web-workspace-root-panel {
-    width: min(390px, calc(100vw - 24px));
-    border-radius: 18px;
-    padding: 20px;
+    width: 100%;
+    max-height: 100%;
+    border-radius: 24px 24px 0 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    /* 短屏、横屏和长路径下仍可滚到操作区，不依赖额外的 viewport 监听器。 */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .codex-web-workspace-root-header {
+    align-items: center;
+  }
+
+  .codex-web-workspace-root-close {
+    width: 44px;
+    height: 44px;
+    line-height: 44px;
+    font-size: 24px;
+    touch-action: manipulation;
   }
 
   .codex-web-workspace-root-title {
@@ -170,26 +193,32 @@
 
   .codex-web-workspace-root-description {
     font-size: 13px;
+    overflow-wrap: anywhere;
   }
 
   .codex-web-workspace-root-input {
-    height: 36px;
+    height: 44px;
     font-size: 16px;
   }
 
   .codex-web-workspace-root-input-multiple {
-    height: 104px;
-    min-height: 72px;
+    height: 120px;
+    min-height: 88px;
   }
 
   .codex-web-workspace-root-actions {
     gap: 10px;
+    flex-wrap: wrap;
   }
 
   .codex-web-workspace-root-button {
-    min-width: 56px;
-    height: 32px;
+    flex: 1 1 100px;
+    min-width: 44px;
+    min-height: 44px;
+    height: auto;
     font-size: 14px;
-    padding: 0 14px;
+    padding: 10px 14px;
+    overflow-wrap: anywhere;
+    touch-action: manipulation;
   }
 }

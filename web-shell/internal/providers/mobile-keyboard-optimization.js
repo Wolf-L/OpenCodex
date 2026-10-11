@@ -14,6 +14,7 @@
 
   const POST_SEND_FOCUS_BLOCK_MS = 4000;
   const MANUAL_FOCUS_MS = 900;
+  const KEYBOARD_VISIBLE_THRESHOLD_PX = 120;
 
   function isComposerEditableElement(element) {
     return !!(
@@ -74,7 +75,10 @@
         bodyHeight: Math.max(0, Number(document.body?.clientHeight || 0)),
         innerHeight,
         layoutHeight,
+        // 使用布局宽度区分旋转/窗口尺寸变化，不能把双指缩放后的 visualViewport 宽度当方向变化。
+        layoutWidth: Math.max(0, Number(root.clientWidth || w.innerWidth || viewport?.width || 0)),
         offsetTop,
+        scale: Math.max(0, Number(viewport?.scale || 1)),
         visualBottom: visualHeight + offsetTop,
         visualHeight,
       });
@@ -261,6 +265,8 @@
 
       let focusBlockedUntilMs = 0;
       let lastManualFocusIntentAtMs = 0;
+      let largestObservedViewportHeight = 0;
+      let lastViewportWidth = null;
 
       const isEnabled = () => context.plugin.isEnabled();
       const isMobile = () => !!context.platform.isMobile();
@@ -288,7 +294,8 @@
 
           html[data-opencodex-mobile-keyboard-optimization="true"] body {
             width: 100%;
-            touch-action: pan-x pan-y;
+            /* 保留滚动手势，也允许用户双指缩放；不能仅靠 viewport meta 放开缩放。 */
+            touch-action: pan-x pan-y pinch-zoom;
             overscroll-behavior: none;
           }
 
@@ -326,6 +333,9 @@
           enabled && isMobile() && isIOSWebKitDevice() ? "true" : "false"
         );
         if (!enabled) {
+          setDatasetValue(root, "opencodexMobileKeyboardVisible", "false");
+          largestObservedViewportHeight = 0;
+          lastViewportWidth = null;
           root.style.removeProperty("--codex-visual-viewport-height");
           root.style.removeProperty("--codex-visual-viewport-offset-top");
           root.style.removeProperty("--codex-keyboard-inset-bottom");
@@ -333,7 +343,7 @@
         return enabled;
       };
 
-      const setViewportVars = (snapshot = viewportCoordinator.snapshot()) => {
+      const setViewportVars = (snapshot = viewportCoordinator.snapshot(), reason = "viewport") => {
         if (!syncEnabledState()) return;
         const height = Math.max(0, Math.floor(snapshot.visualHeight));
         const offsetTop = Math.max(0, Math.floor(snapshot.offsetTop));
@@ -345,6 +355,28 @@
           ? Math.max(0, layoutHeight - viewportBottom, innerHeight - viewportBottom)
           : Math.max(0, innerHeight - viewportBottom);
         const root = document.documentElement;
+        const width = Math.max(0, Math.round(Number(snapshot.layoutWidth || w.innerWidth || root.clientWidth || 0)));
+        const scale = Number(snapshot.scale || 1);
+        const orientationChanged = reason === "orientationchange";
+        const widthChanged = lastViewportWidth !== null && lastViewportWidth !== width;
+        // Android resizes-content 会连 innerHeight 一起压缩，必须保留同一方向的最大高度作为基线。
+        // 旋转或宽度改变后立即重建基线，避免把横屏较矮的可视区域误认为软键盘。
+        if (orientationChanged || widthChanged) largestObservedViewportHeight = 0;
+        lastViewportWidth = width;
+        const unzoomed = Math.abs(scale - 1) < 0.01;
+        if (unzoomed) {
+          // 旋转首帧的根节点可能仍保留上一帧注入的高度，不能把该旧 CSS 高度带进新方向基线。
+          const currentLayoutHeight = orientationChanged || widthChanged ? 0 : layoutHeight;
+          largestObservedViewportHeight = Math.max(largestObservedViewportHeight, height, currentLayoutHeight, innerHeight);
+        }
+        const active = document.activeElement;
+        const nonTextInput = active?.tagName === "INPUT" && /^(?:button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(active.type || "text");
+        const focusedEditable = isComposerEditableElement(active) && !active.disabled && !active.readOnly && !nonTextInput && active.inputMode !== "none";
+        const visibleKeyboard = isMobile() && !isIOSWebKitDevice() && unzoomed && focusedEditable &&
+          reason !== "focusout" && !orientationChanged && !widthChanged &&
+          (keyboardInset > KEYBOARD_VISIBLE_THRESHOLD_PX || largestObservedViewportHeight - height > KEYBOARD_VISIBLE_THRESHOLD_PX);
+        // 焦点本身不代表软键盘可见：硬件键盘、地址栏伸缩与缩放都不应隐藏手机导航。
+        setDatasetValue(root, "opencodexMobileKeyboardVisible", visibleKeyboard ? "true" : "false");
         if (height > 0) setStyleValue(root, "--codex-visual-viewport-height", `${height}px`);
         setStyleValue(root, "--codex-visual-viewport-offset-top", `${offsetTop}px`);
         setStyleValue(root, "--codex-keyboard-inset-bottom", `${keyboardInset}px`);
@@ -384,17 +416,10 @@
         viewportCoordinator.request("mobile-plugin", { immediate: true, settleDelays: [80, 240] });
       };
 
-      const disposeViewport = viewportCoordinator.subscribe((snapshot) => {
-        setViewportVars(snapshot);
+      const disposeViewport = viewportCoordinator.subscribe((snapshot, reason) => {
+        setViewportVars(snapshot, reason);
         keepActiveInputVisible(snapshot);
       });
-
-      const preventZoomGesture = (event) => {
-        if (!isEnabled() || !isMobile()) return;
-        if (event.touches && event.touches.length < 2) return;
-        event.preventDefault();
-        modificationEffects?.primary?.emit();
-      };
 
       const rememberManualFocusIntent = (event) => {
         const target = event && event.target;
@@ -438,9 +463,6 @@
       });
 
       const eventDisposers = [
-        adapterHost.events.observe({ key: {}, target: document, type: "touchmove", passive: false, callback: preventZoomGesture }),
-        adapterHost.events.observe({ key: {}, target: document, type: "gesturestart", passive: false, callback: preventZoomGesture }),
-        adapterHost.events.observe({ key: {}, target: document, type: "gesturechange", passive: false, callback: preventZoomGesture }),
         adapterHost.events.observe({ key: {}, target: document, type: "pointerdown", capture: true, callback: rememberManualFocusIntent }),
         adapterHost.events.observe({ key: {}, target: document, type: "touchstart", capture: true, callback: rememberManualFocusIntent }),
       ];
@@ -453,6 +475,7 @@
         for (const disposeEvent of eventDisposers.reverse()) disposeEvent();
         if (style.parentNode) style.parentNode.removeChild(style);
         document.documentElement.removeAttribute("data-opencodex-mobile-keyboard-optimization");
+        document.documentElement.removeAttribute("data-opencodex-mobile-keyboard-visible");
         document.documentElement.removeAttribute("data-opencodex-ios-keyboard-optimization");
         document.documentElement.style.removeProperty("--codex-visual-viewport-height");
         document.documentElement.style.removeProperty("--codex-visual-viewport-offset-top");
