@@ -292,6 +292,7 @@
   "web.runtimeCompatibility.point.static.cache.renderer.history-turn-signals.description": "Restore Turn signals for conversation history.",
   "web.runtimeCompatibility.point.static.cache.renderer.application-menu.description": "Adapt Application Menu capability for the Web environment.",
   "web.runtimeCompatibility.point.static.cache.renderer.app-server-request-scheduling.description": "Adjust scheduling for background App Server requests.",
+  "web.runtimeCompatibility.point.static.cache.renderer.dictation-cue-warmup.description": "Defer optional dictation cue warmup until the composer has settled.",
   "web.runtimeCompatibility.point.static.cache.renderer.plugin-image-lazy-load.description": "Load plugin images lazily.",
   "web.runtimeCompatibility.point.static.cache.renderer.open-in-folder-locale.description": "Rename Open in Folder to remote download.",
   "web.runtimeCompatibility.point.static.cache.runner.macos-background-bundle.description": "Generate the macOS background Runner bundle.",

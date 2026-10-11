@@ -2019,7 +2019,7 @@ test("content hash caching excludes unversioned namespaces and unhashed or unsup
     "error-878d0efcada6.wav",
   ]) {
     fs.writeFileSync(path.join(assetsDir, assetName), "static asset");
-    for (const prefix of ["/official-patched/", "/official-patched-v7/", "/official-patched-v8/"]) {
+    for (const prefix of ["/official-patched/", "/official-patched-v7/", "/official-patched-v8/", "/official-patched-v9/"]) {
       const response = serveOfficialAssetResponse(service, `${prefix}assets/${assetName}`);
       assert.equal(response.status, 200, `${prefix}${assetName}`);
       assert.equal(response.headers["cache-control"], "no-store", `${prefix}${assetName}`);

@@ -389,6 +389,7 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("static.cache.renderer.history-turn-signals", "补齐历史会话 Turn 信号", "renderer-cache", G.startupHistory, A.officialRendererPatch),
   point("static.cache.renderer.application-menu", "适配 Web 环境 Application Menu 能力", "renderer-cache", G.rendererUi, A.officialRendererPatch),
   point("static.cache.renderer.app-server-request-scheduling", "调整 App Server 后台请求调度", "renderer-cache", G.backgroundEfficiency, A.officialRendererPatch),
+  point("static.cache.renderer.dictation-cue-warmup", "延后首屏提示音预热", "renderer-cache", G.backgroundEfficiency, A.officialRendererPatch),
   point("static.cache.renderer.plugin-image-lazy-load", "延迟加载插件图片", "renderer-cache", G.rendererResources, A.officialRendererPatch),
   point("static.cache.renderer.open-in-folder-locale", "把打开文件夹文案改为远端下载", "renderer-cache", G.remoteFiles, A.officialRendererPatch),
   point("static.cache.runner.macos-background-bundle", "生成 macOS 后台 Runner Bundle", "runner-cache", G.runnerPackaging, A.runnerArtifact),
