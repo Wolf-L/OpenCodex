@@ -305,8 +305,9 @@ class CodexBinaryLocator {
     ]);
     const candidates = [];
     for (const binRoot of binRoots) {
-      candidates.push(path.join(binRoot, "codex.exe"));
+      // 新版桌面端使用按版本分目录的 CLI；根目录可能残留旧版，不能让它抢先解析新版配置。
       candidates.push(...this.versionedWindowsCliCandidates(binRoot));
+      candidates.push(path.join(binRoot, "codex.exe"));
     }
     return this.uniqueNonEmpty(candidates);
   }

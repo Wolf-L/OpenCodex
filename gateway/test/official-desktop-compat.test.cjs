@@ -10,6 +10,7 @@ const asar = require("@electron/asar");
 const {
   CodexAsarScanner,
   CodexAsarCandidateProvider,
+  CodexBinaryLocator,
 } = require("../dist/official/CodexAsarScanner.js");
 const { AsarWebviewExtractor } = require("../dist/official/AsarWebviewExtractor.js");
 const { LocalCodexBundleProvider } = require("../dist/official/LocalCodexBundleProvider.js");
@@ -111,6 +112,73 @@ test("scanner falls back from a missing cached Codex source to ChatGPT and still
 
   fs.rmSync(chatGptRoot, { recursive: true, force: true });
   assert.equal(scanner.find().asarPath, fs.realpathSync(codexAsar));
+});
+
+test("Windows CLI locator prefers the newest versioned runtime over a legacy root binary", (t) => {
+  const root = temporaryDirectory(t);
+  const binRoot = path.join(root, "local", "OpenAI", "Codex", "bin");
+  const legacy = path.join(binRoot, "codex.exe");
+  const oldVersion = path.join(binRoot, "old-hash", "codex.exe");
+  const currentVersion = path.join(binRoot, "current-hash", "codex.exe");
+  const resourcesDir = path.join(root, "official", "resources");
+  // 目录名是构建哈希，不是语义版本；沿用修改时间选择版本化 CLI，根目录仅作回退。
+  for (const file of [legacy, oldVersion, currentVersion, path.join(resourcesDir, "codex.exe")]) writeFile(file);
+  fs.utimesSync(oldVersion, 100, 100);
+  fs.utimesSync(currentVersion, 200, 200);
+  fs.utimesSync(legacy, 300, 300);
+  const locator = new CodexBinaryLocator({
+    fileSystem: new OfficialBundleFileSystem(),
+    platform: "win32",
+    env: { LOCALAPPDATA: path.join(root, "local") },
+    homeDir: path.join(root, "home"),
+  });
+  assert.equal(locator.find({ installRoot: path.dirname(resourcesDir), resourcesDir }), currentVersion);
+});
+
+test("Windows CLI locator retains explicit overrides and legacy or packaged fallbacks", (t) => {
+  const root = temporaryDirectory(t);
+  const binRoot = path.join(root, "local", "OpenAI", "Codex", "bin");
+  const resourcesDir = path.join(root, "official", "resources");
+  const versioned = path.join(binRoot, "current-hash", "codex.exe");
+  const legacy = path.join(binRoot, "codex.exe");
+  const packaged = path.join(resourcesDir, "codex.exe");
+  const explicitServer = path.join(root, "explicit-server.exe");
+  const explicitCli = path.join(root, "explicit-cli.exe");
+  for (const file of [versioned, legacy, packaged, explicitServer, explicitCli]) writeFile(file);
+  const env = {
+    LOCALAPPDATA: path.join(root, "local"),
+    CODEX_APP_SERVER_BINARY_PATH: explicitServer,
+    CODEX_CLI_PATH: explicitCli,
+  };
+  const locator = new CodexBinaryLocator({
+    fileSystem: new OfficialBundleFileSystem(), platform: "win32", env, homeDir: path.join(root, "home"),
+  });
+  const find = () => locator.find({ installRoot: path.dirname(resourcesDir), resourcesDir });
+  assert.equal(find(), explicitServer);
+  fs.unlinkSync(explicitServer);
+  assert.equal(find(), explicitCli);
+  fs.unlinkSync(explicitCli);
+  assert.equal(find(), versioned);
+  // 版本目录尚未解包完成时不能阻塞旧 CLI 与安装包内 CLI 的回退。
+  fs.unlinkSync(versioned);
+  assert.equal(find(), legacy);
+  fs.unlinkSync(legacy);
+  assert.equal(find(), packaged);
+  fs.unlinkSync(packaged);
+  assert.equal(find(), null);
+});
+
+test("non-Windows CLI locator still uses the bundled executable", (t) => {
+  const root = temporaryDirectory(t);
+  const resourcesDir = path.join(root, "resources");
+  const bundled = path.join(resourcesDir, "codex");
+  writeFile(bundled);
+  for (const platform of ["darwin", "linux"]) {
+    const locator = new CodexBinaryLocator({
+      fileSystem: new OfficialBundleFileSystem(), platform, env: {}, homeDir: root,
+    });
+    assert.equal(locator.find({ installRoot: root, resourcesDir }), bundled);
+  }
 });
 
 test("runtime entry resolver accepts legacy and early bootstrap across ASAR separators", () => {

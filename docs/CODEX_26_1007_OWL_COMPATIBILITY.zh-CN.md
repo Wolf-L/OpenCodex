@@ -4,11 +4,27 @@
 
 ## 结论
 
-**构建通过，存在已确认的静态适配缺口，真实 OWL 启动及完整功能尚未验证。不能标记为“完整兼容”或“开箱即用”。**
+**本机 Windows/OWL 启动链路已修复，网关、CLI 初始化及浏览器主界面已实测通过；完整功能仍未验证，不能标记为“完整兼容”。**
 
-这也不是“已证实无法启动”：优化器将不匹配项记录为降级，而不是必然阻断网关启动。Git/worktree 的优化补丁不匹配，不等于相应业务功能已被证明失效。
+优化器将不匹配项记录为降级，而不是必然阻断网关启动。Git/worktree 的优化补丁不匹配，不等于相应业务功能已被证明失效。
 
-本次只做源码审查、离线测试和对官方资源副本的只读预检。未启动官方 runtime、未复用登录态、未调用模型；没有改动官方安装。此分支只记录检查结果，不包含兼容性修复。
+初轮仅做源码审查、离线测试和只读预检。后续在用户授权安装、复用现有配置并修复启动后，加入下述补丁并运行了独立的 OWL 工作副本；没有修改官方安装，也没有发送模型测试消息。
+
+## 后续启动修复与验收
+
+| 阻塞 | 修复与证据 |
+| --- | --- |
+| Windows SideBySide 14001，runner 无法启动 | 对工作副本根目录的外部 `.manifest` 做普通读写重新落盘，首次复制和缓存命中都执行。原样字节重写后 `CreateActCtxW` 成功，实际 runner 进入 gateway 入口。机制尚未完全确定，不归因于签名或安全软件。 |
+| `agents` 配置解析报 `expected struct AgentRoleToml` | 旧的非版本化 CLI `0.130.0-alpha.5` 抢在版本目录前被选中。调整候选顺序，优先现有版本目录，再回退旧路径；显式环境覆盖仍优先。隔离的同一模型/agents 配置在旧 CLI 失败、新 CLI `0.162.0-alpha.17.2` 成功，实际 app-server 握手也成功。没有删除或改写用户的 agents 字段。 |
+| 登录后白屏，JS/CSS 返回 404 | Windows native realpath 对文件返回 MSIX 包缓存物理别名，根目录却返回逻辑路径，导致边界检查拒绝合法资源。Windows 改用 JS realpath，仍解析符号链接/目录联接并检查根目录边界；没有用字符串前缀或“失败即放行”绕过检查。 |
+
+实机验收：仅本机监听，访问密码认证通过，浏览器显示聊天首页、输入框及模型选择器。未发送模型消息；账号远程功能、所有原生能力及完整业务流程不在本轮验收范围内。缓存重启复用了已处理的官方 bundle，CLI 仍为上述新版。
+
+新增 9 项针对性回归覆盖 manifest 首次/缓存复制、CLI 候选顺序/回退、路径遍历/目录联接及 MSIX 别名，全部通过。重新执行下方原 7 个文件，以及 `portable-runtime-manifest.test.cjs`、`root-containment.test.cjs`、`static-assets.test.cjs`：**157 项，155 通过、2 失败、0 跳过**，并非全套测试全绿。
+
+两项失败均在基线可复现：下方记录的 Windows Git fixture，以及 `static-assets.test.cjs` 的 `runtime compatibility page follows the public authentication locale`（旧的中文文案断言）。后者使用基线 `config.cjs` 在隔离进程复验仍失败；本轮没有改动或跳过这些断言。
+
+本机安装使用原 2.1.0 发行包加可回滚的三文件补丁，不是新的上游正式发行版。修复只覆盖上述启动阻塞，后文列出的静态缺口仍需分别验证。
 
 ## 检查基线
 
@@ -25,7 +41,7 @@
 
 检查结束时，官方 `app.asar` 的 SHA256 与检查前一致。报告不附带官方专有资源、用户目录、配置、日志或凭据。
 
-## 已执行的检查
+## 初轮已执行的检查
 
 - `pnpm install --frozen-lockfile --ignore-scripts`：通过；未执行 Electron 安装脚本。
 - `pnpm run build:gateway`：通过，包括 TypeScript、浏览器 bundle、修改边界和版本检查。
@@ -85,7 +101,7 @@ gateway/test/official-electron-module-hook.test.cjs
 ### Windows / OWL 启动链
 
 1. **入口识别符合实际布局。** Windows manifest helper 找到 `ChatGPT.exe`；entry resolver 已接受 `early-bootstrap.js`。不能把兼容壳 `Codex.exe` 当成实际 runtime。
-2. **ASAR integrity 的处理方向合理，但未做启动验收。** 官方 EXE 存在 `INTEGRITY/ELECTRONASAR/1033` 资源，其 header hash 与 `app.asar` 一致。OWL 的 fuse 位于 `chrome.dll`，embedded integrity / ASAR-only 已开启。现有 runner 修补的是复制的 EXE，而不是官方安装；没有证据需要关闭 fuse。
+2. **ASAR integrity 处理使用工作副本。** 官方 EXE 存在 `INTEGRITY/ELECTRONASAR/1033` 资源，其 header hash 与 `app.asar` 一致。OWL 的 fuse 位于 `chrome.dll`，embedded integrity / ASAR-only 已开启。现有 runner 修补的是复制的 EXE，而不是官方安装；后续启动验收已通过，没有关闭 fuse。
 3. **已确认复制时遗漏 OWL resources 配置。** `portable.cjs` 排除原 `resources` 后生成自己的 runner ASAR，因此不保留 `resources/owl-app.ini` 和 `resources/owl-electron-app.json`。顶层 `owl-shell-runtime.json` 与 `chrome.dll` 会复制。两个配置是否为原生启动必需项**尚未知**，不能直接断言会启动失败。
 4. **stock Electron 不是等价替代。** 此版本官方 JS 使用 OWL 专属 runtime feature API；换一个普通 Electron 跑通不能证明 OWL 兼容。
 
@@ -111,7 +127,7 @@ gateway/test/official-electron-module-hook.test.cjs
 
 实现依据：[浏览器 polyfill](../web-shell/internal/providers/codex-bridge-polyfill.js)（消息分发、bridge 对象及 adaptive Proxy）、[官方 runtime 桥接](../gateway/runtime/ipc/official-runtime.cjs)（app-host 专用通道、postMessage hook）、[ws-hub](../gateway/runtime/ipc/ws-hub.cjs)。本机版本的对照材料为 `preload.js` 和 `app-initial-b8e1c8014bb4.js`，未重新分发其源码。
 
-## 为什么没有直接启动现有用户环境
+## 初轮为什么没有直接启动现有用户环境
 
 源码默认行为不等于无副作用测试环境：
 
@@ -120,7 +136,7 @@ gateway/test/official-electron-module-hook.test.cjs
 - runner 设置 `userData`，不代表 Electron `home/appData/logs/sessionData` 和原生 Known Folder 路径都隔离。
 - 代理环境变量、`--disable-background-networking` 不能证明 Node、Rust app-server、原生模块或直接 socket 已禁止外联。
 
-因此没有为了“试一下”接入当前登录态、重启正在使用的官方客户端或修改宿主防火墙。严格隔离启动验证应在无真实凭据、禁用外网的独立 OS 用户/虚拟环境内完成；路径重定向不是 OS 安全边界。
+因此初轮没有为了“试一下”接入当前登录态、重启正在使用的官方客户端或修改宿主防火墙。后续实机安装是在用户明确授权复用配置后进行，不属于无副作用隔离测试。严格隔离启动验证应在无真实凭据、禁用外网的独立 OS 用户/虚拟环境内完成；路径重定向不是 OS 安全边界。
 
 相关实现：[ASAR 扫描](../gateway/src/official/CodexAsarScanner.ts)、[runner 入口](../gateway/runner/shared/runner-source.cjs)、[隐藏运行时参数](../gateway/runtime/electron/hidden-runtime-command-line.cjs)。
 

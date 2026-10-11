@@ -41,7 +41,7 @@ function shouldSkipPortableRuntimeEntry(entry, sourcePath, layout) {
   return false;
 }
 
-function portableRuntimeFingerprint(layout) {
+function portableRuntimeFingerprint(layout, platform = process.platform) {
   const entries = [];
   try {
     for (const entry of fs.readdirSync(layout.runtimeRoot, { withFileTypes: true })) {
@@ -55,7 +55,7 @@ function portableRuntimeFingerprint(layout) {
     }
   } catch {}
   return {
-    platform: process.platform,
+    platform,
     arch: process.arch,
     source: realpathSafe(layout.runtimeRoot),
     appRoot: realpathSafe(layout.appRoot),
@@ -69,7 +69,7 @@ function samePortableRuntimeFingerprint(left, right) {
   return JSON.stringify(left || null) === JSON.stringify(right || null);
 }
 
-function copyFileByReadWriteSync(sourcePath, targetPath) {
+function copyFileByReadWriteSync(sourcePath, targetPath, { preserveTimestamps = true } = {}) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const buffer = Buffer.allocUnsafe(WINDOWS_READ_WRITE_COPY_BUFFER_SIZE);
   let sourceFd = null;
@@ -96,7 +96,7 @@ function copyFileByReadWriteSync(sourcePath, targetPath) {
   try {
     const stat = fs.statSync(sourcePath);
     fs.chmodSync(targetPath, stat.mode);
-    fs.utimesSync(targetPath, stat.atime, stat.mtime);
+    if (preserveTimestamps) fs.utimesSync(targetPath, stat.atime, stat.mtime);
   } catch {}
 }
 
@@ -248,8 +248,26 @@ function copyPortableRuntimeExecutable({ sourcePath, targetPath, logger, platfor
   });
 }
 
-function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger }) {
-  const nextFingerprint = portableRuntimeFingerprint(layout);
+function refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform = process.platform }) {
+  if (platform !== "win32") return;
+
+  for (const entry of fs.readdirSync(layout.runtimeRoot, { withFileTypes: true })) {
+    // 仅重写运行时根目录的外部程序集清单；不改官方源文件，也不接触 PE 内嵌清单或安全标志。
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".manifest")) continue;
+    const sourcePath = path.join(layout.runtimeRoot, entry.name);
+    if (shouldSkipPortableRuntimeEntry(entry, sourcePath, layout)) continue;
+    const targetPath = path.join(runnerRootDir, entry.name);
+    /**
+     * 曾观察到复制成功的 OWL 清单仍导致 SideBySide 14001，而相同字节普通读写后可正常解析。
+     * 具体机制尚未确定；缓存命中也重新落盘，并保留本次写入时间，避免复用旧副本状态。
+     */
+    copyFileByReadWriteSync(sourcePath, targetPath, { preserveTimestamps: false });
+    logLine(logger, `official Electron runtime refreshed Windows manifest via read/write: ${entry.name}`);
+  }
+}
+
+function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger, platform = process.platform }) {
+  const nextFingerprint = portableRuntimeFingerprint(layout, platform);
   const previous = readJsonIfPresent(markerPath);
   if (
     previous &&
@@ -257,6 +275,7 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
     isDirectory(runnerRootDir) &&
     isFile(runnerExecutablePath)
   ) {
+    refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
     logLine(logger, `official Electron runtime cache hit: ${runnerRootDir}`);
     return { copied: false };
   }
@@ -270,10 +289,11 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
   for (const entry of fs.readdirSync(layout.runtimeRoot, { withFileTypes: true })) {
     const sourcePath = path.join(layout.runtimeRoot, entry.name);
     if (shouldSkipPortableRuntimeEntry(entry, sourcePath, layout)) continue;
-    copyPortableRuntimeEntry({ entry, sourcePath, targetPath: path.join(runnerRootDir, entry.name), logger });
+    copyPortableRuntimeEntry({ entry, sourcePath, targetPath: path.join(runnerRootDir, entry.name), logger, platform });
   }
-  copyPortableRuntimeExecutable({ sourcePath: layout.executablePath, targetPath: runnerExecutablePath, logger });
-  if (process.platform !== "win32") fs.chmodSync(runnerExecutablePath, 0o755);
+  copyPortableRuntimeExecutable({ sourcePath: layout.executablePath, targetPath: runnerExecutablePath, logger, platform });
+  refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
+  if (platform !== "win32") fs.chmodSync(runnerExecutablePath, 0o755);
   writeJson(markerPath, {
     fingerprint: nextFingerprint,
     copiedAt: new Date().toISOString(),
@@ -334,5 +354,6 @@ module.exports = {
   __test: {
     copyPortableRuntimeEntry,
     copyPortableRuntimeExecutable,
+    ensurePortableRuntimeCopy,
   },
 };

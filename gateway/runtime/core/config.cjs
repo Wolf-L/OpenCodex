@@ -91,6 +91,9 @@ function positiveIntegerFromEnv(name, fallback) {
 
 function realpathSafe(filePath) {
   try {
+    // Windows 的 MSIX 文件虚拟化可能只把文件句柄映射到包缓存，目录仍保留逻辑路径。
+    // JS realpath 会解析符号链接/目录联接，并让文件与根目录保持同一命名空间；不放宽边界判断。
+    if (process.platform === "win32") return fs.realpathSync(filePath);
     return fs.realpathSync.native ? fs.realpathSync.native(filePath) : fs.realpathSync(filePath);
   } catch {
     return null;
