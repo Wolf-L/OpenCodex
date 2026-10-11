@@ -1591,11 +1591,12 @@ ${pluginGatewayStateBootstrapScript()}
       }
       /**
        * patched JS 的相对动态导入会让 CSS、字体和图片也落到当前 patched 命名空间；
-       * 这些文件不做响应期改写，只要文件名含 Vite content hash，就能和未改写 JS 一样安全长缓存。
+       * 未改写资源兼容旧版 8 位 Vite hash 和新版 12 位十六进制内容摘要；
+       * 不能按任意长度字母后缀放宽，否则普通文件名也会被误判为不可变资源。
        */
       if (
         reqPath.startsWith(PATCHED_OFFICIAL_PREFIX) &&
-        /-[A-Za-z0-9_-]{8}\.(?:avif|css|gif|ico|jpe?g|js|png|svg|webp|woff2?)$/i.test(
+        /-(?:[A-Za-z0-9_-]{8}|[a-f0-9]{12})\.(?:avif|css|gif|ico|jpe?g|js|png|svg|webp|woff2?)$/i.test(
           patchedOfficialAssetName(reqPath)
         )
       ) {

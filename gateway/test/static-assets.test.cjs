@@ -1755,6 +1755,162 @@ test("only caches content-hashed patched assets as immutable", (t) => {
   assert.equal(legacy.headers["cache-control"], "no-store");
 });
 
+test("current twelve-digit content hashes cache unchanged scripts and static assets", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  // 覆盖实际大包命名以及相对导入的样式、字体和图片，防止刷新时又退回 no-store。
+  const assetNames = [
+    "app-shared-737655e1fb23.js",
+    "app-ABCDEF012345.js",
+    "app-737655e1fb23.css",
+    "OpenAISans-Medium-737655e1fb23.woff2",
+    "OpenAISans-Medium-737655e1fb23.woff",
+    ...["avif", "gif", "ico", "jpg", "jpeg", "png", "svg", "webp"].map(
+      (extension) => `image-737655e1fb23.${extension}`
+    ),
+  ];
+  const service = createService(webviewDir);
+  for (const assetName of assetNames) {
+    const source = Buffer.from(assetName.endsWith(".js") ? "export const ready = true;" : "static asset");
+    fs.writeFileSync(path.join(assetsDir, assetName), source);
+    const reqPath = `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`;
+    const response = serveOfficialAssetResponse(service, reqPath);
+    assert.equal(response.status, 200, assetName);
+    assert.equal(response.headers["cache-control"], "public, max-age=31536000, immutable", assetName);
+    assert.deepEqual(response.body, source, assetName);
+    assert.ok(response.headers.etag, assetName);
+    const validated = serveOfficialAssetResponse(service, reqPath, "localhost:3737", {
+      "if-none-match": response.headers.etag,
+    });
+    assert.equal(validated.status, 304, assetName);
+    assert.equal(validated.body.length, 0, assetName);
+  }
+});
+
+test("content hash caching excludes unversioned namespaces and unhashed or unsupported names", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const service = createService(webviewDir);
+  // 仅扩展已确认的 12 位十六进制格式，不把普通文件名或任意长度后缀当成内容摘要。
+  for (const assetName of [
+    "app.js",
+    "dotnet.js",
+    "runtime-development.js",
+    "app-737655e1fb2.js",
+    "app-737655e1fb230.js",
+    "app-737655e1fb2z.js",
+    "app-737655e1fb23.js.map",
+    "app-737655e1fb23.html",
+    "app-737655e1fb23.json",
+  ]) {
+    fs.writeFileSync(path.join(assetsDir, assetName), "static asset");
+    const response = serveOfficialAssetResponse(service, `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`);
+    assert.equal(response.status, 200, assetName);
+    assert.equal(response.headers["cache-control"], "no-store", assetName);
+  }
+  for (const assetName of ["app-Dk3EPlSk.js", "app-737655e1fb23.js", "app-737655e1fb23.css"]) {
+    fs.writeFileSync(path.join(assetsDir, assetName), "static asset");
+    for (const prefix of ["/official-patched/", "/official-patched-v7/"]) {
+      const response = serveOfficialAssetResponse(service, `${prefix}assets/${assetName}`);
+      assert.equal(response.status, 200, `${prefix}${assetName}`);
+      assert.equal(response.headers["cache-control"], "no-store", `${prefix}${assetName}`);
+    }
+  }
+});
+
+test("twelve-digit dynamic chunks revalidate and invalidate changed host locale and file content", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const assetName = "locale-737655e1fb23.js";
+  const assetPath = path.join(assetsDir, assetName);
+  fs.writeFileSync(assetPath, 'export default {"artifactTab.preview.openInFolder":"Open in folder","revision":1};');
+  let locale = "zh-CN";
+  const service = createStaticAssetService({
+    getI18nSnapshot: () => ({
+      locale,
+      messages: { "web.remoteFile.downloadFile": locale === "zh-CN" ? "下载文件" : "Download file" },
+    }),
+    getOfficialBundle: () => ({ webviewDir }),
+  });
+  const reqPath = `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`;
+  const remoteHost = "192.168.1.20:3737";
+  const remote = serveOfficialAssetResponse(service, reqPath, remoteHost);
+  assert.equal(remote.status, 200);
+  assert.equal(remote.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.match(remote.body.toString("utf8"), /下载文件/);
+  const validated = serveOfficialAssetResponse(service, reqPath, remoteHost, {
+    "if-none-match": remote.headers.etag,
+  });
+  assert.equal(validated.status, 304);
+  assert.equal(validated.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.equal(validated.body.length, 0);
+
+  // 本机内容没有远程下载文案改写，不能用远程变体的 ETag 错回 304。
+  const local = serveOfficialAssetResponse(service, reqPath, "localhost:3737", {
+    "if-none-match": remote.headers.etag,
+  });
+  assert.equal(local.status, 200);
+  assert.notEqual(local.headers.etag, remote.headers.etag);
+  assert.equal(local.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.match(local.body.toString("utf8"), /Open in folder/);
+
+  locale = "en-US";
+  const relocalized = serveOfficialAssetResponse(service, reqPath, remoteHost, {
+    "if-none-match": remote.headers.etag,
+  });
+  assert.equal(relocalized.status, 200);
+  assert.notEqual(relocalized.headers.etag, remote.headers.etag);
+  assert.equal(relocalized.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.match(relocalized.body.toString("utf8"), /Download file/);
+
+  fs.writeFileSync(assetPath, 'export default {"artifactTab.preview.openInFolder":"Open in folder","revision":22};');
+  const changed = serveOfficialAssetResponse(service, reqPath, remoteHost, {
+    "if-none-match": relocalized.headers.etag,
+  });
+  assert.equal(changed.status, 200);
+  assert.notEqual(changed.headers.etag, relocalized.headers.etag);
+  assert.equal(changed.headers["cache-control"], "private, no-cache, must-revalidate");
+  assert.match(changed.body.toString("utf8"), /"revision":22/);
+});
+
+test("asset cache opt-out keeps twelve-digit hashed and dynamically patched assets no-store", (t) => {
+  const webviewDir = makeOfficialWebviewDir(t);
+  const assetsDir = path.join(webviewDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const fixtures = new Map([
+    ["app-737655e1fb23.js", "export const ready = true;"],
+    ["app-737655e1fb23.css", "body { color: red; }"],
+    ["font-737655e1fb23.woff2", "font"],
+    ["locale-737655e1fb23.js", 'export default {"artifactTab.preview.openInFolder":"Open in folder"};'],
+  ]);
+  for (const [assetName, source] of fixtures) fs.writeFileSync(path.join(assetsDir, assetName), source);
+  const service = createService(webviewDir);
+  const previousValue = process.env.CODEX_WEB_DISABLE_ASSET_CACHE;
+  try {
+    // 显式诊断开关优先于 hash 识别，关闭后不允许 ETag 复用旧响应。
+    process.env.CODEX_WEB_DISABLE_ASSET_CACHE = "1";
+    for (const assetName of fixtures.keys()) {
+      const response = serveOfficialAssetResponse(
+        service,
+        `${PATCHED_OFFICIAL_PREFIX}assets/${assetName}`,
+        "192.168.1.20:3737",
+        { "if-none-match": "*" }
+      );
+      assert.equal(response.status, 200, assetName);
+      assert.equal(response.headers["cache-control"], "no-store", assetName);
+      assert.equal(response.headers.etag, undefined, assetName);
+      if (assetName.startsWith("locale-")) assert.match(response.body.toString("utf8"), /Download file/);
+    }
+    assert.equal(service.assetCacheDiagnostics().entries, 0);
+  } finally {
+    if (previousValue === undefined) delete process.env.CODEX_WEB_DISABLE_ASSET_CACHE;
+    else process.env.CODEX_WEB_DISABLE_ASSET_CACHE = previousValue;
+  }
+});
+
 test("patched asset cache coalesces asynchronous compression and reuses it for ETag validation", async (t) => {
   const webviewDir = makeOfficialWebviewDir(t);
   const assetsDir = path.join(webviewDir, "assets");
