@@ -225,7 +225,8 @@ test("kill return value cannot confirm exit; an unclosed child retains only its 
     const root = report.cleanup.retainedRoot;
     // 测试只删除报告中本次生成、前缀与父目录均已核验的隔离根目录。
     assert.equal(path.basename(root).startsWith("opencodex-app-server-probe-"), true);
-    assert.equal(path.dirname(root), fs.realpathSync(require("node:os").tmpdir()));
+    // 与 fs.promises.realpath 一样使用原生解析，兼容 Windows CI 的 RUNNER~1 短路径别名。
+    assert.equal(fs.realpathSync.native(path.dirname(root)), fs.realpathSync.native(require("node:os").tmpdir()));
     fs.rmSync(root, { recursive: true });
   });
   assert.equal(report.ok, false); assert.equal(report.cleanup.removed, false);
