@@ -1122,6 +1122,7 @@
         headers: gatewayAuthHeaders({ accept: "application/json" }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      w.dispatchEvent(new CustomEvent("opencodex:clear-drafts"));
       forceGatewayLoginOnNextBoot();
       w.location.replace("/");
     } catch (error) {
@@ -3558,10 +3559,25 @@
   };
 
   /** 建立到 gateway 的 WebSocket，接收 app-server/业务广播事件。 */
+  let stopSocketMonitoring = () => {};
+  let resumeSocketMonitoring = () => {};
+  let retireCurrentSocket = () => {};
+  function publishConnectionState(state, retryInMs = 0) {
+    // 只发布状态，不暴露 token、错误原文或业务正文；UI 不参与 IPC 重放。
+    w.__OpenCodexConnectionState = { state, retryInMs };
+    w.dispatchEvent(new CustomEvent("opencodex:connection-state", { detail: w.__OpenCodexConnectionState }));
+  }
+
   function connect() {
+    if (modificationScope?.active?.() === false) return;
     if (!cfg.gatewayWsUrl || !("WebSocket" in w)) return;
     if (ws && (ws.readyState === w.WebSocket.CONNECTING || ws.readyState === w.WebSocket.OPEN)) return;
+    if (ws) retireCurrentSocket();
+    if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnectDeferredUntilVisible = false;
     wsReady = false;
+    publishConnectionState("connecting");
     let socket = null;
     clientDiagnostic("ws-connect-start", {
       wsReady,
@@ -3580,7 +3596,21 @@
       scheduleReconnect();
       return;
     }
+    let handshakeTimer = null;
+    let heartbeatTimer = null;
+    let stableTimer = null;
+    let heartbeatSupported = false;
+    let heartbeatSequence = 0;
+    let pendingHeartbeat = null;
+    const clearMonitoring = () => {
+      for (const timer of [handshakeTimer, heartbeatTimer, stableTimer]) {
+        if (timer !== null) scheduler.clearTimeout(timer);
+      }
+      handshakeTimer = heartbeatTimer = stableTimer = null;
+      pendingHeartbeat = null;
+    };
     const releaseSocket = modificationScope?.own?.(() => {
+      clearMonitoring();
       if (ws === socket) {
         ws = null;
         wsReady = false;
@@ -3589,14 +3619,56 @@
         socket.close();
       } catch {}
     }) || (() => {
+      clearMonitoring();
+      if (ws === socket) { ws = null; wsReady = false; }
       try {
         socket.close();
       } catch {}
     });
 
+    function disconnect() {
+      // 超时主动退役旧连接，不等待浏览器 close 握手；旧回调不能清掉新连接或再次重放写请求。
+      if (ws !== socket) return;
+      rejectPendingGatewayIpc(new Error("Gateway WebSocket disconnected"), socket);
+      settleWsReadyWaiters(false);
+      wsReady = false;
+      for (const state of appHostPortRelays.values()) state.connected = false;
+      releaseSocket();
+      scheduleReconnect();
+    }
+    function armHandshakeDeadline() {
+      if (handshakeTimer !== null) scheduler.clearTimeout(handshakeTimer);
+      handshakeTimer = scheduler.setTimeout(() => {
+        handshakeTimer = null;
+        if (document.visibilityState !== "hidden" && !wsReady) disconnect();
+      }, 12_000);
+    }
+    retireCurrentSocket = disconnect;
+    function heartbeat() {
+      if (ws !== socket || !wsReady || !heartbeatSupported || document.visibilityState === "hidden") return;
+      if (heartbeatTimer !== null) scheduler.clearTimeout(heartbeatTimer);
+      pendingHeartbeat = ++heartbeatSequence;
+      try {
+        socket.send(JSON.stringify({ type: "opencodex-ping", sequence: pendingHeartbeat }));
+        heartbeatTimer = scheduler.setTimeout(disconnect, 10_000);
+      } catch { disconnect(); }
+    }
+    stopSocketMonitoring = () => {
+      // 后台标签页计时器会被冻结；暂停心跳判死，回前台重新探测，不终止后台任务。
+      if (heartbeatTimer !== null) scheduler.clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+      pendingHeartbeat = null;
+    };
+    resumeSocketMonitoring = () => {
+      if (ws !== socket) return;
+      if (wsReady) heartbeat();
+      else armHandshakeDeadline();
+    };
+    armHandshakeDeadline();
+
     socket.addEventListener("open", () => {
+      if (ws !== socket) return;
       // hello 会把本页面 clientId 注册到 gateway，后续审批/fetch 响应才能定向回来。
-      reconnectDelay = 500;
       try {
         socket.send(JSON.stringify({ type: "hello", clientId }));
         clientDiagnostic("ws-hello-sent", {
@@ -3609,6 +3681,7 @@
           errorName: error && error.name ? String(error.name) : "",
           wsState: websocketStateName(socket),
         });
+        disconnect();
       }
       clientDiagnostic("ws-open", {
         wsReady,
@@ -3617,6 +3690,7 @@
       emitSharedObjectSnapshotValue(STATSIG_DEFAULT_FEATURES_CONFIG);
     });
     socket.addEventListener("message", (event) => {
+      if (ws !== socket) return;
       const rawData = event.data;
       // 这些字段只用于 debugWs 排障；默认值保持 0，避免常态下多做字符串长度和 Date.now 采样。
       const rawChars = WS_DEBUG_ENABLED ? rawWsMessageChars(rawData) : 0;
@@ -3628,8 +3702,20 @@
         msg = JSON.parse(rawData);
         parseMs = WS_DEBUG_ENABLED ? Date.now() - parseStartedAtMs : 0;
         if (msg && msg.type === "hello-ack" && msg.clientId === clientId) {
+          if (wsReady) return;
+          if (handshakeTimer !== null) scheduler.clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+          heartbeatSupported = msg.heartbeat === true;
           // ack 表示 gateway 已经把 clientId 写入路由表，之后再发 IPC 才不会丢首批异步回包。
           markGatewayWsReady();
+          publishConnectionState("connected");
+          // 只有稳定就绪才重置退避，避免服务端反复开门后掉线形成重连风暴。
+          stableTimer = scheduler.setTimeout(() => {
+            if (ws === socket && wsReady) reconnectDelay = 500;
+          }, 10_000);
+          if (heartbeatSupported && document.visibilityState !== "hidden") {
+            heartbeatTimer = scheduler.setTimeout(heartbeat, 20_000);
+          }
           clientDiagnostic("ws-hello-ack", {
             ready: true,
             wsReady,
@@ -3643,6 +3729,14 @@
               rawChars,
               summary: gatewayWsInboundSummary(msg),
             });
+          }
+          return;
+        }
+        if (msg?.type === "opencodex-pong") {
+          if (pendingHeartbeat !== null && msg.sequence === pendingHeartbeat) {
+            pendingHeartbeat = null;
+            scheduler.clearTimeout(heartbeatTimer);
+            heartbeatTimer = scheduler.setTimeout(heartbeat, 20_000);
           }
           return;
         }
@@ -3770,20 +3864,14 @@
       }
     });
     socket.addEventListener("close", (event) => {
-      rejectPendingGatewayIpc(new Error("Gateway WebSocket disconnected"), socket);
-      if (ws === socket) {
-        wsReady = false;
-        // MessagePort 属于页面而不是 WS；保留它，并在下一次 hello-ack 后重新接到官方 listener。
-        for (const state of appHostPortRelays.values()) state.connected = false;
-      }
+      if (ws !== socket) return;
       clientDiagnostic("ws-close", {
         status: event && typeof event.code === "number" ? event.code : 0,
         wsReady,
         wsState: websocketStateName(socket),
       });
       // 自然关闭后移除页面生命周期中的 socket disposer，后续重连会登记新的 socket。
-      releaseSocket();
-      scheduleReconnect();
+      disconnect();
     });
     socket.addEventListener("error", (event) => {
       clientDiagnostic("ws-error", {
@@ -3791,20 +3879,28 @@
         wsReady,
         wsState: websocketStateName(socket),
       });
-      try {
-        socket.close();
-      } catch {}
+      disconnect();
     });
   }
 
   /** WebSocket 断开后的指数退避重连。 */
   function scheduleReconnect() {
+    if (modificationScope?.active?.() === false) return;
+    if (ws && (ws.readyState === w.WebSocket.CONNECTING || ws.readyState === w.WebSocket.OPEN)) return;
     if (reconnectTimer) return;
+    if (navigator.onLine === false) {
+      publishConnectionState("offline");
+      return;
+    }
     if (document.visibilityState === "hidden") {
       reconnectDeferredUntilVisible = true;
+      publishConnectionState("paused");
       return;
     }
     reconnectDeferredUntilVisible = false;
+    // 带抖动的有界指数退避，避免多个手机在 Gateway 重启时同时撞回服务端。
+    const retryInMs = Math.round(reconnectDelay * (0.5 + Math.random() * 0.5));
+    publishConnectionState("reconnecting", retryInMs);
     clientDiagnostic("ws-reconnect-scheduled", {
       elapsedMs: reconnectDelay,
       wsReady,
@@ -3812,22 +3908,40 @@
     });
     reconnectTimer = scheduler.setTimeout(() => {
       reconnectTimer = null;
-      reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
       connect();
-    }, reconnectDelay);
+    }, retryInMs);
   }
 
   function handleReconnectVisibilityChange() {
     if (document.visibilityState === "hidden") {
+      stopSocketMonitoring();
       if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
       reconnectTimer = null;
       if (!ws || ws.readyState === w.WebSocket.CLOSED) reconnectDeferredUntilVisible = true;
       return;
     }
+    resumeSocketMonitoring();
     if (reconnectDeferredUntilVisible || !ws || ws.readyState === w.WebSocket.CLOSED) scheduleReconnect();
   }
 
+  function retryConnection() {
+    if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    // onLine 只是系统提示，手动重试仍允许访问局域网/回环地址；不禁用编辑或发送入口。
+    if (ws) resumeSocketMonitoring();
+    connect();
+  }
+  function handleOffline() {
+    if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    if (!ws) publishConnectionState("offline");
+  }
+
   modificationScope?.own?.(() => {
+    if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    stopSocketMonitoring();
     settleWsReadyWaiters(false);
     rejectPendingGatewayIpc(new Error("Renderer page was replaced"));
     activeBrowserFilePickerCancel?.();
@@ -3848,5 +3962,10 @@
 
   // 已连接 socket 保持后台业务语义；只有断线重试暂停，回到前台后再按原退避策略恢复。
   adapterHost.events.observe({ key: {}, target: document, type: "visibilitychange", callback: handleReconnectVisibilityChange });
+  adapterHost.events.observe({ key: {}, target: w, type: "online", callback: () => {
+    if (document.visibilityState !== "hidden") retryConnection();
+  } });
+  adapterHost.events.observe({ key: {}, target: w, type: "offline", callback: handleOffline });
+  adapterHost.events.observe({ key: {}, target: w, type: "opencodex:retry-connection", callback: retryConnection });
   connect();
 })();

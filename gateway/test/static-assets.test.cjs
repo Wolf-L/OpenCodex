@@ -548,6 +548,15 @@ test("web shell scripts revalidate unchanged content instead of retransferring i
   assert.equal(validated.body.length, 0);
 });
 
+test("draft recovery is a managed provider in both bundled and standalone assets", (t) => {
+  const service = createService(makeOfficialWebviewDir(t));
+  const bundle = runtimeBootstrapSource(service);
+  assert.match(bundle, /providers\.register\("draft-recovery"/);
+  const response = serveOfficialAssetResponse(service, "/codex-draft-recovery.js");
+  assert.equal(response.status, 200);
+  assert.match(String(response.body), /providers\.register\("draft-recovery"/);
+});
+
 test("web shell keeps restart controls visible, recoverable and bound to a new gateway instance", () => {
   const html = fs.readFileSync(WEB_SHELL_INDEX, "utf-8");
 
@@ -1865,6 +1874,8 @@ test("external plugins require an SDK-compatible ESM v2 entry and never execute 
     const codecIndex = html.indexOf('<script defer src="/codex-app-host-message-codec.js"></script>');
     const bridgeIndex = html.indexOf('<script defer src="/codex-bridge-polyfill.js"></script>');
     assert.ok(codecIndex >= 0 && bridgeIndex > codecIndex);
+    const draftIndex = html.indexOf('<script defer src="/codex-draft-recovery.js"></script>');
+    assert.ok(draftIndex > bridgeIndex && draftIndex < html.indexOf("/opencodex-modification-activate.js"));
   } finally {
     if (previousRoots === undefined) delete process.env.OPENCODEX_PLUGIN_DIRS;
     else process.env.OPENCODEX_PLUGIN_DIRS = previousRoots;

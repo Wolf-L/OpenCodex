@@ -221,6 +221,7 @@
   "web.runtimeCompatibility.point.web.runtime.dom.late-module-preload.description": "Defer official modules that are not needed on the first screen.",
   "web.runtimeCompatibility.point.web.runtime.dom.offscreen-animation.description": "Pause offscreen official animations.",
   "web.runtimeCompatibility.point.web.runtime.dom.tooltip-dismiss.description": "Adapt official Tooltip mounting and dismissal.",
+  "web.runtimeCompatibility.point.web.runtime.dom.draft-recovery.description": "Protect tab-local text drafts and display connection status.",
   "web.runtimeCompatibility.point.web.runtime.dom.window-controls-overlay.description": "Adapt the PWA title bar and safe areas.",
   "web.runtimeCompatibility.point.web.runtime.smart-router.composer.description": "Locate and adapt the official model picker.",
   "web.runtimeCompatibility.point.web.runtime.smart-router.settings.description": "Inject smart scheduling into official settings.",

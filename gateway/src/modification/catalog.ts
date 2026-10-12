@@ -316,6 +316,7 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("web.runtime.dom.late-module-preload", "延迟加载非首屏官方模块", "web-shell", G.startupHistory, A.semanticView),
   point("web.runtime.dom.offscreen-animation", "暂停离屏官方动画", "web-shell", G.backgroundEfficiency, A.semanticView),
   point("web.runtime.dom.tooltip-dismiss", "适配官方 Tooltip 挂载和关闭", "web-shell", G.rendererUi, A.semanticView),
+  point("web.runtime.dom.draft-recovery", "保护标签页文字草稿并展示连接状态", "web-shell", G.mobileInteraction, A.semanticView),
   windowControlsOverlayPoint(),
   pluginPoint("web.runtime.smart-router.composer", "定位并适配官方模型选择器", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),
   pluginPoint("web.runtime.smart-router.settings", "向官方设置注入智能调度页面", "smart-router", G.smartRouting, P.smartModelRouter, A.semanticView),

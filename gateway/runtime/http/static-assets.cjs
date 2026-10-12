@@ -75,6 +75,7 @@ const CODEX_WORKSPACE_ROOT_PICKER_CSS_PATH = "/codex-workspace-root-picker.css";
 const CODEX_WORKSPACE_ROOT_PICKER_PATH = "/codex-workspace-root-picker.js";
 const CODEX_MOBILE_LAYOUT_CSS_PATH = "/codex-mobile-layout.css";
 const CODEX_TOOLTIP_DISMISS_GUARD_PATH = "/codex-tooltip-dismiss-guard.js";
+const CODEX_DRAFT_RECOVERY_PATH = "/codex-draft-recovery.js";
 const FAVICON_PATH = "/favicon.ico";
 const PWA_MANIFEST_PATH = "/manifest.webmanifest";
 const OFFICIAL_LOADING_SHIMMER_POWER_GUARD = [
@@ -123,6 +124,7 @@ const BROWSER_PROVIDER_KEY_BY_FILE = new Map([
   [path.join(INTERNAL_PROVIDER_DIR, "codex-remote-file-actions.js"), "remote-file-actions"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-workspace-root-picker.js"), "workspace-root-picker"],
   [path.join(INTERNAL_PROVIDER_DIR, "codex-tooltip-dismiss-guard.js"), "tooltip-dismiss"],
+  [path.join(INTERNAL_PROVIDER_DIR, "codex-draft-recovery.js"), "draft-recovery"],
 ]);
 const OFFICIAL_OPEN_IN_FOLDER_MESSAGE_ID = "artifactTab.preview.openInFolder";
 const OPENCODEX_DOWNLOAD_FILE_MESSAGE_ID = "web.remoteFile.downloadFile";
@@ -301,6 +303,7 @@ const WEB_SHELL_STATIC_FILES = new Map([
   [CODEX_WORKSPACE_ROOT_PICKER_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-workspace-root-picker.js")],
   [CODEX_MOBILE_LAYOUT_CSS_PATH, path.join(WEB_SHELL_DIR, "codex-mobile-layout.css")],
   [CODEX_TOOLTIP_DISMISS_GUARD_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-tooltip-dismiss-guard.js")],
+  [CODEX_DRAFT_RECOVERY_PATH, path.join(INTERNAL_PROVIDER_DIR, "codex-draft-recovery.js")],
 ]);
 
 // 静态资源层把官方 renderer/web-shell 的路径差异统一隐藏起来，server 只需要按 URL 取文件。
@@ -714,6 +717,7 @@ function createStaticAssetService({
         CODEX_REMOTE_FILE_ACTIONS_PATH,
         CODEX_WORKSPACE_ROOT_PICKER_PATH,
         CODEX_TOOLTIP_DISMISS_GUARD_PATH,
+        CODEX_DRAFT_RECOVERY_PATH,
         OPENCODEX_MODIFICATION_ACTIVATE_PATH,
       ].map((reqPath) => WEB_SHELL_STATIC_FILES.get(reqPath)),
     };
@@ -1003,6 +1007,7 @@ function createStaticAssetService({
           runtimeScript(CODEX_REMOTE_FILE_ACTIONS_PATH),
           runtimeScript(CODEX_WORKSPACE_ROOT_PICKER_PATH),
           runtimeScript(CODEX_TOOLTIP_DISMISS_GUARD_PATH),
+          runtimeScript(CODEX_DRAFT_RECOVERY_PATH),
           runtimeScript(OPENCODEX_MODIFICATION_ACTIVATE_PATH),
         ];
     // manifest 在 Cloudflare Access 等前置认证后面也必须带同源凭据，否则 Chrome 可能拿不到受保护的 manifest。

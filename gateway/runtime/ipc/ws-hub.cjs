@@ -977,7 +977,7 @@ function createWsHub(
             }
             try {
               // ack 明确告诉浏览器：clientId 已经进入路由表，可以开始发会产生异步回包的官方 IPC。
-              ws.send(JSON.stringify({ type: "hello-ack", clientId }));
+              ws.send(JSON.stringify({ type: "hello-ack", clientId, heartbeat: true }));
               if (DEBUG_LOGS) diagnosticLog("ws-hub", "hello_ack", { clientId: shortId(clientId) });
             } catch (error) {
               diagnosticWarn("ws-hub", "hello_ack_failed", {
@@ -994,6 +994,14 @@ function createWsHub(
                   error: error instanceof Error ? error.message : String(error),
                 });
               }
+            }
+            return;
+          }
+          // 心跳仅用于当前已登记连接的存活探测，不进入官方 RPC，也不携带业务内容。
+          if (message?.type === "opencodex-ping") {
+            if (ws.__codexWebClientId && clientsById.get(ws.__codexWebClientId) === ws &&
+                Number.isSafeInteger(message.sequence) && message.sequence >= 0) {
+              ws.send(JSON.stringify({ type: "opencodex-pong", sequence: message.sequence }));
             }
             return;
           }

@@ -36,6 +36,30 @@ function waitForClose(socket) {
   return new Promise((resolve) => socket.once("close", resolve));
 }
 
+test("heartbeat is negotiated and replies only after hello without invoking app-host", async (t) => {
+  const server = http.createServer();
+  let relays = 0;
+  createWsHub(server, { createAppHostRelay() { relays += 1; }, handleNotificationEvent() {}, isAuthed: () => true });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws`);
+  t.after(async () => { socket.close(); await new Promise((resolve) => server.close(resolve)); });
+  await waitForOpen(socket);
+  const messages = [];
+  socket.on("message", (raw) => messages.push(JSON.parse(String(raw))));
+  // 同一连接内保持有序：hello-ack 是前置非法心跳已经处理完的屏障，不依赖固定 sleep。
+  socket.send(JSON.stringify({ type: "opencodex-ping", sequence: 1 }));
+  const ack = waitForMessage(socket, (value) => value.type === "hello-ack");
+  socket.send(JSON.stringify({ type: "hello", clientId: "heartbeat-client" }));
+  assert.equal((await ack).heartbeat, true);
+  assert.equal(messages.filter((value) => value.type === "opencodex-pong").length, 0);
+  socket.send(JSON.stringify({ type: "opencodex-ping", sequence: "bad" }));
+  const pong = waitForMessage(socket, (value) => value.type === "opencodex-pong");
+  socket.send(JSON.stringify({ type: "opencodex-ping", sequence: 2 }));
+  assert.deepEqual(await pong, { type: "opencodex-pong", sequence: 2 });
+  assert.equal(relays, 0);
+  assert.equal(messages.filter((value) => value.type === "opencodex-pong").length, 1);
+});
+
 test("notifies runtime listeners after a browser client completes hello", async (t) => {
   const server = http.createServer();
   const hub = createWsHub(server, {
