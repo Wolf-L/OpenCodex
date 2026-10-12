@@ -42,37 +42,37 @@ function normalizePreviewThread(thread) {
 }
 
 function createHistoryPreviewService({
+  readClient,
   transport,
   isInternalThreadId = (id) => transport?.isInternalThreadId?.(id) === true,
   releaseTransport = () => {},
   now = () => Date.now(),
 } = {}) {
+  // 新装配只使用显式只读能力；旧内部调用继续通过同样参数适配，不改变既有测试/缓存语义。
+  const reader = readClient || (transport && {
+    isAttached: () => transport.isAttached?.() === true,
+    listRecentThreads: ({ cursor, limit }, options) => transport.request("thread/list", {
+      archived: false, cursor, limit, modelProviders: null, sortKey: "updated_at", useStateDbOnly: true,
+    }, options),
+  });
   let cachedThreads = [];
   let refreshedAtMs = 0;
   let refreshPromise = null;
   let disposed = false;
 
   async function waitUntilAttached(deadlineAtMs) {
-    while (!disposed && !transport?.isAttached?.() && now() < deadlineAtMs) {
+    while (!disposed && !reader?.isAttached?.() && now() < deadlineAtMs) {
       await delay(Math.min(HISTORY_PREVIEW_ATTACH_POLL_MS, Math.max(1, deadlineAtMs - now())));
     }
-    return !disposed && transport?.isAttached?.() === true;
+    return !disposed && reader?.isAttached?.() === true;
   }
 
   async function load(deadlineAtMs) {
     if (!(await waitUntilAttached(deadlineAtMs))) return cachedThreads;
     const timeoutMs = Math.max(1, Math.min(HISTORY_PREVIEW_REQUEST_TIMEOUT_MS, deadlineAtMs - now()));
     if (timeoutMs <= 1) return cachedThreads;
-    const result = await transport.request(
-      "thread/list",
-      {
-        archived: false,
-        cursor: null,
-        limit: HISTORY_PREVIEW_LIMIT,
-        modelProviders: null,
-        sortKey: "updated_at",
-        useStateDbOnly: true,
-      },
+    const result = await reader.listRecentThreads(
+      { cursor: null, limit: HISTORY_PREVIEW_LIMIT },
       { timeoutMs }
     );
     // dispose 可能与仍在途的官方请求交错；销毁后不再让迟到结果复活首屏缓存。

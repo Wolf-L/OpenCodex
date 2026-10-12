@@ -66,6 +66,18 @@ test("preview disposal does not reject a router request or close the shared conn
   assert.equal(f.output.listenerCount("data"), 0);
 });
 
+test("owner exposes the restricted model reader without starting another transport", async t => {
+  const f = fixture(t);
+  assert.equal(f.owner.readClient.request, undefined);
+  assert.equal(f.owner.readClient.writeMessage, undefined);
+  const request = f.owner.readClient.listModels({ limit: 5 });
+  assert.equal(f.sent[0].method, "model/list");
+  assert.deepEqual(f.sent[0].params, { cursor: null, limit: 5, includeHidden: false });
+  f.output.write(frame({ id: f.sent[0].id, result: { data: [{ id: "fixture-model" }] } }));
+  assert.deepEqual(await request, { data: [{ id: "fixture-model" }] });
+  assert.equal(f.creations(), 1); assert.equal(f.kills(), 0);
+});
+
 test("router disposal preserves preview requests and connection-private filtering", async (t) => {
   const f = fixture(t); const router = f.owner.pluginService.modelRouter;
   router.transport.registerInternalThread("private");
@@ -192,8 +204,9 @@ test("owner cleanup is ordered, idempotent and continues past consumer errors", 
       return { modelRouter: fakeRouter(), dispose() { events.push("plugins"); throw new Error("fixture cleanup"); } };
     },
     createPreview(options) {
-      previewClient = options.transport;
-      assert.deepEqual(Object.keys(previewClient).sort(), ["isAttached", "request"]);
+      previewClient = options.readClient;
+      assert.equal(options.transport, undefined);
+      assert.deepEqual(Object.keys(previewClient).sort(), ["isAttached", "listModels", "listRecentThreads"]);
       return { dispose() { events.push("preview"); throw new Error("fixture cleanup"); } };
     },
   });

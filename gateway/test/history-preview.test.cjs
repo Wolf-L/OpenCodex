@@ -141,3 +141,21 @@ test("returns an expired snapshot immediately while refreshing it in the backgro
   await Promise.resolve();
   assert.deepEqual((await service.snapshot()).threads.map((thread) => thread.id), ["new"]);
 });
+
+test("explicit recent-history capability takes priority over legacy transport", async () => {
+  const requests = [];
+  const service = createHistoryPreviewService({
+    readClient: {
+      isAttached: () => true,
+      async listRecentThreads(params, options) {
+        requests.push({ params, options });
+        return { data: [{ id: "read-capability", name: "只读" }] };
+      },
+    },
+    transport: { isAttached: () => true, request() { throw Error("legacy transport must not run"); } },
+  });
+  assert.deepEqual((await service.snapshot({ maxWaitMs: 50 })).threads.map(row => row.id), ["read-capability"]);
+  assert.deepEqual(requests[0].params, { cursor: null, limit: HISTORY_PREVIEW_LIMIT });
+  assert.ok(requests[0].options.timeoutMs > 0 && requests[0].options.timeoutMs <= 50);
+  service.dispose();
+});

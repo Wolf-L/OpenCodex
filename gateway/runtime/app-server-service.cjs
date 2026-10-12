@@ -1,5 +1,6 @@
 const { createAppServerTransport } = require("./app-server/transport.cjs");
 const { createAppServerClient } = require("./app-server/client.cjs");
+const { createAppServerReadClient } = require("./app-server/read-client.cjs");
 const { createInternalSessions } = require("./model-router/internal-sessions.cjs");
 const { createRouterTransportClient } = require("./model-router/transport.cjs");
 const { ROUTER_REQUEST_PREFIX } = require("./model-router/constants.cjs");
@@ -47,10 +48,10 @@ function createGatewayAppServerService(options = {}, factories = {}) {
     routerScope = createAppServerClient(transport);
     const routerClient = createRouterTransportClient(transport, routerScope.client);
     pluginService = createPlugins({ ...options, transport: routerClient, releaseTransport: routerScope.dispose });
-    previewScope = createAppServerClient(transport);
+    previewScope = createAppServerReadClient(transport);
     historyPreview = createPreview({
-      // 历史预览只拿到只读所需能力，不能装饰/销毁连接，也不能登记私有会话。
-      transport: Object.freeze({ isAttached: previewScope.client.isAttached, request: previewScope.client.request }),
+      // 生产历史预览只拿到固定读取能力，不能选择任意方法或登记私有会话。
+      readClient: previewScope.client,
       isInternalThreadId: routerClient.isInternalThreadId,
       releaseTransport: previewScope.dispose,
     });
@@ -63,6 +64,7 @@ function createGatewayAppServerService(options = {}, factories = {}) {
     transport,
     pluginService,
     historyPreview,
+    readClient: previewScope.client,
     decorateAppServerChild: transport.decorateChild,
     dispose,
   };
