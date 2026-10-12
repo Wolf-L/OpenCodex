@@ -34,7 +34,8 @@ test('parent prepares a complete version before switching; offline restart and r
   const modulePath = path.join(__dirname, '../runner/index.cjs');
   const realRequire = createRequire(modulePath);
   const { LocalCodexBundleProvider: RealProvider } = realRequire('../dist/official/LocalCodexBundleProvider.js');
-  let scans = 0, failRunner = false;
+  let scans = 0, failRunner = false, runnerCalls = 0, damageWorkingCopy = false;
+  const forcedRebuilds = [];
   class Provider extends RealProvider {
     constructor(options) {
       super(options);
@@ -43,10 +44,14 @@ test('parent prepares a complete version before switching; offline restart and r
       this.scanner.find = () => { scans++; return { installRoot: app, resourcesDir: resources, asarPath, codexBinaryPath: cli, layoutKind: 'electron-resources', platformHint: process.platform }; };
     }
   }
-  async function createRunner({ runtimeDir, layout }) {
+  async function createRunner({ runtimeDir, layout, forceRebuild }) {
+    runnerCalls++;
+    if (forceRebuild) forcedRebuilds.push(runtimeDir);
     if (failRunner) throw new Error('injected runner preparation failure');
     // 只模拟执行文件生成，不运行 fixture；其余快照、ASAR 解包和指针均使用生产实现。
-    const executablePath = write(path.join(runtimeDir, 'electron'), fs.readFileSync(layout.executablePath));
+    const runnerRoot = process.platform === 'win32' ? path.join(runtimeDir, 'official-electron-runner', `win32-${process.arch}`) : runtimeDir;
+    const executablePath = write(path.join(runnerRoot, 'electron'), fs.readFileSync(layout.executablePath));
+    if (damageWorkingCopy && runtimeDir === path.join(root, 'runtime')) write(executablePath, 'electrox-v1');
     return { executablePath, compatibilityPoints: [] };
   }
   const fakeRequire = id => {
@@ -66,6 +71,32 @@ test('parent prepares a complete version before switching; offline restart and r
   assert.equal(scans, 1, 'child snapshot provider must not rescan original install');
   assert.ok(first.runtimeBinding.bundleDir.startsWith(store.root));
   assert.notEqual(first.runtimeBinding.codexBinaryPath, cli);
+  if (process.platform === 'win32') assert.ok(first.executablePath.startsWith(opts.runtimeDir), 'Windows executes a content-verified stable working copy');
+  const beforeWarm = runnerCalls;
+  await prepare({ ...opts, autoScanUpgrade: false });
+  assert.equal(runnerCalls - beforeWarm, 1, 'identical Windows execution copy is not republished');
+  if (process.platform === 'win32') {
+    // 同大小破坏必须触发强制重建；重建结果仍不一致时拒绝启动且不切换版本指针。
+    write(first.executablePath, 'electrox-v1');
+    const beforeRepair = forcedRebuilds.length;
+    await prepare({ ...opts, autoScanUpgrade: false });
+    assert.deepEqual(forcedRebuilds.slice(beforeRepair), [opts.runtimeDir]);
+    assert.equal(fs.readFileSync(first.executablePath, 'utf8'), 'electron-v1');
+    damageWorkingCopy = true; write(first.executablePath, 'electrox-v1');
+    await assert.rejects(prepare({ ...opts, autoScanUpgrade: false }), /Windows 执行副本/);
+    assert.equal(store.pointer().current, firstId);
+    damageWorkingCopy = false;
+    await prepare({ ...opts, autoScanUpgrade: false });
+  }
+  // 模拟首版虚拟 ASAR 元信息，修复必须在完整内容校验之后执行并重新封存摘要。
+  const firstRecord = store.read(firstId);
+  const firstManifestPath = path.join(firstRecord.bundleDir, 'manifest.json');
+  const firstManifest = JSON.parse(fs.readFileSync(firstManifestPath));
+  firstManifest.sourceAsarSize = 0; firstManifest.build = '0-123'; write(firstManifestPath, JSON.stringify(firstManifest));
+  store.seal(firstRecord, firstManifest, { executablePath: path.join(firstRecord.dir, firstRecord.runnerExecutable) });
+  await prepare({ ...opts, autoScanUpgrade: false });
+  assert.ok(JSON.parse(fs.readFileSync(firstManifestPath)).sourceAsarSize > 0);
+  store.read(firstId);
   await archive('2.0.0'); write(cli, 'cli-v2'); write(unpacked, 'native-v2');
   failRunner = true;
   await assert.rejects(prepare(opts), /injected runner/);

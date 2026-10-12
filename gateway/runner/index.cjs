@@ -6,6 +6,7 @@ const { createCompatibilityService } = require("../runtime/compatibility/service
 const { createHostModificationRuntime } = require("../runtime/modification/production-runtime.cjs");
 const path = require("path");
 const fs = require("fs");
+const { writeJsonAtomicSync } = require("../../shared/atomic-file.cjs");
 const { RuntimeVersionStore, inventory, hash } = require("../runtime/runtime-version-store.cjs");
 const { RUNTIME_BINDING_ENV, ROLLBACK_PIN_ENV, sourceIdentity, createRuntimeBinding, digestFile, withPhysicalAsarAccess } = require("../runtime/runtime-source-binding.cjs");
 
@@ -16,6 +17,24 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
   const bundleLogger = typeof logger === "function" ? { info: (message) => logger(`[official-bundle] ${message}\n`), warn: (message, error) => logger(`[official-bundle] ${message}${error ? `: ${error.message || error}` : ""}\n`) } : undefined;
   const projectRoot = path.resolve(__dirname, "../..");
   const store = new RuntimeVersionStore(officialBundleDir);
+  // Windows 的 SxS 加载受最终目录影响；完整版本保持不可变副本，执行目录沿用已验证的固定位置。
+  const executionRuntime = async (bundle, layout, storedRuntime) => {
+    if (process.platform !== "win32") return storedRuntime;
+    const workingRoot = path.join(runtimeDir, "official-electron-runner", `${process.platform}-${process.arch}`);
+    const workingExecutable = path.join(workingRoot, path.basename(storedRuntime.executablePath));
+    const storedRoot = path.dirname(storedRuntime.executablePath);
+    try {
+      if (hash(inventory(workingRoot)) === hash(inventory(storedRoot))) {
+        // 字节完全一致时保留现有可执行副本，不为更新路径指纹而破坏已工作的 SxS 目录。
+        return { ...storedRuntime, executablePath: workingExecutable, runnerAppPath: workingRoot,
+          runtimeBinding: createRuntimeBinding(bundle, layout, workingExecutable) };
+      }
+    } catch {}
+    // 内容不一致时绕过旧的大小/时间戳缓存检查，重建后仍须与版本副本逐文件一致。
+    const rebuilt = await prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forceRebuild: true });
+    if (hash(inventory(workingRoot)) !== hash(inventory(storedRoot))) throw new Error("Windows 执行副本与已验证运行时版本不一致");
+    return rebuilt;
+  };
   return store.locked(async () => {
     const pointer = store.pointer();
     const current = pointer ? store.read(pointer.current, { verify: false }) : null;
@@ -23,16 +42,34 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
     const useCurrent = async () => {
       // 每次启动按内容校验完整来源和提取后的 bundle；损坏 runner 可由已验证来源重建。
       store.read(current.id, { verify: true, verifyRunner: false });
-      const pinned = new LocalCodexBundleProvider({ bundleDirEnv: current.bundleDir,
-        env: { ...env, [ROLLBACK_PIN_ENV]: "1" }, logger: bundleLogger });
-      const bundle = pinned.ensure({ projectRoot });
-      let forceRebuild = false;
-      try { forceRebuild = hash(inventory(path.join(current.dir, "runner"))) !== current.components.runner; }
-      catch { forceRebuild = true; }
-      if (forceRebuild && process.platform === "darwin") throw new Error("macOS runner 快照已损坏，请重新准备完整版本");
-      const runtime = await prepareSelectedRuntime({ bundle, layout: current.layout, runtimeDir: path.join(current.dir, "runner"), logger, forceRebuild });
-      store.seal(current, bundle, runtime);
-      return runtime;
+      const manifestPath = path.join(current.bundleDir, "manifest.json");
+      const originalManifest = fs.readFileSync(manifestPath, "utf8");
+      const manifest = JSON.parse(originalManifest);
+      let repairedMetadata = false;
+      try {
+        // 修复早期 Electron 虚拟 ASAR stat 返回 size=0 的快照元信息；先验过内容才允许修正。
+        if (manifest.sourceAsarSize === 0) {
+          const stat = withPhysicalAsarAccess(() => fs.statSync(manifest.sourceAsarPath));
+          manifest.sourceAsarSize = stat.size;
+          manifest.sourceAsarMtimeMs = Math.trunc(stat.mtimeMs);
+          if (/^0-\d+$/.test(manifest.build)) manifest.build = `${stat.size}-${manifest.sourceAsarMtimeMs}`;
+          writeJsonAtomicSync(manifestPath, manifest); repairedMetadata = true;
+        }
+        const pinned = new LocalCodexBundleProvider({ bundleDirEnv: current.bundleDir,
+          env: { ...env, [ROLLBACK_PIN_ENV]: "1" }, logger: bundleLogger });
+        const bundle = pinned.ensure({ projectRoot });
+        let forceRebuild = false;
+        try { forceRebuild = hash(inventory(path.join(current.dir, "runner"))) !== current.components.runner; }
+        catch { forceRebuild = true; }
+        if (forceRebuild && process.platform === "darwin") throw new Error("macOS runner 快照已损坏，请重新准备完整版本");
+        const runtime = await prepareSelectedRuntime({ bundle, layout: current.layout, runtimeDir: path.join(current.dir, "runner"), logger, forceRebuild });
+        const executable = await executionRuntime(bundle, current.layout, runtime);
+        store.seal(current, bundle, runtime);
+        return executable;
+      } catch (error) {
+        if (repairedMetadata) require("../../shared/atomic-file.cjs").writeFileAtomicSync(manifestPath, originalManifest);
+        throw error;
+      }
     };
     if (current && (rollbackPinned || !autoScanUpgrade)) return useCurrent();
     let sourceInfo;
@@ -78,10 +115,11 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         sourceAsarMtimeMs: Math.trunc(fs.statSync(candidate.sourceInfo.asarPath).mtimeMs) });
       const bundle = prepared.ensure({ projectRoot });
       const runtime = await prepareSelectedRuntime({ bundle, layout: candidate.layout, runtimeDir: path.join(candidate.dir, "runner"), logger });
+      const executable = await executionRuntime(bundle, candidate.layout, runtime);
       store.seal(candidate, bundle, runtime);
       store.activate(candidate.id, pointer);
       logger?.(`[official-bundle] 已验证并切换完整运行时版本 ${bundle.version} (${candidate.id})\n`);
-      return runtime;
+      return executable;
     } catch (error) {
       // 只清理本轮未发布版本；已发布版本和任何旧备份均保留。
       if (store.pointer()?.current !== candidate.id) fs.rmSync(candidate.dir, { recursive: true, force: true });
