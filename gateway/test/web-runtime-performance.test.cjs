@@ -56,6 +56,8 @@ const TOKEN_USAGE_CAPABILITY_SOURCE = fs.readFileSync(
 );
 
 function sourceSection(source, startMarker, endMarker) {
+  // Windows 检出可能使用 CRLF；统一换行后再定位片段，避免格式差异跳过实际行为验证。
+  source = source.replace(/\r\n/g, "\n");
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);
   assert.notEqual(start, -1, `missing source marker: ${startMarker}`);

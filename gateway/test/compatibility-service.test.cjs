@@ -303,7 +303,8 @@ test("compatibility report store writes latest and bounded per-runtime history a
   assert.equal(normalizedLegacyReport.adapterTypes[0].id, "adapter.legacy-report");
   assert.equal(fs.readdirSync(historyDir).length, 2);
   assert.equal(fs.readdirSync(path.dirname(filePath)).some((name) => name.includes(".tmp-")), false);
-  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  // Windows 的 mode 不表达 POSIX 组/其他用户权限；权限位约束仅在支持它的平台验证。
+  if (process.platform !== "win32") assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
 });
 
 test("service persists sanitized Kernel failures and resets state for a new runtime", (t) => {

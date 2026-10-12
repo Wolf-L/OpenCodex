@@ -278,6 +278,8 @@ test("current cache schema resolves both dynamic and legacy bootstrap paths", (t
 
   // 构造最小可复用缓存，先验证新版 main，再切换到无 main 的旧版 package。
   writeFile(sourceAsarPath);
+  manifest.sourceAsarSize = fs.statSync(sourceAsarPath).size;
+  manifest.sourceAsarMtimeMs = Math.trunc(fs.statSync(sourceAsarPath).mtimeMs);
   writeFile(path.join(bundleDir, "webview", "index.html"));
   writeFile(path.join(bundleDir, "webview", "assets", "app.js"));
   writeFile(path.join(bundleDir, "node_modules", "fixture", "index.js"));
@@ -741,10 +743,12 @@ test("runtime optimizer bounds hidden gateway sidebar Git discovery without chan
     "require",
     `${optimized};return{run:$,runCount:()=>commandRunCount,commandCache:__opencodexSidebarGitCommandCache,resolveOrigin:vde,shouldDiscover:Sde,preflight:__opencodexGitHasRepositoryMarker,originCache:__opencodexGitOriginCache,originActive:()=>__opencodexGitOriginActive,originQueued:()=>__opencodexGitOriginQueue.length,setContext:(e,t)=>{activeKind=e,activeSource=t}}`
   );
+  // 此夹具使用 POSIX 路径；显式注入对应 path API，避免 Windows 先因路径格式而跳过预检。
+  const fixtureRequire = (id) => ["path", "node:path"].includes(id) ? path.posix : require(id);
   const hiddenFixture = createFixture(
     { env: { OPENCODEX_GATEWAY_HIDDEN_RUNTIME: "1" } },
     () => null,
-    require
+    fixtureRequire
   );
   const localHost = {
     id: "local",
@@ -919,7 +923,7 @@ test("runtime optimizer bounds hidden gateway sidebar Git discovery without chan
   assert.equal(hiddenFixture.originCache.size, 256);
   assert.equal(hiddenFixture.originActive(), 4);
   assert.equal(hiddenFixture.originQueued(), 252);
-  const desktopFixture = createFixture({ env: {} }, () => null, require);
+  const desktopFixture = createFixture({ env: {} }, () => null, fixtureRequire);
   assert.deepEqual(await desktopFixture.run("/repo", [], localHost), {
     preflightDeadline: 60_000,
     timeout: 60_000,
@@ -1451,7 +1455,9 @@ function createBackupFixture(t) {
       writeFile(path.join(dir, file));
     }
     writeFile(path.join(dir, "package.json"), "{}");
-    writeFile(path.join(dir, "manifest.json"), JSON.stringify({ schemaVersion: MANIFEST_SCHEMA_VERSION, runtimeOptimizations: {}, sourceAsarPath, version }));
+    // 旧清单也包含来源文件身份；备份可用性检查不应依赖缺字段的伪造缓存。
+    const stat = fs.statSync(sourceAsarPath);
+    writeFile(path.join(dir, "manifest.json"), JSON.stringify({ schemaVersion: MANIFEST_SCHEMA_VERSION, runtimeOptimizations: {}, sourceAsarPath, sourceAsarSize: stat.size, sourceAsarMtimeMs: Math.trunc(stat.mtimeMs), version }));
     return dir;
   }
   const versionAt = (dir) => JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"))).version;

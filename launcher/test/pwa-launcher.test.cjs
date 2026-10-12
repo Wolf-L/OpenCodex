@@ -56,9 +56,11 @@ test("platform roots cover start menu, redirected desktop and XDG directories", 
     "C:\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs",
     "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs", "D:\\Desktop", "C:\\Users\\Public\\Desktop",
   ]);
+  // Linux 分支使用宿主 path API；跨平台运行 fixture 时也按宿主分隔符构造期望路径。
   assert.deepEqual(discoveryRoots("linux", "/home/test", {
     XDG_DATA_HOME: "/custom", XDG_DATA_DIRS: "/system:/other",
-  }), ["/custom/applications", "/system/applications", "/other/applications", "/home/test/Desktop"]);
+  }), [path.join("/custom", "applications"), path.join("/system", "applications"),
+    path.join("/other", "applications"), path.join("/home/test", "Desktop")]);
   assert.deepEqual(discoveryRoots("freebsd", "/home/test", {}), []);
 });
 
