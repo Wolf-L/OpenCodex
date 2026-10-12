@@ -2,6 +2,38 @@
 
 本文适用于 Linux `arm64` / `x64`，重点覆盖 **Kali GNU/Linux Rolling 2026.1、Linux 6.1.138-android14、aarch64**。这是 GNU/Linux 部署方案，不是 Android APK。该目标机尚未实测，不能把预检通过等同于设备兼容认证。
 
+更新日期：**2026-10-12（Asia/Shanghai）**。预编译安装包已[公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，下载不需要登录 GitHub。
+
+| 使用场景 | 推荐入口 | 本机编译 |
+| --- | --- | --- |
+| Android 内核上的 Kali / 无桌面 ARM64 Linux | 下方快捷安装：预编译无头包 | 不需要，不安装 pnpm / 编译工具 |
+| Linux 桌面 / 已有 KeX | [第 8 节：DEB / 图形便携包](#8-github-安装包与本地打包) | 不需要 Node/pnpm 来启动 Launcher |
+| 修改代码或自行构建 | 第 1–7 节源码部署 | 需要 Node >=22.12.0、pnpm 10 |
+
+**OpenCodex 包不内置 Codex/ChatGPT 桌面运行时、账号、密码或个人缓存。快捷安装脚本会另行下载并校验完整的 ARM64/x64 Linux 桌面运行时，无需你编译它。** 无头包包含 `./opencodex init|doctor|start`；普通图形包没有该入口。
+
+## 快捷安装：Android / Kali ARM64，无需 KeX、无需编译
+
+在 **Kali 内的普通用户终端**执行（不是 Termux 外层，也不要用 root 运行整个脚本）：
+
+```bash
+curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&
+bash /tmp/install-opencodex.sh &&
+"$HOME/.local/bin/opencodex-linux" start
+```
+
+按提示授权 apt 安装运行依赖，并设置至少 12 字符的 Web 访问密码。随后打开 **http://127.0.0.1:3737**。默认也监听局域网；仅在可信网络使用，不做公网端口映射。Ctrl-C 停止。以后只需运行第三条命令；不必重复下载安装。
+
+- [安装脚本源码](install-linux.sh)：自动检测 `arm64` / `amd64`，下载本 Release 的无头包和 `persistent.oaistatic.com` 上的原厂 `chatgpt_26.1007.21434_<arch>.deb`，按固定 SHA-256 验证，解压到 `$HOME/.local/share/opencodex/`。
+- 需要 Node >=22.12.0、Xvfb 与系统共享库；脚本通过 apt 安装。包名面向 Kali rolling / Debian trixie 系列。旧版发行版可能需要调整库名或升级 Node。
+- 完整桌面运行时下载约 475 MB，解压后更大；请留出至少 3 GB 可用空间。无头 OpenCodex 包约 2.6 MB。
+- 每次安装使用新目录，保留已有配置与账号；状态仍位于 `${XDG_STATE_HOME:-$HOME/.local/state}/opencodex`，不会覆盖 `~/.codex`。同名启动命令只有确认由本脚本创建才替换。
+- 安装结束会执行只读诊断。出现 namespace/seccomp/sandbox 错误时，先检查 Android/PRoot 限制；脚本不会关闭沙箱。首次账号认证仍按正常客户端流程完成。
+
+只监听本机可用 `HOST=127.0.0.1 "$HOME/.local/bin/opencodex-linux" start`。已有桌面运行时、想手动部署的用户，可从 Release 下载 `headless-arm64.tar.gz`，解压到新目录，设置 `CODEX_DESKTOP_APP_PATH` 后运行 `./opencodex init`、`./opencodex doctor`、`./opencodex start`。不要把无头包当成 DEB 或套用图形压缩包的 `--strip-components=1`。
+
+**完成快捷安装后可跳过第 1–7 节源码构建步骤。** 第 6–7 节的沙箱与网络限制仍适用。
+
 > Android 内核版本不能单独判断你用的是原生系统、rooted chroot、NetHunter 还是 PRoot。Rootless/PRoot 的 namespace、seccomp、ptrace 和后台进程限制可能导致 Electron 或 Codex 执行沙箱不可用。脚本不会自动关闭安全机制；不满足条件时应停止部署或换用支持的 Linux 主机。
 
 ## 本次适配提供什么
@@ -11,9 +43,9 @@
 - `linux:init` 创建私有访问配置；`linux:doctor` 只读诊断；`linux:start` 前台启动与统一进程清理。
 - 有 X11 / KeX 时复用 `DISPLAY`，否则用带 xauth 的 `xvfb-run` 自动分配显示号；不使用 `-ac`。
 - 不要求 systemd、FUSE 或 AppImage；默认监听 `0.0.0.0:3737`，允许局域网访问，本机和远程访问都必须输入密码。
-- Linux ARM64 的 DEB / tar.gz 打包入口及原生 ARM64 CI。**启动器包不包含官方桌面运行时或登录凭据。**
+- Linux x64 / ARM64 的 DEB、tar.gz 打包与原生双架构 CI；安装包下载、架构差异和配置目录见第 8 节。
 
-## 1. 在 Kali 内确认用户空间
+## 1. 源码部署：在 Kali 内确认用户空间
 
 以下命令在 **Kali 的终端内**执行，不是在 Termux 外层直接运行：
 
@@ -25,7 +57,7 @@ node -p 'process.platform + "/" + process.arch + " node=" + process.versions.nod
 id -u
 ```
 
-你的目标应为 `aarch64`、`arm64`、`linux/arm64`。需要 **glibc、Node >= 22.12.0（推荐 24 LTS）、pnpm 10**。仅 ARM64 内核不够，不能混用 x64 Node / Windows 文件 / Termux 的 Android Node。
+你的 ARM64 目标应为 `aarch64`、`arm64`、`linux/arm64`；普通 Intel/AMD 64 位主机通常为 `x86_64`、`amd64`、`linux/x64`。源码部署需要 **glibc、Node >= 22.12.0（推荐 24 LTS）、pnpm 10**。仅 ARM64 内核不够，不能混用 x64 Node / Windows 文件 / Termux 的 Android Node。
 
 尽量以普通用户运行，勿用 root 启动 Electron。PRoot 中显示 uid 0 不等于获得 Android 主机的真正 root 或 namespace 权限。NetHunter Rootless 与 KeX 的背景说明见 [Kali 官方文档](https://www.kali.org/docs/nethunter/nethunter-rootless/)。
 
@@ -33,7 +65,7 @@ id -u
 
 ## 2. 安装依赖
 
-在有包管理权限的 Kali 终端安装；已有依赖不会被部署脚本自动改动。若当前就是 Kali 内的 root，下面两条 apt 命令去掉 `sudo`，之后仍应切换普通用户运行 OpenCodex。
+在有包管理权限的 Kali 终端安装；本节为手动源码路径；上方快捷安装脚本会调用 apt 安装运行依赖。若当前就是 Kali 内的 root，下面两条 apt 命令去掉 `sudo`，之后仍应切换普通用户运行 OpenCodex。
 
 ```bash
 sudo apt update
@@ -192,11 +224,74 @@ ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 
 然后在访问端打开 `http://127.0.0.1:3737`。脚本不安装或开放 SSH。
 
-## 8. ARM64 启动器打包（可选）
+## 8. GitHub 安装包与本地打包
 
-Android/Kali 无头部署优先使用上面的源码入口。桌面 Launcher 本身也需要显示与正常 Chromium 沙箱，root 下它可能在应用脚本运行前就退出；不要用 GUI 包代替诊断。
+### 8.1 下载并选择架构
 
-在原生 Linux ARM64、已安装开发依赖和 Electron 的环境构建：
+优先从 [公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152) 下载，无需 GitHub 账号。ARM64 图形 DEB：
+
+```bash
+curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-c710152/OpenCodex-2.1.0-linux-arm64.deb
+sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
+```
+
+此命令仅安装图形 Launcher；仍需第 3 节的完整运行时和 KeX/桌面。无桌面设备请用文档开头的快捷安装，它会自动准备运行时。Release 还包含 `headless-arm64.tar.gz` / `headless-x64.tar.gz` 与 `SHA256SUMS`。
+
+以下是开发者的 Actions 备用下载路径，只有这条路径需要登录 GitHub；它不是普通用户安装的前置步骤。
+
+打开 [GitHub Actions 构建列表](https://github.com/Wolf-L/OpenCodex/actions/workflows/build-release.yml)，选择需要的提交，确认对应 `Build Linux installers (x64/arm64)` 为成功，再从页面底部 **Artifacts** 下载：
+
+| 系统 / `dpkg --print-architecture` | Artifact 名称前缀 | 解开外层 ZIP 后的 2.1.0 文件 |
+| --- | --- | --- |
+| Intel/AMD 64 位 / `amd64` | `opencodex-linux-x64-<完整提交哈希>` | `OpenCodex-2.1.0-linux-amd64.deb`、`OpenCodex-2.1.0-linux-x64.tar.gz` |
+| ARM64 / `arm64` | `opencodex-linux-arm64-<完整提交哈希>` | `OpenCodex-2.1.0-linux-arm64.deb`、`OpenCodex-2.1.0-linux-arm64.tar.gz` |
+
+注意：**x64 的 DEB 名称是 `amd64`，压缩包名称仍是 `x64`**。下载 Actions Artifact 通常需要登录 GitHub；外层是 ZIP，不是直接可安装的 DEB。保留完整提交哈希来区分同为 2.1.0 的不同构建，核对下载来源，不要只看版本号。Artifacts 有保留期限，过期后需重新构建；此工作流的普通提交不会自动发布到 Releases。
+
+本次修正上传规则的构建为 [Actions #2 / c710152](https://github.com/Wolf-L/OpenCodex/actions/runs/38182788309)。它增加了两种文件存在性和 DEB 内部架构检查，避免仅上传 tar.gz 却误报安装包完整。原生 x64 / ARM64 任务均已成功；公开发布由[发布流水线](https://github.com/Wolf-L/OpenCodex/actions/runs/38188596554)完成，复用原构建并补入同提交已有的无头入口。
+
+### 8.2 DEB 安装（Debian / Ubuntu / Kali 桌面）
+
+先按第 3 节准备可信、同架构的完整桌面运行时。解开 Artifact ZIP，并在含 DEB 的目录执行；ARM64 示例：
+
+```bash
+dpkg --print-architecture
+dpkg-deb --field ./OpenCodex-2.1.0-linux-arm64.deb Architecture
+sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
+
+# 回到普通用户的图形会话，不要 sudo 启动。
+CODEX_DESKTOP_APP_PATH="$HOME/src/codex-desktop-linux/codex-app" opencodex
+```
+
+Intel/AMD 主机将两处包名替换为 `OpenCodex-2.1.0-linux-amd64.deb`。`apt` 根据包声明安装依赖，但不能保证补齐另行准备的桌面运行时所需库。DEB 使用 electron-builder 的标准安装脚本，可能配置 Electron 的 Chromium 沙箱/AppArmor 集成；这不等于源码 `linux:start` 会修改系统安全设置。
+
+环境变量只传给这次从终端启动的程序；若之后改为应用菜单启动，必须保证它同样能发现桌面运行时。在 Launcher 界面按提示配置 Web 访问密码、启动网关，再打开它显示的地址；不要把 Web 密码当作 Codex 账号登录。
+
+### 8.3 tar.gz 便携运行（无需 root 安装、无需 FUSE）
+
+在普通用户的私有目录中解压到一个新目录，保留包内权限与符号链接；ARM64 示例：
+
+```bash
+mkdir -p "$HOME/opt"
+package_dir="$(mktemp -d "$HOME/opt/opencodex-2.1.0-arm64.XXXXXX")"
+tar -xzf ./OpenCodex-2.1.0-linux-arm64.tar.gz --strip-components=1 -C "$package_dir"
+cd "$package_dir"
+CODEX_DESKTOP_APP_PATH="$HOME/src/codex-desktop-linux/codex-app" ./opencodex
+```
+
+x64 使用 `OpenCodex-2.1.0-linux-x64.tar.gz`。这里只是不需要安装到系统目录，并不免除共享库、图形显示和内核沙箱要求。不要删除 `resources`、`.so`、`chrome-sandbox` 等配套文件，也不要在失败时默认加 `--no-sandbox`。无头 Android/Kali 使用本页开头的预编译无头包；GUI 压缩包不会自动提供该入口的 Xvfb 编排。
+
+### 8.4 配置、更新与启动响应缓存
+
+- Launcher 使用 Electron 的 `userData` 目录（Linux 通常是 `${XDG_CONFIG_HOME:-$HOME/.config}/OpenCodex`，以实际运行目录为准）；访问配置为其下 `runtime/config.yaml`，启动器设置为 `launcher-settings.json`。
+- 源码入口默认使用 `${XDG_STATE_HOME:-$HOME/.local/state}/opencodex`，与 Launcher 不是同一套路径。两种入口不要同时占用 3737 或操作同一 Codex 会话，也不要覆盖式合并配置。
+- 升级 DEB 时安装新的明确文件名；便携包解压到新目录再启动，不覆盖正在运行的目录。保留已有配置、账号和回滚包，不复制 Windows 的 Electron/ASAR 或缓存来替代 Linux 运行时。
+- 新包包含[永久启动响应缓存代码](OFFICIAL_STARTUP_CACHE.zh-CN.md)，但新机器**默认未启用、没有已保存响应**。当前适配针对已经核验的官方主进程源码指纹；Windows 实机的 8 条缓存和免 VPN 验收不代表 Linux 构建匹配或已预热。先查看 `/api/health` 的 `officialStartupCache.supported`，未知构建会回到原网络请求，不能承诺 Linux 免 VPN。
+- 确认适配受支持后，如需固定快照，按缓存文档在**当前入口的 runtime 目录**显式启用并重启，首次正常联网保存真实响应；不保存登录续期或模型请求。私有目录、`~/.codex`、密码配置和响应正文均不要上传 GitHub。
+
+### 8.5 自行构建（可选）
+
+在原生 Linux ARM64、已安装开发依赖和 Electron 的独立源码构建目录执行：
 
 ```bash
 # 若先前设置过 ELECTRON_SKIP_BINARY_DOWNLOAD，使用独立构建环境正常安装开发依赖。
@@ -205,7 +300,7 @@ pnpm run launcher:pack:linux:arm64
 pnpm run launcher:dist:linux:arm64
 ```
 
-产物是 `release/OpenCodex-<version>-linux-arm64.deb` 和 `.tar.gz`；tar.gz 不依赖 FUSE。既有 `launcher:*:linux` 保持 x64 默认，x64 也有显式后缀入口。CI 分别使用原生 x64 / ARM64 Linux runner；配置存在不代表每次打包已经成功，也不意味着目标 Android 内核通过测试。包中仍不含官方运行时。
+产物是 `release/OpenCodex-<version>-linux-arm64.deb` 和 `.tar.gz`。x64 使用 `launcher:dist:linux:x64`，其中 DEB 后缀为 `linux-amd64.deb`；既有 `launcher:*:linux` 保持 x64 默认。CI 分别使用原生 x64 / ARM64 runner。构建成功不等于目标 Android 内核上的运行验证，详细结果见 [Linux 验证记录](LINUX_VALIDATION.md)。
 
 ## 9. 排错与可分享报告
 

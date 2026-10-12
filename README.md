@@ -40,10 +40,9 @@ OpenCodex 是一个 Codex 桌面运行时中间层，同时兼容旧版 Codex De
 
 ## 环境要求
 
-- Node环境
-- pnpm
-- 本机已安装旧版 Codex Desktop 或包含 Codex 的新版 ChatGPT Desktop（无需启动，但也支持同时使用）。
-- macOS/Windows/Linux(需要命令行启动，具体见下方文档)
+- 源码开发需要 Node >=22.12.0、pnpm 10；预编译无头 Linux 包只需 Node，图形 Launcher 不需要这两项。
+- 本机已安装旧版 Codex Desktop 或包含 Codex 的新版 ChatGPT Desktop（无需启动；避免与 OpenCodex 同时操作同一会话）。
+- macOS / Windows / Linux；Linux 提供预编译图形包和无头包。
 
 ## 如何使用
 
@@ -51,7 +50,7 @@ OpenCodex 是一个 Codex 桌面运行时中间层，同时兼容旧版 Codex De
 
 下载安装：
 
-提供2种下载渠道：
+Linux 使用[本分支公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，无需登录 GitHub。Windows/macOS 上游下载渠道：
 - [Release](https://github.com/RyensX/OpenCodex/releases): 正式版本，较为稳定，推荐使用
 - [Artifacts](https://github.com/RyensX/OpenCodex/actions): 测试版本，push 时 CI 自动打包，可用于尝鲜新功能。注意下载Artifacts需要登录Github
 
@@ -121,15 +120,15 @@ http://127.0.0.1:3737
 
 ### Linux使用
 
-支持 Linux x64 / ARM64 源码部署，并提供分架构打包与 CI 配置。Kali / Android 内核环境优先使用无需 systemd/FUSE 的命令行入口：
+[Linux ARM64 / x64 预编译包已公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，下载无需登录 GitHub。Android 内核上的 Kali 无桌面部署，直接安装现成无头包和完整桌面运行时，**不需要 pnpm 或源码编译**：
 
 ```bash
-pnpm run linux:init
-pnpm run linux:doctor
-pnpm run linux:start
+curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&
+bash /tmp/install-opencodex.sh &&
+"$HOME/.local/bin/opencodex-linux" start
 ```
 
-需先准备匹配架构的 Linux 桌面运行时和 Node >=22.12.0；完整安装步骤、安全限制与目标设备验证边界见 [Linux / Kali ARM64 部署指南](docs/LINUX_GUIDE.md)。
+在 Kali 内用普通用户执行；脚本通过 sudo 安装 apt 运行依赖，按提示设置 Web 密码后访问 `http://127.0.0.1:3737`。也提供适用于 KeX/桌面的 DEB 和图形压缩包。校验、依赖与 Android/PRoot 沙箱限制见 [Linux / Kali ARM64 部署指南](docs/LINUX_GUIDE.md)。原生 Linux CI 已通过，Android 目标设备尚未实测。
 
 ### 远程访问
 

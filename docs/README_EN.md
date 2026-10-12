@@ -41,9 +41,9 @@ Compared with the official option, OpenCodex still has advantages in several usa
 
 ## Requirements
 
-- Node.js >=22.12.0 and pnpm 10 for source deployment or development.
+- Source development: Node.js >=22.12.0 and pnpm 10. Prebuilt headless Linux: Node >=22.12.0 only; graphical Launcher: neither is required.
 - A locally installed, matching-platform Codex/ChatGPT desktop runtime. It does not need to be running; avoid operating on the same session concurrently with OpenCodex. Linux requires a complete matching-architecture desktop runtime, not only the Codex CLI.
-- macOS / Windows / Linux (Linux ARM64/x64 source deployment is supported; Android-kernel limitations are described in the guide below).
+- macOS / Windows / Linux (Linux ARM64/x64 prebuilt packages are available; Android-kernel limitations are described in the guide below).
 
 ## How To Use
 
@@ -51,7 +51,7 @@ Compared with the official option, OpenCodex still has advantages in several usa
 
 Download and install:
 
-Two download channels are available:
+Linux packages are available from [this fork’s public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152). Windows/macOS upstream downloads remain available below:
 
 - [Releases](https://github.com/RyensX/OpenCodex/releases): Stable official versions; recommended.
 - [Artifacts](https://github.com/RyensX/OpenCodex/actions): Test builds automatically packaged by CI on each push for trying new features. Downloading Artifacts requires signing in to GitHub.
@@ -125,9 +125,15 @@ http://127.0.0.1:3737
 
 ### Linux Usage
 
-For Linux ARM64/x64, especially Kali on an Android kernel, source-based headless deployment is recommended. Use `linux:init`, `linux:doctor`, and `linux:start`; this path defaults to `0.0.0.0:3737` for LAN access, requires a Web password, and needs neither systemd nor FUSE. See the [Linux deployment guide](LINUX_GUIDE_EN.md) for runtime preparation, Xvfb/KeX, and sandbox limitations.
+[Download prebuilt Linux ARM64 / x64 packages](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152) without a GitHub login. For Android-kernel Kali without KeX, this installer downloads the compiled headless package and the complete desktop runtime, with no pnpm or source compilation:
 
-Linux x64/ARM64 Launcher packaging and native CI are configured, including DEB and tar.gz output. This does not imply that prebuilt releases are already available or that the Android-kernel ARM64 target has been tested. Launcher packages do not bundle the official desktop runtime.
+```bash
+curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&
+bash /tmp/install-opencodex.sh &&
+"$HOME/.local/bin/opencodex-linux" start
+```
+
+Run as an ordinary user inside Kali. The installer uses sudo only for apt dependencies; enter your Web password when prompted, then open `http://127.0.0.1:3737`. Graphical DEB/archive packages are also available. See the [Linux guide](LINUX_GUIDE_EN.md) for checksums, dependencies and Android/PRoot sandbox limitations. Native Linux CI passed; the Android device itself has not been tested.
 
 ### Remote Access
 

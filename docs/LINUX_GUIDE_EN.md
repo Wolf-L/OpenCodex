@@ -2,6 +2,38 @@
 
 This guide covers Linux `arm64` and `x64`, with particular attention to **Kali GNU/Linux Rolling 2026.1, Linux 6.1.138-android14, aarch64**. This is a GNU/Linux deployment, not an Android APK. The target device has **not** been tested; a successful preflight is not device compatibility certification.
 
+Updated **2026-10-12 (Asia/Shanghai)**. [Public prebuilt release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152); no GitHub login is needed to download it.
+
+| Environment | Recommended path | Local compilation |
+| --- | --- | --- |
+| Headless Android-kernel Kali / ARM64 Linux | Quick install below | None; no pnpm or compiler |
+| Linux desktop / KeX | [Section 8: graphical DEB / archive](#8-github-packages-and-local-builds) | None; no Node/pnpm needed for Launcher |
+| Development | Source deployment, sections 1–7 | Node >=22.12.0 and pnpm 10 |
+
+**OpenCodex packages do not embed the Codex/ChatGPT desktop runtime, accounts, passwords, or personal caches. The quick installer separately downloads and checks the complete prebuilt Linux desktop runtime, with no runtime compilation.** Headless packages include `./opencodex init|doctor|start`; graphical archives do not.
+
+## Quick install: Android / Kali ARM64 without KeX or compilation
+
+Run inside Kali as an ordinary user, not in outer Termux and not as root:
+
+```bash
+curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&
+bash /tmp/install-opencodex.sh &&
+"$HOME/.local/bin/opencodex-linux" start
+```
+
+Allow apt to install runtime dependencies, then enter a Web password of at least 12 characters. Open **http://127.0.0.1:3737**. The default also listens for LAN access: use trusted networks and no public port forwarding. Ctrl-C stops the service. On subsequent starts, run only the third command.
+
+- [Installer source](install-linux.sh): detects `arm64` / `amd64`, downloads this release's headless archive and the vendor's `chatgpt_26.1007.21434_<arch>.deb` from `persistent.oaistatic.com`, validates fixed SHA-256 values, and extracts into `$HOME/.local/share/opencodex/`.
+- Requires Node >=22.12.0, Xvfb and system libraries; apt installs these. Package names target Kali rolling / Debian trixie. Older distributions may need different library names or a newer Node.
+- The complete desktop runtime download is approximately 475 MB; allow at least 3 GB of disk space. OpenCodex's headless archive is approximately 2.6 MB.
+- Each installation gets a new directory. Existing account/configuration data is preserved; state remains in `${XDG_STATE_HOME:-$HOME/.local/state}/opencodex`, and `~/.codex` is not overwritten. The launcher command is replaced only when marked as owned by this installer.
+- A read-only diagnostic runs at the end. Namespace/seccomp/sandbox failures require resolving Android/PRoot restrictions; sandboxing is never automatically disabled. Normal account authentication is still required.
+
+For local access only, use `HOST=127.0.0.1 "$HOME/.local/bin/opencodex-linux" start`. To manually reuse an existing desktop runtime, extract `headless-arm64.tar.gz` into a fresh directory, set `CODEX_DESKTOP_APP_PATH`, then run `./opencodex init`, `./opencodex doctor`, and `./opencodex start`. The headless archive is not a DEB; do not use the graphical archive's `--strip-components=1` option with it.
+
+**After quick installation, skip the source-build instructions in sections 1–7.** The display, sandbox and networking limits in sections 6–7 still apply.
+
 > An Android kernel string alone cannot tell us whether the environment is native Linux, rooted chroot, NetHunter, or PRoot. Rootless/PRoot restrictions on namespaces, seccomp, ptrace, and background processes may prevent Electron or Codex execution sandboxing from working. The scripts do not automatically disable security features. Stop deployment or use a supported Linux host if the necessary capabilities are unavailable.
 
 ## What This Adds
@@ -11,9 +43,9 @@ This guide covers Linux `arm64` and `x64`, with particular attention to **Kali G
 - `linux:init` for private access configuration, read-only `linux:doctor`, and foreground `linux:start` with child-process cleanup.
 - Reuse of an existing X11/KeX `DISPLAY`, or automatic display allocation through `xvfb-run` with xauth. No `-ac` access-control bypass.
 - No systemd, FUSE, or AppImage requirement. Default listen address: `0.0.0.0:3737`, allowing LAN access; both local and remote access require a password.
-- ARM64 DEB/tar.gz packaging commands and native ARM64 CI. **Launcher packages do not include the official desktop runtime or account credentials.**
+- x64/ARM64 DEB and tar.gz packaging with native CI for both architectures; see section 8 for downloads, architecture naming, and configuration paths.
 
-## 1. Check the Kali Userspace
+## 1. Source Deployment: Check the Kali Userspace
 
 Run these commands **inside Kali**, not directly in the outer Termux environment:
 
@@ -25,7 +57,7 @@ node -p 'process.platform + "/" + process.arch + " node=" + process.versions.nod
 id -u
 ```
 
-For this target, expect `aarch64`, `arm64`, and `linux/arm64`. Requirements: **glibc, Node >=22.12.0 (24 LTS recommended), and pnpm 10**. An ARM64 kernel is insufficient by itself: do not mix in x64 Node, Windows files, or Termux's Android Node.
+For the ARM64 target, expect `aarch64`, `arm64`, and `linux/arm64`; an Intel/AMD 64-bit host normally reports `x86_64`, `amd64`, and `linux/x64`. Source requirements: **glibc, Node >=22.12.0 (24 LTS recommended), and pnpm 10**. An ARM64 kernel is insufficient by itself: do not mix in x64 Node, Windows files, or Termux's Android Node.
 
 Use an ordinary user rather than root. A reported uid of 0 inside PRoot does not grant Android host root or namespace privileges. See the [official Kali NetHunter Rootless documentation](https://www.kali.org/docs/nethunter/nethunter-rootless/) for background on Rootless and KeX.
 
@@ -33,7 +65,7 @@ Keep the checkout, desktop runtime, and caches in Kali's private `$HOME`, not `/
 
 ## 2. Install Dependencies
 
-Use a Kali terminal with package-management permission. Deployment scripts do not install or alter system dependencies. If you are currently root inside Kali, omit `sudo` from these apt commands, then switch to an ordinary user to run OpenCodex.
+Use a Kali terminal with package-management permission. This section describes the manual source path; the quick installer above does install runtime dependencies through apt. If you are currently root inside Kali, omit `sudo` from these apt commands, then switch to an ordinary user to run OpenCodex.
 
 ```bash
 sudo apt update
@@ -186,11 +218,74 @@ ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 
 Then open `http://127.0.0.1:3737` on the accessing device. The scripts do not install or expose SSH.
 
-## 8. Optional ARM64 Launcher Packaging
+## 8. GitHub Packages and Local Builds
 
-For Android/Kali headless deployment, prefer the source entrypoint above. The GUI Launcher itself needs a display and working Chromium sandbox; when run as root it may exit before application code executes. A GUI package is not a substitute for diagnosis.
+### 8.1 Download and select the architecture
 
-Build on native Linux ARM64 with development dependencies and Electron installed:
+Prefer the [public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152), which requires no GitHub account. For the ARM64 graphical DEB:
+
+```bash
+curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-c710152/OpenCodex-2.1.0-linux-arm64.deb
+sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
+```
+
+This installs the graphical Launcher only; a complete desktop runtime and KeX/desktop are still required. Headless users should use quick install above, which also prepares the runtime. The release includes headless archives and `SHA256SUMS`.
+
+The Actions route below is a developer fallback requiring GitHub login, not a prerequisite for normal installation.
+
+Open [GitHub Actions](https://github.com/Wolf-L/OpenCodex/actions/workflows/build-release.yml), choose the required commit, confirm that its `Build Linux installers (x64/arm64)` job succeeded, and download the corresponding **Artifacts** at the bottom of the run:
+
+| System / `dpkg --print-architecture` | Artifact name prefix | Version 2.1.0 files inside the outer ZIP |
+| --- | --- | --- |
+| Intel/AMD 64-bit / `amd64` | `opencodex-linux-x64-<full-commit-SHA>` | `OpenCodex-2.1.0-linux-amd64.deb`, `OpenCodex-2.1.0-linux-x64.tar.gz` |
+| ARM64 / `arm64` | `opencodex-linux-arm64-<full-commit-SHA>` | `OpenCodex-2.1.0-linux-arm64.deb`, `OpenCodex-2.1.0-linux-arm64.tar.gz` |
+
+**The x64 DEB uses `amd64` in its filename; the archive still uses `x64`.** Actions downloads normally require a GitHub sign-in. Extract the outer ZIP before installing the DEB. Keep the full commit SHA to distinguish builds sharing version 2.1.0 and verify the download source, not just the version. Artifacts expire according to their retention period; expired artifacts require a new build. Ordinary commits do not publish a Release automatically.
+
+The corrected upload run is [Actions #2 / c710152](https://github.com/Wolf-L/OpenCodex/actions/runs/38182788309). It verifies that both formats exist and that the DEB's internal architecture matches, preventing a tar.gz-only upload from appearing complete. Both native architecture jobs succeeded. The [publication run](https://github.com/Wolf-L/OpenCodex/actions/runs/38188596554) reused those packages and added existing headless entrypoints from the same commit.
+
+### 8.2 Install a DEB on Debian / Ubuntu / Kali desktops
+
+Prepare a trusted, complete matching-architecture desktop runtime as described in section 3. Extract the artifact ZIP and run from the directory containing the DEB; ARM64 example:
+
+```bash
+dpkg --print-architecture
+dpkg-deb --field ./OpenCodex-2.1.0-linux-arm64.deb Architecture
+sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
+
+# Run from an ordinary user's graphical session, without sudo.
+CODEX_DESKTOP_APP_PATH="$HOME/src/codex-desktop-linux/codex-app" opencodex
+```
+
+On Intel/AMD hosts, replace both package filenames with `OpenCodex-2.1.0-linux-amd64.deb`. Apt installs declared dependencies, but cannot guarantee all libraries required by the separate desktop runtime. The DEB uses electron-builder's standard installation scripts, which may configure Chromium sandbox/AppArmor integration; this is distinct from the source `linux:start` script, which does not change system security settings.
+
+Environment variables apply only to that terminal-launched process. If you later start from the application menu, ensure it can discover the same runtime. Follow the Launcher prompts to configure a Web password and start the gateway, then open its displayed URL. The Web password does not authenticate your Codex account.
+
+### 8.3 Run the portable tar.gz without a system install or FUSE
+
+Extract into a new private directory as an ordinary user, preserving permissions and symlinks; ARM64 example:
+
+```bash
+mkdir -p "$HOME/opt"
+package_dir="$(mktemp -d "$HOME/opt/opencodex-2.1.0-arm64.XXXXXX")"
+tar -xzf ./OpenCodex-2.1.0-linux-arm64.tar.gz --strip-components=1 -C "$package_dir"
+cd "$package_dir"
+CODEX_DESKTOP_APP_PATH="$HOME/src/codex-desktop-linux/codex-app" ./opencodex
+```
+
+For x64, use `OpenCodex-2.1.0-linux-x64.tar.gz`. Avoiding a system installation does not remove shared-library, display, or kernel-sandbox requirements. Keep `resources`, `.so` files, `chrome-sandbox`, and other bundled files together. Do not default to `--no-sandbox` when startup fails. Headless Android/Kali deployments should use the prebuilt headless quick install above; this GUI archive does not provide automatic Xvfb orchestration.
+
+### 8.4 Configuration, upgrades, and startup snapshots
+
+- The Launcher uses Electron's `userData` directory, normally `${XDG_CONFIG_HOME:-$HOME/.config}/OpenCodex` on Linux; confirm the actual runtime path. Its Web configuration is `runtime/config.yaml` and Launcher settings are `launcher-settings.json`.
+- The source entrypoint defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/opencodex`, a different path. Do not run both entrypoints on port 3737 or against the same Codex session concurrently, and do not overwrite configurations to merge them.
+- Upgrade DEB installations using the explicit new filename. Extract portable upgrades into a new directory rather than overwriting a running copy. Preserve configuration, account data, and rollback packages. Do not substitute Windows Electron/ASAR files or caches for the Linux runtime.
+- New packages contain the [permanent startup snapshot implementation](OFFICIAL_STARTUP_CACHE.zh-CN.md), but it is **disabled by default and has no saved responses on a new machine**. Adaptation requires a verified desktop main-source fingerprint. The eight saved responses and no-VPN verification on Windows do not prove Linux compatibility or prewarming. Check `/api/health` → `officialStartupCache.supported`; unknown builds use the original network transport, so offline Linux operation is not guaranteed.
+- If adaptation is supported and you want fixed snapshots, explicitly enable the feature in the **active entrypoint's runtime directory** and restart, following the cache document. Capture real responses through normal networking first. Token renewal and model requests are not cached. Never upload private state, `~/.codex`, Web password configuration, or response bodies to GitHub.
+
+### 8.5 Build locally (optional)
+
+Use a separate source build directory on native Linux ARM64, with development dependencies and Electron installed:
 
 ```bash
 # If Electron binary download was previously skipped, use a separate build environment with a normal dependency installation.
@@ -199,7 +294,7 @@ pnpm run launcher:pack:linux:arm64
 pnpm run launcher:dist:linux:arm64
 ```
 
-Outputs include `release/OpenCodex-<version>-linux-arm64.deb` and `.tar.gz`; tar.gz needs no FUSE. Existing `launcher:*:linux` commands retain their x64 default, with explicit x64 suffixes also available. CI uses separate native Linux x64 and ARM64 runners. Configuration does not mean a build has already succeeded or that the Android-kernel target has been tested. Packages still do not include the official runtime.
+Outputs include `release/OpenCodex-<version>-linux-arm64.deb` and `.tar.gz`. Use `launcher:dist:linux:x64` for x64; its DEB filename ends in `linux-amd64.deb`. Existing `launcher:*:linux` commands retain their x64 default. CI uses separate native x64 and ARM64 runners. A successful build is not runtime verification on the Android-kernel target; see the [validation record](LINUX_VALIDATION.md).
 
 ## 9. Troubleshooting and Shareable Reports
 
