@@ -76,6 +76,33 @@ function createAppServerTransport({
   const closedError = () => new AppServerTransportError("App Server connection is closed", "closed");
   const isActive = (connection) => !!connection && !disposed && current === connection && !connection.retired;
 
+  function completion(resolve, reject) {
+    const pending = { timer: null, stopAbort: () => {}, settled: false };
+    function finish(callback, value) {
+      if (pending.settled) return;
+      pending.settled = true;
+      clearTimeout(pending.timer);
+      pending.stopAbort();
+      callback(value);
+    }
+    pending.resolve = (value) => finish(resolve, value);
+    pending.reject = (error) => finish(reject, error);
+    return pending;
+  }
+
+  function watchCancellation(pending, signal, cancel) {
+    if (!signal) return;
+    const abort = () => cancel(transportError(signal.reason || closedError(), "closed"));
+    pending.stopAbort = () => signal.removeEventListener("abort", abort);
+    try {
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    } catch (error) {
+      pending.stopAbort = () => {};
+      cancel(transportError(error, "closed"));
+    }
+  }
+
   function rejectPending(error, connection) {
     for (const [id, pending] of pendingRequests) {
       if (connection && pending.connection !== connection) continue;
@@ -131,20 +158,27 @@ function createAppServerTransport({
 
   function requestOn(connection, method, params, options = {}) {
     if (!isActive(connection)) return Promise.reject(closedError());
+    if (options.signal?.aborted) return Promise.reject(transportError(options.signal.reason || closedError(), "closed"));
     const id = `${requestIdPrefix}${++requestCounter}`;
     const timeoutMs = Math.max(1, Number(options.timeoutMs || 10_000));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const pending = Object.assign(completion(resolve, reject), { connection, method, params });
+      pending.timer = setTimeout(() => {
         pendingRequests.delete(id);
-        reject(new AppServerTransportError(`Internal App Server request timed out: ${method}`, "timeout"));
+        pending.reject(new AppServerTransportError(`Internal App Server request timed out: ${method}`, "timeout"));
       }, timeoutMs);
-      pendingRequests.set(id, { connection, method, params, resolve, reject, timer });
+      pendingRequests.set(id, pending);
+      // 消费者取消只移除自己的关联；已写出的帧不撤回，迟到响应仍由私有策略消费。
+      watchCancellation(pending, options.signal, (error) => {
+        pendingRequests.delete(id);
+        pending.reject(error);
+      });
+      if (pending.settled) return;
       writeMessageOn(connection, { id, method, params }).catch((error) => {
         const pending = pendingRequests.get(id);
         if (!pending) return;
         pendingRequests.delete(id);
-        clearTimeout(timer);
-        reject(error);
+        pending.reject(error);
       });
     });
   }
@@ -152,14 +186,19 @@ function createAppServerTransport({
   function waitForNotification(predicate, options = {}) {
     const connection = selectedConnection();
     if (disposed || (connection && !isActive(connection))) return Promise.reject(closedError());
+    if (options.signal?.aborted) return Promise.reject(transportError(options.signal.reason || closedError(), "closed"));
     const timeoutMs = Math.max(1, Number(options.timeoutMs || 10_000));
     return new Promise((resolve, reject) => {
-      const waiter = { connection, predicate, resolve, reject, timer: null };
+      const waiter = Object.assign(completion(resolve, reject), { connection, predicate });
       waiter.timer = setTimeout(() => {
         notificationWaiters.delete(waiter);
-        reject(new AppServerTransportError("Internal App Server notification timed out", "timeout"));
+        waiter.reject(new AppServerTransportError("Internal App Server notification timed out", "timeout"));
       }, timeoutMs);
       notificationWaiters.add(waiter);
+      watchCancellation(waiter, options.signal, (error) => {
+        notificationWaiters.delete(waiter);
+        waiter.reject(error);
+      });
     });
   }
 

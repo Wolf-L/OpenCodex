@@ -13,6 +13,8 @@ function createGatewayPluginService({
   classifierOptions,
   compatibilityService,
   getRuntimeIdentity,
+  transport,
+  releaseTransport,
 } = {}) {
   const gatewayPoints = compatibilityService?.modificationPoints?.gateway;
   const smartRouterPoints = Object.freeze([
@@ -35,6 +37,8 @@ function createGatewayPluginService({
     classifierOptions,
     injectionHealth,
     compatibilityService,
+    transport,
+    releaseTransport,
   });
   function syncSmartRouterCompatibilityPoints(enabled) {
     for (const point of smartRouterPoints) {
@@ -68,6 +72,7 @@ function createGatewayPluginService({
     }
   });
   let smartSchedulingPresentation = null;
+  let disposed = false;
   return {
     configStore,
     injectionHealth,
@@ -90,9 +95,17 @@ function createGatewayPluginService({
       return smartSchedulingPresentation;
     },
     dispose(error) {
-      stopInjectionHealthConfigListener();
-      smartSchedulingPresentation?.dispose();
-      modelRouter.dispose(error);
+      if (disposed) return;
+      disposed = true;
+      try {
+        stopInjectionHealthConfigListener();
+      } finally {
+        try {
+          smartSchedulingPresentation?.dispose();
+        } finally {
+          modelRouter.dispose(error);
+        }
+      }
     },
   };
 }

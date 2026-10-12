@@ -41,7 +41,12 @@ function normalizePreviewThread(thread) {
   };
 }
 
-function createHistoryPreviewService({ transport, now = () => Date.now() } = {}) {
+function createHistoryPreviewService({
+  transport,
+  isInternalThreadId = (id) => transport?.isInternalThreadId?.(id) === true,
+  releaseTransport = () => {},
+  now = () => Date.now(),
+} = {}) {
   let cachedThreads = [];
   let refreshedAtMs = 0;
   let refreshPromise = null;
@@ -74,7 +79,8 @@ function createHistoryPreviewService({ transport, now = () => Date.now() } = {})
     if (disposed) return cachedThreads;
     const seen = new Set();
     cachedThreads = (Array.isArray(result?.data) ? result.data : [])
-      .filter((thread) => !transport.isInternalThreadId?.(thread?.id))
+      // 生产调用显式注入过滤策略，预览不需要取得路由服务或私有注册能力。
+      .filter((thread) => !isInternalThreadId(thread?.id))
       .map(normalizePreviewThread)
       .filter((thread) => {
         if (!thread || seen.has(thread.id)) return false;
@@ -124,10 +130,12 @@ function createHistoryPreviewService({ transport, now = () => Date.now() } = {})
   }
 
   return {
-    dispose() {
+    dispose(error) {
+      if (disposed) return;
       disposed = true;
       cachedThreads = [];
       refreshedAtMs = 0;
+      releaseTransport(error);
     },
     snapshot,
     warm() {

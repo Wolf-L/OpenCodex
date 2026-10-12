@@ -46,7 +46,11 @@ function createSmartModelRouterService({
   classifierOptions = {},
   injectionHealth = null,
   compatibilityService = null,
+  transport: injectedTransport = null,
+  releaseTransport = () => {},
 }) {
+  let disposed = false;
+  let lifecycleRevision = 0;
   const stateStore = createAutoStateStore({ filePath: stateFilePath });
   const catalog = createModelCatalog();
   const historyByThread = new Map();
@@ -70,6 +74,7 @@ function createSmartModelRouterService({
   }
 
   function emitRouteStatus(event) {
+    if (disposed) return;
     for (const listener of Array.from(routeStatusListeners)) {
       try {
         // 展示事件只携带状态和安全路由摘要，不能把分类 rationale 或用户输入带出核心。
@@ -117,7 +122,7 @@ function createSmartModelRouterService({
   }
 
   function isEnabled() {
-    return pluginConfig().enabled === true;
+    return !disposed && pluginConfig().enabled === true;
   }
 
   function fallbackRoute() {
@@ -161,24 +166,34 @@ function createSmartModelRouterService({
 
   let virtualModel;
   let classifier;
-  const transport = createAppServerTransport({
+  function resetConnectionState() {
+    lifecycleRevision += 1;
+    historyCacheGeneration += 1;
+    catalog.clear();
+    catalogRefreshPromise = null;
+    historyByThread.clear();
+    historyRevisionByThread.clear();
+    openHistoryTurnsByThread.clear();
+    externalRequests.clear();
+    threadRoutingChains.clear();
+    virtualModel?.clearPending?.();
+    // 连接关闭/替换后，旧异步工作不能继续填充缓存或发布路由状态。
+    turnRouteStatus.clearAll();
+  }
+  function onAppServerClosed() {
+    resetConnectionState();
+  }
+  function onAppServerAttached() {
+    if (disposed) return;
+    resetConnectionState();
+    injectionHealth?.reportGateway("app-server-router");
+    emitModification(gatewayPoints?.appServerTransport);
+  }
+  const transport = injectedTransport || createAppServerTransport({
     processClientMessage: (message) => processClientMessage(message),
     processServerMessage: (message) => processServerMessage(message),
-    onClosed() {
-      catalog.clear();
-      catalogRefreshPromise = null;
-      historyByThread.clear();
-      historyRevisionByThread.clear();
-      openHistoryTurnsByThread.clear();
-      externalRequests.clear();
-      virtualModel?.clearPending?.();
-      // App Server 连接断开即表示没有仍可确认的真实执行，防止任务摘要显示过期状态。
-      turnRouteStatus.clearAll();
-    },
-    onAttached() {
-      injectionHealth?.reportGateway("app-server-router");
-      emitModification(gatewayPoints?.appServerTransport);
-    },
+    onClosed: onAppServerClosed,
+    onAttached: onAppServerAttached,
   });
   virtualModel = createVirtualModelController({
     stateStore,
@@ -214,9 +229,10 @@ function createSmartModelRouterService({
   }
 
   async function refreshCatalog(deadlineAt = 0) {
-    if (!transport.isAttached()) return catalog.models();
+    if (disposed || !transport.isAttached()) return catalog.models();
     if (catalogRefreshPromise) return catalogRefreshPromise;
-    catalogRefreshPromise = (async () => {
+    const revision = lifecycleRevision;
+    const refresh = (async () => {
       let cursor = null;
       let pages = 0;
       do {
@@ -225,6 +241,7 @@ function createSmartModelRouterService({
           { cursor, limit: 100, includeHidden: false },
           { timeoutMs: deadlineAt ? remainingRouteMs(deadlineAt, 5_000) : 5_000 }
         );
+        if (disposed || revision !== lifecycleRevision) return catalog.models();
         catalog.observePage({ cursor, result });
         cursor = result?.nextCursor || null;
         pages += 1;
@@ -232,15 +249,17 @@ function createSmartModelRouterService({
       return catalog.models();
     })()
       .catch((error) => {
+        if (disposed || revision !== lifecycleRevision) return catalog.models();
         diagnosticWarn("model-router", "catalog_refresh_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
         return catalog.models();
       })
       .finally(() => {
-        catalogRefreshPromise = null;
+        if (catalogRefreshPromise === refresh) catalogRefreshPromise = null;
       });
-    return catalogRefreshPromise;
+    catalogRefreshPromise = refresh;
+    return refresh;
   }
 
   async function recentHistory(threadId, historyLimit, deadlineAt = 0) {
@@ -269,6 +288,7 @@ function createSmartModelRouterService({
       );
       // 配置可能在请求期间变化；旧请求结果只能服务当前回合，不能污染新尺寸缓存。
       if (
+        !disposed &&
         requestGeneration === historyCacheGeneration &&
         requestRevision === historyRevision(threadId) &&
         !hasOpenHistoryTurn(threadId) &&
@@ -416,6 +436,8 @@ function createSmartModelRouterService({
   }
 
   async function routeAutoTurn(message, threadId) {
+    const revision = lifecycleRevision;
+    if (disposed) return message;
     const startedAt = Date.now();
     const deadlineAt = startedAt + CLASSIFICATION_TIMEOUT_MS;
     let route;
@@ -424,7 +446,9 @@ function createSmartModelRouterService({
       const config = pluginConfig();
       const historyLimit = classificationHistoryLimit(config);
       if (catalog.models().length === 0) await refreshCatalog(deadlineAt);
+      if (disposed || revision !== lifecycleRevision) return message;
       const history = await recentHistory(threadId, historyLimit, deadlineAt);
+      if (disposed || revision !== lifecycleRevision) return message;
       const context = createRoutingContext({
         input: message.params?.input,
         history,
@@ -470,6 +494,7 @@ function createSmartModelRouterService({
       errorCategory = String(error?.category || "classification");
       route = fallbackRoute();
     }
+    if (disposed || revision !== lifecycleRevision) return message;
     rewriteTurn(message, route);
     emitModification(gatewayPoints?.turnRouter);
     turnRouteStatus.select({
@@ -500,8 +525,12 @@ function createSmartModelRouterService({
   }
 
   async function routeAutoTurnInThreadOrder(message, threadId) {
+    const revision = lifecycleRevision;
     const previous = threadRoutingChains.get(threadId) || Promise.resolve();
-    const current = previous.catch(() => {}).then(() => routeAutoTurn(message, threadId));
+    // 排队时就绑定生命周期；不能等前一项结束后把旧任务误认作新连接的工作。
+    const current = previous.catch(() => {}).then(() =>
+      disposed || revision !== lifecycleRevision ? message : routeAutoTurn(message, threadId)
+    );
     threadRoutingChains.set(threadId, current);
     try {
       return await current;
@@ -511,6 +540,9 @@ function createSmartModelRouterService({
   }
 
   async function processClientMessage(original) {
+    // dispose 是停止边界，不是插件热卸载；不能继续发送半处理的 Auto 帧。
+    if (disposed) return null;
+    const revision = lifecycleRevision;
     if (original?.id != null && typeof original.method === "string") {
       const historyRequest =
         original.method === "thread/turns/list"
@@ -541,6 +573,7 @@ function createSmartModelRouterService({
       if (prepared.autoTurn) {
         emitRouteStatus({ status: "classifying", threadId });
         await routeAutoTurnInThreadOrder(message, threadId);
+        if (disposed || revision !== lifecycleRevision) return null;
       } else {
         emitRouteStatus({ status: "cleared", threadId });
       }
@@ -587,6 +620,7 @@ function createSmartModelRouterService({
   }
 
   function processServerMessage(original) {
+    if (disposed) return null;
     observeServerNotification(original);
     const key = original?.id != null ? requestKey(original.id) : "";
     const meta = key ? externalRequests.get(key) : null;
@@ -649,6 +683,8 @@ function createSmartModelRouterService({
 
   return {
     decorateAppServerChild: transport.decorateChild,
+    onAppServerAttached,
+    onAppServerClosed,
     diagnostics() {
       const catalogSnapshot = catalog.snapshot();
       const state = stateStore.snapshot();
@@ -664,20 +700,21 @@ function createSmartModelRouterService({
       };
     },
     dispose(error = new Error("smart model router disposed")) {
-      stopConfigListener();
-      routeStatusListeners.clear();
-      turnRouteStatus.clearAll();
-      // 服务退出释放整个连接及订阅，不只是当前等待中的请求。
-      transport.dispose(error);
-      virtualModel.clearPending();
-      externalRequests.clear();
-      historyByThread.clear();
-      historyRevisionByThread.clear();
-      openHistoryTurnsByThread.clear();
+      if (disposed) return;
+      disposed = true;
+      try {
+        stopConfigListener();
+      } finally {
+        routeStatusListeners.clear();
+        resetConnectionState();
+        // 注入模式只释放自己的请求作用域；旧独立入口继续负责其自建连接。
+        if (injectedTransport) releaseTransport(error);
+        else transport.dispose(error);
+      }
     },
     isEnabled,
     onRouteStatus(listener) {
-      if (typeof listener !== "function") return () => {};
+      if (disposed || typeof listener !== "function") return () => {};
       routeStatusListeners.add(listener);
       return () => routeStatusListeners.delete(listener);
     },

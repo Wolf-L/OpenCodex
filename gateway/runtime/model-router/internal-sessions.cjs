@@ -1,5 +1,6 @@
 const MAX_INTERNAL_THREAD_TOMBSTONES = 512;
 const INTERNAL_TURN_TERMINAL_METHODS = new Set(["turn/completed", "turn/failed", "turn/interrupted"]);
+const THREAD_LIST_METHODS = new Set(["thread/list", "thread/search", "thread/loaded/list"]);
 
 function threadIdFromMessage(message) {
   return String(message?.params?.threadId || message?.params?.thread?.id || message?.result?.thread?.id || message?.result?.threadId || "");
@@ -51,6 +52,10 @@ function createInternalSessions(connection) {
     unregisterInternalThread,
     unregisterInternalTurn(turnId) { if (active() && turnId) turns.delete(String(turnId)); },
     onResponse(message, pending) {
+      if (THREAD_LIST_METHODS.has(pending.method) && Array.isArray(message.result?.data)) {
+        // 在 request 完成前过滤；否则 Promise 续体运行前换进程会丢失旧代际的私有标识。
+        message.result = { ...message.result, data: message.result.data.filter((thread) => !isInternalThreadId(thread?.id)) };
+      }
       // 必须在 request Promise 完成前登记，保证同一 stdout chunk 的后续通知也被隐藏。
       if (pending.method === "thread/start") registerInternalThread(threadIdFromMessage(message));
       if (pending.method === "turn/start" && active()) {

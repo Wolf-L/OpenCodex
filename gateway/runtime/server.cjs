@@ -58,13 +58,12 @@ const {
   handlePublicRuntimeCompatibilityApi,
   handleRuntimeCompatibilityApi,
 } = require("./http/runtime-compatibility.cjs");
-const { createHistoryPreviewService } = require("./history-preview.cjs");
 const { createWsHub } = require("./ipc/ws-hub.cjs");
 const { workspaceRootsFromIpcPayload } = require("./ipc/workspace-root-context.cjs");
 const { createWorkspaceRootsService } = require("./ipc/workspace-roots.cjs");
 const { diagnosticError, diagnosticLog, diagnosticWarn, sanitizeDiagnosticValue, shortId } = require("./core/diagnostics.cjs");
 const { markGatewaySilentQuit } = require("./lifecycle/quit-confirmation-suppressor.cjs");
-const { createGatewayPluginService } = require("./plugins/service.cjs");
+const { createGatewayAppServerService } = require("./app-server-service.cjs");
 const { createCompatibilityService } = require("./compatibility/service.cjs");
 const {
   GATEWAY_RESTART_EXIT_CODE,
@@ -333,9 +332,8 @@ function installShutdownHandlers(
   server,
   localFiles,
   pickedFiles,
-  pluginService,
+  appServerService,
   compatibilityService,
-  historyPreview,
   hiddenRuntimeGcmSockets
 ) {
   let shuttingDown = false;
@@ -343,13 +341,11 @@ function installShutdownHandlers(
   function shutdown({ exitCode = null, reason = "", signal = "" } = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
+    removeHandlers();
     // 退出时先释放短期 token 和待处理的官方内部请求，避免请求一直挂起。
     localFiles.dispose();
     if (pickedFiles && typeof pickedFiles.dispose === "function") pickedFiles.dispose();
-    if (historyPreview && typeof historyPreview.dispose === "function") historyPreview.dispose();
-    if (pluginService && typeof pluginService.dispose === "function") {
-      pluginService.dispose(new Error("gateway shutting down"));
-    }
+    appServerService.dispose(new Error("gateway shutting down"));
     if (compatibilityService && typeof compatibilityService.dispose === "function") {
       compatibilityService.dispose();
     }
@@ -388,10 +384,19 @@ function installShutdownHandlers(
     return true;
   }
 
-  process.once("SIGINT", () => shutdown({ signal: "SIGINT" }));
-  process.once("SIGTERM", () => shutdown({ signal: "SIGTERM" }));
-  app.once("before-quit", () => shutdown());
-  return { requestRestart };
+  const onSigint = () => shutdown({ signal: "SIGINT" });
+  const onSigterm = () => shutdown({ signal: "SIGTERM" });
+  const onBeforeQuit = () => shutdown();
+  function removeHandlers() {
+    // 失败回滚和正常退出只移除当前 Gateway 注册的监听，保留外部监听。
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    app.removeListener("before-quit", onBeforeQuit);
+  }
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  app.once("before-quit", onBeforeQuit);
+  return { requestRestart, removeHandlers };
 }
 
 async function listen(server) {
@@ -844,121 +849,135 @@ async function createGateway() {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  // 插件配置和路由服务必须先创建，才能在官方 bootstrap 拉起 App Server 的瞬间装饰其 stdio。
-  const pluginService = createGatewayPluginService({
-    compatibilityService,
-    getRuntimeIdentity() {
-      const bundle = getOfficialBundle();
-      return { version: bundle?.version, build: bundle?.build };
-    },
-  });
-  // 先启动官方 runtime，确保后续 health/IPC 路由能看到官方 handler 注册状态。
+  let appServerService;
+  let shutdownController;
+  let startupLocalFiles;
+  let startupPickedFiles;
+  let startupServer;
   try {
+    // 先完成共享传输、路由和历史预览装配，再让官方 bootstrap 启动唯一 CLI。
+    appServerService = createGatewayAppServerService({
+      compatibilityService,
+      getRuntimeIdentity() {
+        const bundle = getOfficialBundle();
+        return { version: bundle?.version, build: bundle?.build };
+      },
+    });
+    const { pluginService, historyPreview } = appServerService;
+    // 先启动官方 runtime，确保后续 health/IPC 路由能看到官方 handler 注册状态。
     await startOfficialRuntime({
       compatibilityService,
-      decorateAppServerChild: pluginService.modelRouter.decorateAppServerChild,
+      decorateAppServerChild: appServerService.decorateAppServerChild,
     });
-  } catch (error) {
-    // 官方 Bootstrap 失败时 HTTP 页面尚不可用，必须同步落盘供 Launcher 离线查看。
+
+    // 预热不延迟网关监听；首个导航若更早到达，会在自己的 700ms 预算内复用这次读取。
+    void historyPreview.warm();
+    const workspaceRoots = createWorkspaceRootsService();
+    const localFiles = startupLocalFiles = createLocalFileService({ getWorkspaceRoots: workspaceRoots.workspaceRoots });
+    const pickedFiles = startupPickedFiles = createPickedFilesService();
+    const staticAssets = createStaticAssetService({ compatibilityService, getI18nSnapshot, getOfficialBundle });
+    // 与 request handler 和退出流程共享同一个集合，确保挂起的本机 GCM socket 可被精确回收。
+    const hiddenRuntimeGcmSockets = new Set();
     try {
-      compatibilityService?.persistNow?.();
-    } catch {}
+      // 在端口可访问前完成首屏大主包的 patch/压缩，首个远程导航不再承担一次性 CPU 成本。
+      await staticAssets.prewarmRendererAssets();
+    } catch (error) {
+      diagnosticWarn("gateway", "renderer_asset_prewarm_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    let requestRestart = () => false;
+    const requestHandler = createRequestHandler({
+      compatibilityService,
+      historyPreview,
+      hiddenRuntimeGcmSockets,
+      localFiles,
+      pickedFiles,
+      pluginService,
+      requestRestart: () => requestRestart(),
+      staticAssets,
+      workspaceRoots,
+    });
+    const server = startupServer = http.createServer((req, res) => {
+      requestHandler(req, res).catch((error) => {
+        diagnosticError("gateway", "request_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          method: req.method,
+          url: req.url || "",
+        });
+        if (!res.headersSent) sendJson(res, 500, { ok: false, error: String(error.message || error) });
+      });
+    });
+
+    // 注入 app-host relay 工厂：WS hub 只管理浏览器连接，真正的官方 MessagePort 仍由 official-runtime 创建。
+    const webSocketHub = createWsHub(server, {
+      createAppHostRelay: createOfficialAppHostRelay,
+      handleIpcInvoke({ clientId, request, req }) {
+        return handleWsIpcInvoke(
+          request,
+          req,
+          clientId,
+          localFiles,
+          pickedFiles,
+          workspaceRoots,
+          pluginService,
+          compatibilityService
+        );
+      },
+      handleNotificationEvent: handleOfficialNotificationEvent,
+      isAuthed,
+      observeAppHostFrame(frame) {
+        pluginService.smartSchedulingPresentation?.observeAppHostFrame(frame);
+      },
+    });
+    pluginService.bindSmartSchedulingPresentation({
+      onClientRemoved: webSocketHub.onClientRemoved,
+      sendTo: webSocketHub.sendTo,
+    });
+    // official-runtime 通过这个 hub 把官方 renderer 的异步消息转发给浏览器。
+    setWsHub(webSocketHub);
+    shutdownController = installShutdownHandlers(
+      server,
+      localFiles,
+      pickedFiles,
+      appServerService,
+      compatibilityService,
+      hiddenRuntimeGcmSockets
+    );
+    requestRestart = shutdownController.requestRestart;
+    await listen(server);
+
+    diagnosticLog("gateway", "listening", { url: `http://${HOST}:${PORT}` });
+    diagnosticLog("gateway", "health_endpoint", { url: `http://${HOST}:${PORT}/api/health` });
+    diagnosticLog("gateway", "unknown_ipc_log", { path: path.relative(PROJECT_ROOT, UNKNOWN_IPC_PATH) });
+
+    return {
+      appServerService,
+      compatibilityService,
+      historyPreview,
+      localFiles,
+      pluginService,
+      server,
+      staticAssets,
+      workspaceRoots,
+      wsHub: webSocketHub,
+    };
+  } catch (error) {
+    // 覆盖装配、官方 bootstrap 及监听失败；先退役共享请求，再保留原始启动错误。
+    const cleanups = [
+      () => shutdownController?.removeHandlers(),
+      () => appServerService?.dispose(error),
+      () => startupLocalFiles?.dispose(),
+      () => startupPickedFiles?.dispose(),
+      () => startupServer?.close(),
+      () => compatibilityService?.persistNow?.(),
+      () => compatibilityService?.dispose(),
+    ];
+    for (const cleanup of cleanups) {
+      try { cleanup(); } catch { /* 一个清理失败不覆盖原始启动异常。 */ }
+    }
     throw error;
   }
-
-  const historyPreview = createHistoryPreviewService({ transport: pluginService.modelRouter.transport });
-  // 预热不延迟网关监听；首个导航若更早到达，会在自己的 700ms 预算内复用这次读取。
-  void historyPreview.warm();
-  const workspaceRoots = createWorkspaceRootsService();
-  const localFiles = createLocalFileService({ getWorkspaceRoots: workspaceRoots.workspaceRoots });
-  const pickedFiles = createPickedFilesService();
-  const staticAssets = createStaticAssetService({ compatibilityService, getI18nSnapshot, getOfficialBundle });
-  // 与 request handler 和退出流程共享同一个集合，确保挂起的本机 GCM socket 可被精确回收。
-  const hiddenRuntimeGcmSockets = new Set();
-  try {
-    // 在端口可访问前完成首屏大主包的 patch/压缩，首个远程导航不再承担一次性 CPU 成本。
-    await staticAssets.prewarmRendererAssets();
-  } catch (error) {
-    diagnosticWarn("gateway", "renderer_asset_prewarm_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  let requestRestart = () => false;
-  const requestHandler = createRequestHandler({
-    compatibilityService,
-    historyPreview,
-    hiddenRuntimeGcmSockets,
-    localFiles,
-    pickedFiles,
-    pluginService,
-    requestRestart: () => requestRestart(),
-    staticAssets,
-    workspaceRoots,
-  });
-  const server = http.createServer((req, res) => {
-    requestHandler(req, res).catch((error) => {
-      diagnosticError("gateway", "request_failed", {
-        error: error instanceof Error ? error.message : String(error),
-        method: req.method,
-        url: req.url || "",
-      });
-      if (!res.headersSent) sendJson(res, 500, { ok: false, error: String(error.message || error) });
-    });
-  });
-
-  // 注入 app-host relay 工厂：WS hub 只管理浏览器连接，真正的官方 MessagePort 仍由 official-runtime 创建。
-  const webSocketHub = createWsHub(server, {
-    createAppHostRelay: createOfficialAppHostRelay,
-    handleIpcInvoke({ clientId, request, req }) {
-      return handleWsIpcInvoke(
-        request,
-        req,
-        clientId,
-        localFiles,
-        pickedFiles,
-        workspaceRoots,
-        pluginService,
-        compatibilityService
-      );
-    },
-    handleNotificationEvent: handleOfficialNotificationEvent,
-    isAuthed,
-    observeAppHostFrame(frame) {
-      pluginService.smartSchedulingPresentation?.observeAppHostFrame(frame);
-    },
-  });
-  pluginService.bindSmartSchedulingPresentation({
-    onClientRemoved: webSocketHub.onClientRemoved,
-    sendTo: webSocketHub.sendTo,
-  });
-  // official-runtime 通过这个 hub 把官方 renderer 的异步消息转发给浏览器。
-  setWsHub(webSocketHub);
-  const shutdownController = installShutdownHandlers(
-    server,
-    localFiles,
-    pickedFiles,
-    pluginService,
-    compatibilityService,
-    historyPreview,
-    hiddenRuntimeGcmSockets
-  );
-  requestRestart = shutdownController.requestRestart;
-  await listen(server);
-
-  diagnosticLog("gateway", "listening", { url: `http://${HOST}:${PORT}` });
-  diagnosticLog("gateway", "health_endpoint", { url: `http://${HOST}:${PORT}/api/health` });
-  diagnosticLog("gateway", "unknown_ipc_log", { path: path.relative(PROJECT_ROOT, UNKNOWN_IPC_PATH) });
-
-  return {
-    compatibilityService,
-    historyPreview,
-    localFiles,
-    pluginService,
-    server,
-    staticAssets,
-    workspaceRoots,
-    wsHub: webSocketHub,
-  };
 }
 
 module.exports = {
