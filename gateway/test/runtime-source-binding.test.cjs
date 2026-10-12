@@ -83,6 +83,19 @@ test("child consumes the prepared binding without rescanning explicit Linux sour
   assert.equal(provider.ensure({ projectRoot: f.root }).version, "old");
 });
 
+test("content-bound startup accepts a timestamp-only ASAR change in both parent and child", (t) => {
+  const f = fixture(t);
+  // 安装器触碰时间戳但未改字节时，父子两端应一致地使用内容身份。
+  const changedTime = new Date(Date.now() + 60_000);
+  fs.utimesSync(f.sourceAsarPath, changedTime, changedTime);
+  assert.equal(f.provider().ensure({ projectRoot: f.root }).version, "old");
+  const child = f.provider({ [binding.RUNTIME_BINDING_ENV]: JSON.stringify(f.prepareBinding()) });
+  child.scanner.find = () => assert.fail("bound child must not rescan");
+  assert.equal(child.ensure({ projectRoot: f.root }).version, "old");
+  fs.writeFileSync(f.sourceAsarPath, "new-asar");
+  assert.throws(() => child.ensure({ projectRoot: f.root }), /准备后发生变化/);
+});
+
 for (const changed of ["asar", "cli", "source-electron", "runner-electron", "manifest"]) {
   test(`launch binding rejects ${changed} changes after preparation`, (t) => {
     const f = fixture(t);

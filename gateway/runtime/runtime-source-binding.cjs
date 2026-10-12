@@ -49,8 +49,9 @@ function sourceIdentity(manifest) {
 
 function sourceIdentityBlockReason(manifest, { verifyContents = true } = {}) {
   try {
-    if (manifest.sourceIdentity && verifyContents) {
-      if (JSON.stringify(sourceIdentity(manifest)) !== JSON.stringify(manifest.sourceIdentity)) return "官方安装源内容已变化，无法证明与缓存版本一致";
+    if (manifest.sourceIdentity) {
+      // 已有内容摘要时不降级为 mtime 身份；子进程随后验证绑定摘要，状态轮询只检查存在性。
+      if (verifyContents && JSON.stringify(sourceIdentity(manifest)) !== JSON.stringify(manifest.sourceIdentity)) return "官方安装源内容已变化，无法证明与缓存版本一致";
     } else {
       // 旧清单只能沿用已有文件身份；首次正常扫描会升级为内容摘要。
       const stat = withPhysicalAsarAccess(() => fs.statSync(manifest.sourceAsarPath));
