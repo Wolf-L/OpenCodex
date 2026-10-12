@@ -667,7 +667,8 @@ function createSmartModelRouterService({
       stopConfigListener();
       routeStatusListeners.clear();
       turnRouteStatus.clearAll();
-      transport.rejectPending(error);
+      // 服务退出释放整个连接及订阅，不只是当前等待中的请求。
+      transport.dispose(error);
       virtualModel.clearPending();
       externalRequests.clear();
       historyByThread.clear();
