@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const test = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "../../web-shell/internal/providers/codex-bridge-polyfill.js"), "utf8");
 
-function harness({ online = true, hidden = false } = {}) {
+function harness({ online = true, hidden = false, realAppHost = false } = {}) {
   const timers = new Map(), events = new Map(), disposers = new Set(), sockets = [], rejected = [];
   let now = 0, timerId = 0, active = true;
   const scheduler = {
@@ -20,7 +20,7 @@ function harness({ online = true, hidden = false } = {}) {
     // 不自动触发 close，覆盖浏览器半开连接迟迟不返回 close 的路径。
     close() { this.readyState = 3; }
     emit(type, event = {}) { if (type === "open") this.readyState = 1; this.listeners.get(type)?.(event); }
-    ack(heartbeat = true) { this.emit("message", { data: JSON.stringify({ type: "hello-ack", clientId: "test", heartbeat }) }); }
+    ack(heartbeat = true, appHostRecovery) { this.emit("message", { data: JSON.stringify({ type: "hello-ack", clientId: "test", heartbeat, appHostRecovery }) }); }
   }
   const w = { WebSocket: Socket, dispatchEvent() {} };
   const context = {
@@ -46,10 +46,32 @@ function harness({ online = true, hidden = false } = {}) {
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } }, console,
   };
+  vm.createContext(context);
+  let port = null;
+  if (realAppHost) {
+    // 组合生产恢复逻辑与连接状态机，避免预设 enabled=true 掩盖首次握手失败。
+    for (const name of ["appHostRecovery", "appHostRecoveryHello", "acceptAppHostRecoveryHello", "handleAppHostRecoveryMessage", "failAppHostRecovery", "markGatewayWsReady", "closeAppHostRelay"]) delete context[name];
+    context.appHostPortRelays.clear();
+    Object.assign(context, {
+      APP_HOST_PENDING_MESSAGE_LIMIT: 64, APP_HOST_PENDING_MESSAGE_CHARS_LIMIT: 10000,
+      appHostWsPayload: (state, payload) => ({ clientId: "test", portId: state.portId, ...payload }),
+      decodeAppHostMessageData: message => message.data, publishAppHostData: data => data,
+    });
+    const fragments = [
+      ["  const appHostRecovery =", "  function waitForGatewayWsReady"],
+      ["  function sendAppHostWsPayload", "  function sendGatewayControlPayload"],
+      ["  function flushAppHostRelayMessages", "  function installAppHostMessagePortBridge"],
+    ].map(([start, end]) => source.slice(source.indexOf(start), source.indexOf(end)));
+    vm.runInContext(fragments.join("\n"), context);
+    port = { portId: "rpc", connected: false, pending: [], pendingChars: 0,
+      port: { postMessage() {}, close() { port.closedPort = true; } } };
+    context.appHostPortRelays.set("rpc", port);
+  }
   // 执行完整的生产连接/事件注册段，而不是另写一个测试用状态机。
-  vm.runInNewContext(source.slice(source.indexOf("  let stopSocketMonitoring"), source.lastIndexOf("})();")), context);
+  vm.runInContext(source.slice(source.indexOf("  let stopSocketMonitoring"), source.lastIndexOf("})();")), context);
   return {
-    context, sockets, rejected, timers, events,
+    context, sockets, rejected, timers, events, port,
+    get recovery() { return realAppHost ? vm.runInContext("appHostRecovery", context) : context.appHostRecovery; },
     get state() { return w.__OpenCodexConnectionState.state; },
     advance(ms) {
       const end = now + ms;
@@ -240,4 +262,46 @@ test("hidden/offline wake does not connect and disposed wake does not leave time
   h.dispose();
   for (const type of ["pageshow", "resume", "focus", "visibilitychange", "opencodex:retry-connection"]) h.event(type);
   assert.equal(h.timers.size, 0);
+});
+
+for (const failure of ["connect-timeout", "hello-timeout", "hello-send-error", "early-close"]) {
+  test(`initial ${failure} preserves unsent RPC for the next successful handshake`, () => {
+    const h = harness({ realAppHost: true }), first = h.sockets[0];
+    h.context.queueAppHostRelayPayload(h.port, { type: "app-host-connect" });
+    h.context.queueAppHostRelayPayload(h.port, { type: "app-host-port-message", data: "first-request" });
+    if (failure === "hello-send-error") { first.sendError = true; first.emit("open"); }
+    else if (failure === "early-close") first.emit("close");
+    else {
+      if (failure === "hello-timeout") first.emit("open");
+      h.advance(12_000);
+    }
+    assert.equal(h.recovery.failed, false);
+    assert.equal(h.port.closedPort, undefined);
+    assert.equal(h.port.pending.length, 2);
+    h.advance(375);
+    const next = h.sockets[1]; next.emit("open"); next.ack(true, { version: 1, status: "new", token: "new-session" });
+    assert.equal(h.state, "connected");
+    assert.equal(h.context.w.__OpenCodexConnectionState.appHostState, "ready");
+    assert.deepEqual(next.sent.map(frame => frame.type), ["hello", "opencodex:app-host-frame", "opencodex:app-host-frame"]);
+    assert.deepEqual(next.sent.slice(1).map(frame => frame.sequence), [1, 2]);
+    assert.equal(next.sent[2].payload.data, "first-request");
+    assert.equal(h.port.pending.length, 0);
+    first.ack(true, { version: 1, status: "new", token: "stale-session" }); first.emit("close");
+    assert.equal(h.recovery.token, "new-session");
+    h.dispose();
+  });
+}
+
+test("disconnect after a successful legacy handshake still requires reload without replay", () => {
+  const h = harness({ realAppHost: true }), first = h.sockets[0];
+  h.context.queueAppHostRelayPayload(h.port, { type: "app-host-connect" });
+  h.context.queueAppHostRelayPayload(h.port, { type: "app-host-port-message", data: "already-sent" });
+  first.emit("open"); first.ack();
+  assert.deepEqual(first.sent.map(frame => frame.type), ["hello", "app-host-connect", "app-host-port-message"]);
+  first.emit("close");
+  assert.equal(h.recovery.failed, true); assert.equal(h.port.closedPort, true);
+  h.advance(375); const next = h.sockets[1]; next.emit("open"); next.ack(true, { version: 1, status: "new", token: "replacement" });
+  assert.equal(h.context.w.__OpenCodexConnectionState.appHostState, "reload-required");
+  assert.deepEqual(next.sent.map(frame => frame.type), ["hello"]);
+  h.dispose();
 });

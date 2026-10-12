@@ -3688,9 +3688,9 @@
       if (ws !== socket) return;
       rejectPendingGatewayIpc(new Error("Gateway WebSocket disconnected"), socket);
       settleWsReadyWaiters(false);
+      // 只有已完成旧协议握手的会话才可能丢失 RPC 身份；首次握手前的队列尚未发送，可继续重试。
+      if (wsReady && !appHostRecovery.enabled && appHostPortRelays.size) failAppHostRecovery();
       wsReady = false;
-      // 老 Gateway 无法保留 RPC 身份，首次断开后明确要求重新加载，不能无声重建对象表。
-      if (!appHostRecovery.enabled && appHostPortRelays.size) failAppHostRecovery();
       for (const state of appHostPortRelays.values()) state.connected = false;
       releaseSocket();
       scheduleReconnect();
