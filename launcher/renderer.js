@@ -90,7 +90,7 @@ function renderLatestRelease(latestRelease) {
   if (!button) return;
   const available = !!(latestRelease && latestRelease.available && latestRelease.tagName);
 
-  // 更新按钮只在 GitHub latest tag 与本地版本不同且链接已由主进程校验后显示。
+  // 更新按钮只在 GitHub 稳定版本高于本地版本且链接已由主进程校验后显示。
   button.hidden = !available;
   button.disabled = !available;
   if (!available) {
@@ -103,6 +103,26 @@ function renderLatestRelease(latestRelease) {
   button.textContent = t("launcher.update.available");
   button.title = t("launcher.update.available");
   button.setAttribute("aria-label", t("launcher.update.available"));
+}
+
+function renderRuntimeUpdate(state) {
+  const report = state.runtimePreflight;
+  const checking = state.runtimePreflightChecking;
+  $("checkRuntimeUpdate").disabled = checking;
+  $("applyRuntimeUpdate").hidden = !report?.ok || (!report.changed && !report.retryRequired);
+  $("applyRuntimeUpdate").disabled = checking || !report?.ok;
+  const node = $("runtimePreflightStatus");
+  node.hidden = !checking && !report;
+  if (checking) node.textContent = t("launcher.runtime.checking");
+  else if (report?.error) node.textContent = report.error;
+  else if (report) node.textContent = t(report.ok ? "launcher.runtime.plan" : "launcher.runtime.blocked", {
+    version: report.version, platform: `${report.platform}/${report.arch}`,
+    required: (report.estimatedAdditionalBytes / 1024 ** 3).toFixed(2),
+    available: (report.availableBytes / 1024 ** 3).toFixed(2),
+  }) + (report.retryRequired ? t("launcher.runtime.retry") : !report.changed ? t("launcher.runtime.unchanged") : "");
+  const failure = state.runtimeStartup;
+  $("runtimeRecoveryStatus").hidden = !failure || failure.state !== "failed";
+  if (failure?.state === "failed") text("runtimeRecoveryStatus", t("launcher.runtime.failed", { reason: failure.reason }));
 }
 
 function formatDateTime(value) {
@@ -225,6 +245,7 @@ function render(state) {
   // launcher 自身版本固定展示在左上角品牌区，避免占用设置列表空间。
   text("openCodexVersion", appInfo.version || t("common.unknown"));
   renderLatestRelease(state.latestRelease);
+  renderRuntimeUpdate(state);
   // 底部关于区展示应用元信息，随 package.json 与主进程状态同步。
   linkButton("authorLink", appInfo.author, "common.unknown");
   linkButton("githubLink", appInfo.githubUrl, "common.notFound");
@@ -281,6 +302,13 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset && target.dataset.copyUrl) {
     await launcher.copy(target.dataset.copyUrl);
+    return;
+  }
+  if (target.id === "checkRuntimeUpdate" || target.id === "applyRuntimeUpdate") {
+    target.disabled = true;
+    try { render(await (target.id === "checkRuntimeUpdate" ? launcher.checkRuntimeUpdate() : launcher.applyRuntimeUpdate())); }
+    catch (error) { $("runtimePreflightStatus").hidden = false; text("runtimePreflightStatus", error.message); }
+    finally { target.disabled = false; }
     return;
   }
   if (target.id === "restoreBundleBackup") {

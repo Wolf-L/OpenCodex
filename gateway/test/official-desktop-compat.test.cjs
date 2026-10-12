@@ -1532,6 +1532,8 @@ test("launcher restore preserves either scan setting and skips only its restart"
     const context = vm.createContext({
       gatewayStartPromise: null, gatewayRestartPromise: null,
       skipNextOfficialScan: false, restoringBackup: false,
+      RuntimeVersionStore: class { pointer() { return null; } },
+      runtimePaths: () => ({ officialBundleDir: "fixture" }),
       gatewayState: { settings, status: {} },
       officialBundleCache: () => ({ backupState: () => ({ available: true }), restoreBackup: () => events.push("restore") }),
       stopGateway: async () => { events.push("stop"); return true; },
@@ -1544,6 +1546,12 @@ test("launcher restore preserves either scan setting and skips only its restart"
     assert.deepEqual(settings, { officialAutoScanUpgrade: autoScan });
     await context.restartGateway();
     assert.deepEqual(events.slice(-2), ["stop", "start"]);
+    // 管理式完整版本只选择上一份快照，不在真实启动确认前提前写版本指针。
+    context.RuntimeVersionStore = class { pointer() { return { current: "current", previous: "previous" }; } };
+    context.nextSelectedVersionId = null; events.length = 0;
+    await context.restoreBundleBackup();
+    assert.deepEqual(events, ["stop", "start-without-scan"]);
+    assert.equal(context.nextSelectedVersionId, "previous");
     events.length = 0;
     context.stopGateway = async () => false;
     await context.restoreBundleBackup();

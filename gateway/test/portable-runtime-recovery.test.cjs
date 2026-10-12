@@ -86,6 +86,26 @@ test("rejects source/runtime overlap before any removal", (t) => {
 });
 
 const windows = { skip: process.platform !== "win32" };
+test("startup transaction retains the original working directory until commit or rollback", (t) => {
+  const f = fixture(t); ensurePortableRuntimeCopy(f);
+  const original = fs.readFileSync(f.runnerExecutablePath), originalMarker = fs.readFileSync(f.markerPath);
+  const originalInode = fs.statSync(f.runnerExecutablePath).ino;
+  const { publishPortableRuntime } = require("../runner/platform/portable.cjs").__test;
+  const prepare = () => {
+    const stagingDir = fs.mkdtempSync(`${f.runnerRootDir}.test-`);
+    fs.writeFileSync(path.join(stagingDir, path.basename(f.runnerExecutablePath)), "candidate");
+    return publishPortableRuntime({ stagingDir, runnerRootDir: f.runnerRootDir, markerPath: f.markerPath, marker: { candidate: true }, preservePrevious: true });
+  };
+  const rollback = prepare();
+  assert.equal(fs.readFileSync(f.runnerExecutablePath, "utf8"), "candidate");
+  rollback.rollback();
+  assert.deepEqual(fs.readFileSync(f.runnerExecutablePath), original);
+  assert.equal(fs.statSync(f.runnerExecutablePath).ino, originalInode, "restore the original directory, not a new copy");
+  assert.deepEqual(fs.readFileSync(f.markerPath), originalMarker);
+  const commit = prepare(); commit.commit();
+  assert.equal(fs.readFileSync(f.runnerExecutablePath, "utf8"), "candidate");
+  assert.equal(fs.readdirSync(path.dirname(f.runnerRootDir)).some(name => name.includes(".previous-")), false);
+});
 test("prepared cache reuse never writes or patches the working EXE", windows, async (t) => {
   const f = fixture(t);
   const runner = await createPortableRunner(f);

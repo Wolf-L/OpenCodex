@@ -10,7 +10,9 @@ const { writeJsonAtomicSync } = require("../../shared/atomic-file.cjs");
 const { RuntimeVersionStore, inventory, hash } = require("../runtime/runtime-version-store.cjs");
 const { RUNTIME_BINDING_ENV, ROLLBACK_PIN_ENV, sourceIdentity, createRuntimeBinding, digestFile, withPhysicalAsarAccess } = require("../runtime/runtime-source-binding.cjs");
 
-async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, logger, autoScanUpgrade = process.env.CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE !== "0", rollbackPinned = false }) {
+async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, logger, autoScanUpgrade = process.env.CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE !== "0", rollbackPinned = false,
+  startRuntime, retryFailed = false, selectedVersionId = null, expectedOriginIdentity = null }) {
+  if (typeof startRuntime !== "function") throw new Error("运行时需要受监督的启动确认回调");
   const { LocalCodexBundleProvider } = require("../dist/official/LocalCodexBundleProvider.js");
   const env = { ...process.env, CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE: autoScanUpgrade ? "1" : "0", [ROLLBACK_PIN_ENV]: rollbackPinned ? "1" : "0" };
   delete env[RUNTIME_BINDING_ENV];
@@ -31,15 +33,32 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
       }
     } catch {}
     // 内容不一致时绕过旧的大小/时间戳缓存检查，重建后仍须与版本副本逐文件一致。
-    const rebuilt = await prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forceRebuild: true });
-    if (hash(inventory(workingRoot)) !== hash(inventory(storedRoot))) throw new Error("Windows 执行副本与已验证运行时版本不一致");
+    const rebuilt = await prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forceRebuild: true, preservePrevious: true });
+    try {
+      if (hash(inventory(workingRoot)) !== hash(inventory(storedRoot))) throw new Error("Windows 执行副本与已验证运行时版本不一致");
+    } catch (error) { rebuilt.executionPublication?.rollback(); throw error; }
     return rebuilt;
   };
   return store.locked(async () => {
     const pointer = store.pointer();
     const current = pointer ? store.read(pointer.current, { verify: false }) : null;
+    const start = async (runtime, confirm) => {
+      let confirmed = false;
+      try {
+        await startRuntime(runtime, async check => { await confirm(check); confirmed = true; });
+        if (!confirmed) throw new Error("受监督启动未执行确认");
+      }
+      catch (error) {
+        if (!error.runtimeStopFailed) {
+          try { runtime.executionPublication?.rollback(); }
+          catch (failure) { failure.runtimeStopFailed = true; throw failure; }
+        }
+        throw error;
+      }
+      runtime.executionPublication?.commit();
+    };
     const provider = new LocalCodexBundleProvider({ bundleDirEnv: officialBundleDir, env, logger: bundleLogger });
-    const useCurrent = async () => {
+    const useVersion = async (current, confirm = check => check()) => {
       // 每次启动按内容校验完整来源和提取后的 bundle；损坏 runner 可由已验证来源重建。
       store.read(current.id, { verify: true, verifyRunner: false });
       const manifestPath = path.join(current.bundleDir, "manifest.json");
@@ -63,14 +82,41 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         catch { forceRebuild = true; }
         if (forceRebuild && process.platform === "darwin") throw new Error("macOS runner 快照已损坏，请重新准备完整版本");
         const runtime = await prepareSelectedRuntime({ bundle, layout: current.layout, runtimeDir: path.join(current.dir, "runner"), logger, forceRebuild });
-        const executable = await executionRuntime(bundle, current.layout, runtime);
         store.seal(current, bundle, runtime);
+        repairedMetadata = false;
+        const executable = await executionRuntime(bundle, current.layout, runtime);
+        await start(executable, confirm);
         return executable;
       } catch (error) {
         if (repairedMetadata) require("../../shared/atomic-file.cjs").writeFileAtomicSync(manifestPath, originalManifest);
         throw error;
       }
     };
+    const useCurrent = () => useVersion(current);
+    const attempt = async (record, launch) => {
+      store.recordStartup(record, "pending");
+      try {
+        let confirmed = false;
+        const runtime = await launch(check => { store.activate(record.id, pointer, check); confirmed = true; });
+        if (!confirmed) throw new Error("受监督启动未确认版本，拒绝报告成功");
+        // 指针已发布后，诊断记录失败不能把成功启动当作失败再回退。
+        try { store.recordStartup(record, "confirmed"); }
+        catch (error) { try { logger?.(`[official-bundle] 启动记录写入失败：${error.message}\n`); } catch {} }
+        return runtime;
+      } catch (error) {
+        try { store.recordStartup(record, "failed", error.message); } catch {}
+        if (!current || error.runtimeStopFailed) throw error;
+        logger?.(`[official-bundle] 候选版本启动失败，恢复当前完整版本：${error.message}\n`);
+        try {
+          const fallback = await useCurrent();
+          return { ...fallback, recovery: { failedVersion: record.id, reason: error.message } };
+        } catch (failure) { failure.runtimeFallbackAttempted = true; throw failure; }
+      }
+    };
+    if (selectedVersionId && selectedVersionId !== current?.id) {
+      const selected = store.read(selectedVersionId);
+      return attempt(selected, confirm => useVersion(selected, confirm));
+    }
     if (current && (rollbackPinned || !autoScanUpgrade)) return useCurrent();
     let sourceInfo;
     let layout;
@@ -99,11 +145,34 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         manifest: { sourceLayoutKind: sourceInfo.layoutKind, sourcePlatformHint: sourceInfo.platformHint },
       }, rollbackPinned });
     }
-    assertLinuxRuntimeLayout(layout);
-    const plan = store.sourcePlan(layout, sourceInfo);
+    let plan;
+    try { assertLinuxRuntimeLayout(layout); plan = store.sourcePlan(layout, sourceInfo); }
+    catch (error) {
+      if (!current) throw error;
+      logger?.(`[official-bundle] 来源预检失败，使用当前版本：${error.message}\n`);
+      return { ...await useCurrent(), recovery: { reason: error.message } };
+    }
+    if (expectedOriginIdentity && plan.identity !== expectedOriginIdentity) {
+      if (!current) throw new Error("官方来源在预检后变化，请重新预检");
+      logger?.("[official-bundle] 官方来源在预检后变化，恢复原版本，请重新预检\n");
+      return { ...await useCurrent(), recovery: { reason: "官方来源在预检后变化，请重新预检" } };
+    }
     if (current && current.originIdentity === plan.identity) return useCurrent();
-    const candidate = store.snapshot(layout, sourceInfo, plan);
+    const lastAttempt = store.startupState();
+    if (!retryFailed && lastAttempt && lastAttempt.state !== "confirmed" && lastAttempt.id !== current?.id && lastAttempt.originIdentity === plan.identity) {
+      if (!current) throw new Error("上次候选版本未通过启动确认，请在预检后明确重试");
+      logger?.("[official-bundle] 跳过上次未通过启动确认的来源，使用当前完整版本\n");
+      return useCurrent();
+    }
+    if (retryFailed && lastAttempt && lastAttempt.id !== current?.id && lastAttempt.originIdentity === plan.identity
+      && fs.existsSync(path.join(store.directory(lastAttempt.id), "version.json"))) {
+      // 明确重试复用已封存候选，仍重新验证内容，避免每次重试多占一份完整安装空间。
+      const retry = store.read(lastAttempt.id, { verify: false });
+      return attempt(retry, confirm => useVersion(retry, confirm));
+    }
+    let candidate;
     try {
+      candidate = store.snapshot(layout, sourceInfo, plan);
       // 提取和 runner 均准备到同一独立版本目录；失败不会移动当前缓存或旧版本。
       const snapshotEnv = { ...env, [ROLLBACK_PIN_ENV]: "0", CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE: "1",
         CODEX_DESKTOP_APP_PATH: candidate.sourceInfo.asarPath,
@@ -115,20 +184,26 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         sourceAsarMtimeMs: Math.trunc(fs.statSync(candidate.sourceInfo.asarPath).mtimeMs) });
       const bundle = prepared.ensure({ projectRoot });
       const runtime = await prepareSelectedRuntime({ bundle, layout: candidate.layout, runtimeDir: path.join(candidate.dir, "runner"), logger });
-      const executable = await executionRuntime(bundle, candidate.layout, runtime);
       store.seal(candidate, bundle, runtime);
-      store.activate(candidate.id, pointer);
-      logger?.(`[official-bundle] 已验证并切换完整运行时版本 ${bundle.version} (${candidate.id})\n`);
-      return executable;
+      return await attempt(candidate, async confirm => {
+        const executable = await executionRuntime(bundle, candidate.layout, runtime);
+        await start(executable, confirm);
+        try { logger?.(`[official-bundle] 已通过真实启动确认：${bundle.version} (${candidate.id})\n`); } catch {}
+        return executable;
+      });
     } catch (error) {
       // 只清理本轮未发布版本；已发布版本和任何旧备份均保留。
-      if (store.pointer()?.current !== candidate.id) fs.rmSync(candidate.dir, { recursive: true, force: true });
+      if (candidate && !error.runtimeStopFailed && store.pointer()?.current !== candidate.id) fs.rmSync(candidate.dir, { recursive: true, force: true });
+      if (current && !error.runtimeStopFailed && !error.runtimeFallbackAttempted) {
+        logger?.(`[official-bundle] 候选准备失败，恢复当前版本：${error.message}\n`);
+        return { ...await useCurrent(), recovery: { reason: error.message } };
+      }
       throw error;
     }
   });
 }
 
-async function prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forceRebuild = false }) {
+async function prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forceRebuild = false, preservePrevious = false }) {
   const sourceExecutableHash = digestFile(layout.executablePath);
   const selectedSource = bundle.manifest.sourceIdentity || sourceIdentity(bundle.manifest);
   const manifestHash = digestFile(path.join(bundle.bundleDir, "manifest.json"));
@@ -155,16 +230,19 @@ async function prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forc
     } catch {}
     return capability();
   };
+  let publication = null;
   try {
     let result;
     if (process.platform === "darwin") {
       result = await createMacRunner({ layout, runtimeDir, logger, runCompatibility });
     } else if (process.platform === "win32" || process.platform === "linux") {
-      result = await createPortableRunner({ layout, runtimeDir, logger, runCompatibility, forceRebuild });
+      result = await createPortableRunner({ layout, runtimeDir, logger, runCompatibility, forceRebuild, preservePrevious });
     } else {
       throw new Error(`当前 official Electron runner 不支持平台：${process.platform}`);
     }
 
+    publication = result.publication;
+    delete result.publication;
     const applicablePointIds = new Set(result.compatibilityPoints || []);
     for (const point of Object.values(modificationRuntime.points.runner)) {
       if (applicablePointIds.has(point.id)) continue;
@@ -177,7 +255,12 @@ async function prepareSelectedRuntime({ bundle, layout, runtimeDir, logger, forc
       || digestFile(path.join(bundle.bundleDir, "manifest.json")) !== manifestHash
       || digestFile(layout.executablePath) !== sourceExecutableHash) throw new Error("官方运行时在准备过程中发生变化，请重试");
     const runtimeBinding = createRuntimeBinding(bundle, layout, result.executablePath, { source: selectedSource, manifestHash, sourceExecutableHash });
-    return { ...result, runtimeBinding, modificationPoints: [...modificationSnapshots.values()] };
+    const prepared = { ...result, runtimeBinding, modificationPoints: [...modificationSnapshots.values()] };
+    // 内部事务句柄不经 IPC 发送给 Launcher 渲染页面。
+    Object.defineProperty(prepared, "executionPublication", { value: publication });
+    return prepared;
+  } catch (error) {
+    publication?.rollback(); throw error;
   } finally {
     // 先持久化最后一个可运行快照，再释放只服务于本次 Runner 构建的 Provider 状态。
     compatibilityService?.dispose();

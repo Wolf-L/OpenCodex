@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("openCodexLauncher", {
   // 还原目标由主进程固定，渲染进程不能传入任意目录。
   restoreBundleBackup: () => ipcRenderer.invoke("launcher:restore-bundle-backup"),
   restart: () => ipcRenderer.invoke("launcher:restart"),
+  checkRuntimeUpdate: () => ipcRenderer.invoke("launcher:check-runtime-update"),
+  applyRuntimeUpdate: () => ipcRenderer.invoke("launcher:apply-runtime-update"),
   openUrl: () => ipcRenderer.invoke("launcher:open-url"),
   // 健康警告通过受限 IPC 打开当前 Gateway 的诊断地址。
   openHealth: () => ipcRenderer.invoke("launcher:open-health"),

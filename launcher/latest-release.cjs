@@ -1,6 +1,9 @@
 "use strict";
 
-const DEFAULT_RELEASE_API_URL = "https://api.github.com/repos/RyensX/OpenCodex/releases/latest";
+const metadata = require("../package.json");
+const repository = new URL(metadata.homepage).pathname.replace(/^\/|\/$/g, "");
+const DEFAULT_RELEASE_API_URL = `https://api.github.com/repos/${repository}/releases/latest`;
+const RELEASE_TIMEOUT_MS = 10000;
 
 function createInitialLatestReleaseState() {
   return {
@@ -22,25 +25,27 @@ function markLatestReleaseChecking(previousState) {
   };
 }
 
-function normalizeReleaseVersion(value) {
-  // GitHub tag 常见格式是 v2.0.1；本地版本同样归一化后再做差异判断。
-  return String(value || "")
-    .trim()
-    .replace(/^v/i, "");
+function parseVersion(value) {
+  // 稳定更新通道只接受完整 semver；旧版本、预发布和任意标签不显示升级按钮。
+  const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const result = match.slice(1).map(Number);
+  return result.every(Number.isSafeInteger) ? result : null;
 }
 
 function releaseVersionChanged(tagName, currentVersionLabel) {
-  const remoteVersion = normalizeReleaseVersion(tagName);
-  const currentVersion = normalizeReleaseVersion(currentVersionLabel);
-  return !!remoteVersion && remoteVersion !== currentVersion;
+  const remote = parseVersion(tagName), local = parseVersion(currentVersionLabel);
+  if (!remote || !local) return false;
+  for (let i = 0; i < 3; i++) { if (remote[i] !== local[i]) return remote[i] > local[i]; }
+  return false;
 }
 
 function trustedReleaseUrl(value) {
   try {
     const url = new URL(String(value || ""));
     // 更新入口只允许 GitHub 上当前仓库的 release 页面，避免异常接口响应扩大外链范围。
-    if (url.protocol !== "https:" || url.hostname !== "github.com") return "";
-    if (!url.pathname.startsWith("/RyensX/OpenCodex/releases/")) return "";
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port) return "";
+    if (url.username || url.password || !url.pathname.startsWith(`/${repository}/releases/tag/`)) return "";
     return url.toString();
   } catch {
     return "";
@@ -49,8 +54,10 @@ function trustedReleaseUrl(value) {
 
 function latestReleaseStateFromPayload(payload, currentVersionLabel) {
   const tagName = typeof payload.tag_name === "string" ? payload.tag_name.trim() : "";
-  const htmlUrl = trustedReleaseUrl(payload.html_url);
-  const available = releaseVersionChanged(tagName, currentVersionLabel) && !!htmlUrl;
+  let htmlUrl = trustedReleaseUrl(payload.html_url);
+  try { if (htmlUrl && decodeURIComponent(new URL(htmlUrl).pathname.split("/releases/tag/")[1]) !== tagName) htmlUrl = ""; }
+  catch { htmlUrl = ""; }
+  const available = !payload.draft && !payload.prerelease && releaseVersionChanged(tagName, currentVersionLabel) && !!htmlUrl;
 
   return {
     checking: false,
@@ -81,9 +88,13 @@ async function fetchLatestReleaseState(options) {
   const fetchImpl = (options && options.fetchImpl) || globalThis.fetch;
   const previousState = options && options.previousState;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options?.timeoutMs || RELEASE_TIMEOUT_MS);
   try {
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
     const response = await fetchImpl(releaseApiUrl, {
+      signal: controller.signal,
+      redirect: "error",
       headers: {
         accept: "application/vnd.github+json",
         "user-agent": `OpenCodex Launcher ${currentVersionLabel || ""}`.trim(),
@@ -93,11 +104,12 @@ async function fetchLatestReleaseState(options) {
     return latestReleaseStateFromPayload(await response.json(), currentVersionLabel);
   } catch (error) {
     return latestReleaseErrorState(previousState, error);
-  }
+  } finally { clearTimeout(timer); }
 }
 
 module.exports = {
   createInitialLatestReleaseState,
   fetchLatestReleaseState,
   markLatestReleaseChecking,
+  __test: { parseVersion, releaseVersionChanged, latestReleaseStateFromPayload, trustedReleaseUrl },
 };

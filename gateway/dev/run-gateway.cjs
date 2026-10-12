@@ -3,7 +3,9 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const startupToken = require("node:crypto").randomBytes(32).toString("hex");
 const { prepareOfficialElectronRuntime } = require("../runner/index.cjs");
+const { launchAndConfirmRuntime } = require("../../shared/runtime-startup.cjs");
 const { runtimeBindingEnvironment } = require("../runtime/runtime-source-binding.cjs");
 const { linuxRuntimeArgs } = require("../runner/linux-runtime.cjs");
 const {
@@ -40,6 +42,7 @@ function logLauncher(line) {
 
 let activeChild = null;
 let stopping = false;
+let starting = false;
 
 function spawnGateway(officialRuntime, officialRuntimeArgs) {
   const child = spawn(officialRuntime.executablePath, officialRuntimeArgs, {
@@ -47,6 +50,7 @@ function spawnGateway(officialRuntime, officialRuntimeArgs) {
     env: {
       ...process.env,
       OPENCODEX_GATEWAY_ENTRY: gatewayEntry,
+      CODEX_WEB_LAUNCHER_TOKEN: startupToken,
       // 重启子进程继续验证父进程选定的版本；来源变化时明确失败，不混用新旧组件。
       ...runtimeBindingEnvironment(officialRuntime.runtimeBinding),
       // 命令行调试也保持和 launcher 一致：系统级隐藏 runner，不再触碰 Electron Dock API。
@@ -71,7 +75,7 @@ function spawnGateway(officialRuntime, officialRuntimeArgs) {
   child.on(
     "exit",
     createGatewayExitHandler({
-      isStopping: () => stopping || activeChild !== child,
+      isStopping: () => stopping || starting || activeChild !== child,
       onExit({ code, signal, restartRequested }) {
         if (activeChild === child) activeChild = null;
         if (restartRequested) return;
@@ -107,13 +111,6 @@ async function main() {
   ensureDir(officialBundleDir);
   ensureDir(officialUserDataDir);
 
-  // 命令行开发入口也必须走官方 Electron runner，避免和 launcher 路径出现两套 ABI 行为。
-  const officialRuntime = await prepareOfficialElectronRuntime({
-    runtimeDir,
-    officialBundleDir,
-    logger: logLauncher,
-  });
-
   /**
    * GCM 可能在 Electron main 脚本执行前打开 Profile。父进程必须先隔离旧凭据，并把替代端点
    * 直接写进初始 argv，才能保证隐藏 runner 不复用历史 MCS 登录态。
@@ -127,8 +124,6 @@ async function main() {
     ...hiddenRuntimeGcmCommandLineArgs(process.env),
     ...linuxArgs,
   ];
-  spawnGateway(officialRuntime, officialRuntimeArgs);
-
   const stopChild = (signal) => {
     // Ctrl-C 时把信号转给后台 Electron runner，避免遗留占用端口的 gateway 进程。
     stopping = true;
@@ -139,9 +134,26 @@ async function main() {
 
   process.once("SIGINT", () => stopChild("SIGINT"));
   process.once("SIGTERM", () => stopChild("SIGTERM"));
+
+  starting = true;
+  try {
+    await prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, logger: logLauncher,
+      startRuntime: (runtime, confirm) => launchAndConfirmRuntime({ runtime, confirm,
+        spawn: () => { if (stopping) throw new Error("启动已取消"); return spawnGateway(runtime, officialRuntimeArgs); },
+        fetchStatus: async ({ signal }) => {
+          const response = await fetch(`http://127.0.0.1:${process.env.PORT || 3737}/api/launcher/status`, {
+            signal, redirect: "error", headers: { "x-opencodex-launcher-token": startupToken },
+          });
+          if (!response.ok) throw new Error(`Gateway HTTP ${response.status}`);
+          return response.json();
+        },
+      }),
+    });
+    process.exitCode = 0;
+  } finally { starting = false; }
 }
 
 main().catch((error) => {
   console.error("[launcher] gateway failed", error);
-  process.exitCode = 1;
+  process.exitCode = stopping ? 0 : 1;
 });

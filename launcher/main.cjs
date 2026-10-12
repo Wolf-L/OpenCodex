@@ -8,6 +8,8 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../gateway/runner/index.cjs");
+const { launchAndConfirmRuntime } = require("../shared/runtime-startup.cjs");
+const { RuntimeVersionStore } = require("../gateway/runtime/runtime-version-store.cjs");
 const { runtimeBindingEnvironment } = require("../gateway/runtime/runtime-source-binding.cjs");
 const { linuxRuntimeArgs } = require("../gateway/runner/linux-runtime.cjs");
 const { createCompatibilityService } = require("../gateway/runtime/compatibility/service.cjs");
@@ -41,7 +43,7 @@ const DEFAULT_PORT = normalizePort(process.env.OPENCODEX_PORT);
 const PLUGIN_DIRS_ENV = "OPENCODEX_PLUGIN_DIRS";
 const OFFICIAL_AUTO_SCAN_UPGRADE_ENV = "CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE";
 const GATEWAY_STATUS_TIMEOUT_MS = 5_000;
-const OPENCODEX_GITHUB_URL = "https://github.com/RyensX/OpenCodex";
+const OPENCODEX_GITHUB_URL = packageMetadata.homepage;
 const OPENCODEX_AUTHOR_URL = "https://github.com/RyensX";
 const OPENCODEX_AUTHOR = packageMetadata.author || "Ryens";
 
@@ -58,6 +60,11 @@ let gatewayStartPromise = null;
 let gatewayRestartPromise = null;
 let skipNextOfficialScan = false;
 let restoringBackup = false;
+let nextSelectedVersionId = null;
+let retryFailedRuntime = false;
+let expectedRuntimeIdentity = null;
+let runtimePreflightPromise = null;
+let runtimePreflight = null;
 const gatewayLogWriter = createBoundedLogWriter();
 
 const gatewayState = {
@@ -640,6 +647,9 @@ function buildState() {
     startedAt: gatewayState.startedAt,
     officialRuntime: gatewayState.officialRuntime,
     bundleBackup: { ...officialBundleCache().backupState(), restoring: restoringBackup },
+    runtimeStartup: new RuntimeVersionStore(runtimePaths().officialBundleDir).startupState(),
+    runtimePreflight,
+    runtimePreflightChecking: !!runtimePreflightPromise,
     locale: i18n.locale,
     messages: i18n.messages,
     i18nSource: i18n.source,
@@ -831,6 +841,10 @@ async function startGatewayOnce() {
 
   // 一次性覆盖只用于本轮启动环境，不写入用户设置。
   const skipOfficialScan = skipNextOfficialScan;
+  const selectedVersionId = nextSelectedVersionId;
+  const retryFailed = retryFailedRuntime;
+  const expectedOriginIdentity = expectedRuntimeIdentity;
+  nextSelectedVersionId = null; retryFailedRuntime = false; expectedRuntimeIdentity = null;
   skipNextOfficialScan = false;
   const paths = runtimePaths();
   gatewayState.paths = paths;
@@ -838,7 +852,7 @@ async function startGatewayOnce() {
   gatewayState.settings = await ensurePortSetting(paths, loadLauncherSettings(paths));
   applyPreventSleepSetting(gatewayState.settings);
   gatewayState.host = hostForMode(gatewayState.settings.hostMode);
-  const officialAutoScanUpgrade = !skipOfficialScan && normalizeOfficialAutoScanUpgrade(gatewayState.settings.officialAutoScanUpgrade);
+  const officialAutoScanUpgrade = !!expectedOriginIdentity || (!skipOfficialScan && normalizeOfficialAutoScanUpgrade(gatewayState.settings.officialAutoScanUpgrade));
 
   if (!fs.existsSync(paths.gatewayScriptPath)) {
     gatewayState.lastError = `Missing gateway entry: ${paths.gatewayScriptPath}`;
@@ -869,6 +883,8 @@ async function startGatewayOnce() {
       logger: appendLog,
       autoScanUpgrade: officialAutoScanUpgrade,
       rollbackPinned: skipOfficialScan,
+      selectedVersionId, retryFailed, expectedOriginIdentity,
+      startRuntime: (runtime, confirm) => startPreparedGateway(runtime, confirm, { paths, linuxArgs, skipOfficialScan, officialAutoScanUpgrade }),
     });
     gatewayState.officialRuntime = officialRuntime;
     writeRunnerCompatibilityReportSafely(paths, officialRuntime);
@@ -880,6 +896,13 @@ async function startGatewayOnce() {
     return buildState();
   }
 
+  startStatusPolling();
+  broadcastState();
+  return buildState();
+}
+
+async function startPreparedGateway(officialRuntime, confirm, { paths, linuxArgs, skipOfficialScan, officialAutoScanUpgrade }) {
+  if (isQuitting) throw new Error("Launcher 正在退出，取消启动确认");
   const officialUserDataDir = path.join(paths.runtimeDir, "official-user-data");
   /**
    * Chromium Profile/GCM 可能早于 Electron main 脚本初始化；spawn 前先移走旧凭据，再通过原始
@@ -928,61 +951,74 @@ async function startGatewayOnce() {
     // Launcher 设置为空表示不配置外部插件目录，同时避免继承启动 Launcher 时的同名环境变量。
     delete childEnv[PLUGIN_DIRS_ENV];
   }
-  const child = spawn(officialRuntime.executablePath, officialRuntimeArgs, {
-    cwd: APP_ROOT,
-    env: childEnv,
-    // 第 4 个 fd 是生命周期 pipe：launcher 退出时 OS 会关闭写端，gateway watchdog 会自杀。
-    stdio: ["ignore", "pipe", "pipe", "pipe"],
-  });
+  const spawnChild = () => {
+    const child = spawn(officialRuntime.executablePath, officialRuntimeArgs, {
+      cwd: APP_ROOT,
+      env: childEnv,
+      // 第 4 个 fd 是生命周期 pipe：launcher 退出时 OS 会关闭写端，gateway watchdog 会自杀。
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
+    });
 
-  gatewayState.child = child;
+    gatewayState.child = child;
 
-  child.stdout.on("data", (chunk) => appendLog(`[gateway] ${chunk.toString()}`));
-  child.stderr.on("data", (chunk) => appendLog(`[gateway:err] ${chunk.toString()}`, { urgent: true }));
-  child.on("error", (error) => {
-    // spawn 失败不会触发 exit；此时必须释放占位，后续启动或重试才不会被误判为仍在运行。
-    if (child.pid == null && gatewayState.child === child) {
-      gatewayState.child = null;
-      gatewayState.status = null;
-    }
-    gatewayState.lastError = error instanceof Error ? error.message : String(error);
-    appendLog(`[launcher] gateway spawn error: ${gatewayState.lastError}\n`, { urgent: true });
-    broadcastState();
-  });
-  child.on(
-    "exit",
-    createGatewayExitHandler({
-      // 只允许当前受管子进程请求重启；迟到的旧 child 退出事件不能影响新实例。
-      isStopping: () => isQuitting || gatewayState.child !== child,
-      onExit({ code, signal, restartRequested }) {
-        const isActiveChild = gatewayState.child === child;
-        appendLog(`[launcher] gateway exited: code=${code} signal=${signal}\n`, {
-          urgent: isActiveChild && !restartRequested,
-        });
-        if (!isActiveChild) return;
+    child.stdout.on("data", (chunk) => appendLog(`[gateway] ${chunk.toString()}`));
+    child.stderr.on("data", (chunk) => appendLog(`[gateway:err] ${chunk.toString()}`, { urgent: true }));
+    child.on("error", (error) => {
+      // spawn 失败不会触发 exit；此时必须释放占位，后续启动或重试才不会被误判为仍在运行。
+      if (child.pid == null && gatewayState.child === child) {
         gatewayState.child = null;
         gatewayState.status = null;
-        if (restartRequested) {
-          gatewayState.lastError = "";
-        } else if (!isQuitting) {
-          gatewayState.lastError = `gateway exited: code=${code} signal=${signal}`;
-        }
-        broadcastState();
-      },
-      onRestart() {
-        appendLog("[launcher] gateway requested restart\n");
-        void startGateway().catch((error) => {
-          gatewayState.lastError = error instanceof Error ? error.message : String(error);
-          appendLog(`[launcher] gateway restart failed: ${errorLogText(error)}\n`, { urgent: true });
+      }
+      gatewayState.lastError = error instanceof Error ? error.message : String(error);
+      appendLog(`[launcher] gateway spawn error: ${gatewayState.lastError}\n`, { urgent: true });
+      broadcastState();
+    });
+    child.on(
+      "exit",
+      createGatewayExitHandler({
+        // 只允许当前受管子进程请求重启；迟到的旧 child 退出事件不能影响新实例。
+        isStopping: () => isQuitting || !!gatewayStartPromise || gatewayState.child !== child,
+        onExit({ code, signal, restartRequested }) {
+          const isActiveChild = gatewayState.child === child;
+          appendLog(`[launcher] gateway exited: code=${code} signal=${signal}\n`, {
+            urgent: isActiveChild && !restartRequested,
+          });
+          if (!isActiveChild) return;
+          gatewayState.child = null;
+          gatewayState.status = null;
+          if (restartRequested) {
+            gatewayState.lastError = "";
+          } else if (!isQuitting) {
+            gatewayState.lastError = `gateway exited: code=${code} signal=${signal}`;
+          }
           broadcastState();
-        });
-      },
-    })
-  );
+        },
+        onRestart() {
+          appendLog("[launcher] gateway requested restart\n");
+          void startGateway().catch((error) => {
+            gatewayState.lastError = error instanceof Error ? error.message : String(error);
+            appendLog(`[launcher] gateway restart failed: ${errorLogText(error)}\n`, { urgent: true });
+            broadcastState();
+          });
+        },
+      })
+    );
 
-  startStatusPolling();
-  broadcastState();
-  return buildState();
+    return child;
+  };
+  const result = await launchAndConfirmRuntime({ runtime: officialRuntime, spawn: spawnChild, confirm,
+    fetchStatus: async ({ signal }) => {
+      // 启动确认使用本次 Launcher 的随机令牌；不读取用户密码或浏览器 cookie。
+      const response = await fetch(`${gatewayState.localUrl}/api/launcher/status`, {
+        signal, redirect: "error", headers: { "x-opencodex-launcher-token": gatewayState.token },
+      });
+      if (!response.ok) throw new Error(`gateway startup status failed: HTTP ${response.status}`);
+      return response.json();
+    },
+  });
+  gatewayState.status = result.status;
+  gatewayState.lastError = "";
+  return result;
 }
 
 // startGatewayOnce 在准备运行时期间会跨越多个 await，单飞协调器避免并发拉起多个子进程。
@@ -1066,6 +1102,34 @@ async function restartGateway() {
   }
 }
 
+async function checkRuntimeUpdate() {
+  if (runtimePreflightPromise) return runtimePreflightPromise;
+  runtimePreflightPromise = (async () => {
+    try {
+      runtimePreflight = await require("../gateway/runtime/runtime-preflight.cjs").preflightRuntimeUpdate({ officialBundleDir: runtimePaths().officialBundleDir });
+    } catch (error) { runtimePreflight = { ok: false, error: error.message }; }
+    finally { runtimePreflightPromise = null; broadcastState(); }
+    return buildState();
+  })();
+  broadcastState();
+  return runtimePreflightPromise;
+}
+
+async function applyRuntimeUpdate() {
+  if (gatewayRestartPromise) return gatewayRestartPromise;
+  // 界面只能应用刚完成的主进程预检，不能指定任意下载来源或版本目录。
+  if (!runtimePreflight?.ok || Date.now() - Date.parse(runtimePreflight.checkedAt) > 15 * 60 * 1000) {
+    throw new Error("请先完成运行时更新预检");
+  }
+  const identity = runtimePreflight.originIdentity;
+  gatewayRestartPromise = restartGatewayOnce(() => {
+    expectedRuntimeIdentity = identity; retryFailedRuntime = true;
+    runtimePreflight = null;
+  });
+  try { return await gatewayRestartPromise; }
+  finally { gatewayRestartPromise = null; }
+}
+
 async function restoreBundleBackup() {
   // 与所有服务重启共用互斥状态，避免停止期间另一次重启先占用目录。
   if (gatewayRestartPromise) return gatewayRestartPromise;
@@ -1077,10 +1141,14 @@ async function restoreBundleBackup() {
       if (!backup.available) throw new Error(`无法还原备份：${backup.reason}`);
       broadcastState();
       return await restartGatewayOnce(() => {
-        cache.restoreBackup();
+        const store = new RuntimeVersionStore(runtimePaths().officialBundleDir);
+        const pointer = store.pointer();
+        // 完整版本还原也要先真实启动确认，失败时当前指针保持不变。
+        if (pointer) nextSelectedVersionId = pointer.previous;
+        else cache.restoreBackup();
         skipNextOfficialScan = true;
         gatewayState.status = null;
-        appendLog("[launcher] 已还原 bundle 备份，本次启动临时跳过更新扫描\n");
+        appendLog("[launcher] 准备启动备份版本，通过健康确认后切换；本次临时跳过更新扫描\n");
       });
     } catch (error) {
       gatewayState.lastError = errorLogText(error);
@@ -1286,6 +1354,8 @@ function revealPath(targetPath) {
 }
 
 ipcMain.handle("launcher:get-state", () => buildState());
+ipcMain.handle("launcher:check-runtime-update", () => checkRuntimeUpdate());
+ipcMain.handle("launcher:apply-runtime-update", () => applyRuntimeUpdate());
 ipcMain.handle("launcher:start", () => gatewayRestartPromise || startGateway());
 ipcMain.handle("launcher:restart", () => restartGateway());
 ipcMain.handle("launcher:restore-bundle-backup", () => restoreBundleBackup());

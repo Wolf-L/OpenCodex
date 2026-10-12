@@ -1,4 +1,5 @@
 const childProcess = require("child_process");
+const appServerHealth = require("./app-server-health.cjs").createAppServerHealth();
 const electron = require("electron");
 const fs = require("fs");
 const os = require("os");
@@ -554,6 +555,7 @@ function recordHiddenAppServerRedirect(launcher, command, normalizedArgs, replac
 }
 
 function decorateHiddenAppServerChild(child) {
+  appServerHealth.track(child);
   if (typeof appServerChildDecorator !== "function") return child;
   try {
     const decorated = appServerChildDecorator(child) || child;
@@ -670,6 +672,7 @@ function installAppServerSpawnHook(bundle) {
 
 function appServerSpawnHookStatus() {
   return {
+    ...appServerHealth.status(),
     installed: appServerSpawnHook.installed,
     patchedModules: appServerSpawnHook.patchedModules,
     interceptCount: appServerSpawnHook.interceptCount,

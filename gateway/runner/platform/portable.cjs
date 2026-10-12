@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { writeFileAtomicSync } = require("../../../shared/atomic-file.cjs");
 const {
   RUNNER_LINUX_EXECUTABLE_NAME,
   RUNNER_WINDOWS_EXECUTABLE_NAME,
@@ -333,8 +334,9 @@ function removePreparedDirectory(directory) {
   try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
 }
 
-function publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker }) {
+function publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker, preservePrevious = false }) {
   const backupDir = `${runnerRootDir}.previous-${crypto.randomUUID()}`;
+  const previousMarker = fs.existsSync(markerPath) ? fs.readFileSync(markerPath) : null;
   const markerTemp = `${markerPath}.${crypto.randomUUID()}.tmp`;
   let movedPrevious = false;
   let published = false;
@@ -357,7 +359,22 @@ function publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker 
   } finally {
     try { fs.unlinkSync(markerTemp); } catch {}
   }
-  removePreparedDirectory(backupDir);
+  if (!preservePrevious) { removePreparedDirectory(backupDir); return null; }
+  let settled = false;
+  return {
+    commit() { if (settled) return; settled = true; removePreparedDirectory(backupDir); },
+    rollback() {
+      if (settled) return;
+      // 保留原目录到真实启动确认之后，失败直接移回而非重建，保护 Windows 的 SxS 工作状态。
+      const rejectedDir = `${runnerRootDir}.rejected-${crypto.randomUUID()}`;
+      fs.renameSync(runnerRootDir, rejectedDir);
+      try { if (movedPrevious) fs.renameSync(backupDir, runnerRootDir); }
+      catch (error) { fs.renameSync(rejectedDir, runnerRootDir); throw error; }
+      if (previousMarker) writeFileAtomicSync(markerPath, previousMarker);
+      else if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+      settled = true; removePreparedDirectory(rejectedDir);
+    },
+  };
 }
 
 function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger, platform = process.platform }) {
@@ -383,7 +400,7 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
   return { copied: true };
 }
 
-async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild = false, runCompatibility = (_point, operation) => operation() }) {
+async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild = false, preservePrevious = false, runCompatibility = (_point, operation) => operation() }) {
   const workDir = path.join(runtimeDir, "official-electron-runner");
   const runnerRootDir = path.join(workDir, `${process.platform}-${process.arch}`);
   const runnerExecutablePath = path.join(runnerRootDir, runnerExecutableNameForPlatform());
@@ -392,6 +409,7 @@ async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild =
   fs.mkdirSync(workDir, { recursive: true });
   const stagingDir = fs.mkdtempSync(`${runnerRootDir}.staging-`);
   const generationDir = fs.mkdtempSync(path.join(workDir, "gateway-source-"));
+  let publication = null;
   try {
     const runnerResourcesDir = path.join(stagingDir, "resources");
     fs.mkdirSync(runnerResourcesDir);
@@ -427,13 +445,16 @@ async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild =
       if (!samePortableRuntimeFingerprint(fingerprint, portableRuntimeFingerprint(layout))) {
         throw new Error("官方 Electron 运行时在准备期间发生变化，请重试启动");
       }
-      publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker: {
+      publication = publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, preservePrevious, marker: {
         version: 2, prepared: true, fingerprint, gatewaySha256,
         executableSha256: executableSha256(stagedExecutable), copiedAt: new Date().toISOString(),
       } });
       // Windows SxS 以最终路径加载程序集；目录切换后仍需执行已知的清单普通读写修复。
       refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger });
     }
+  } catch (error) {
+    publication?.rollback();
+    throw error;
   } finally {
     removePreparedDirectory(stagingDir);
     removePreparedDirectory(generationDir);
@@ -443,6 +464,7 @@ async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild =
   logLine(logger, `official Electron source: app=${layout.appRoot} asar=${layout.asarPath}`);
 
   return {
+    publication,
     compatibilityPoints: [
       runnerPoints.portableLayout.id,
       runnerPoints.gatewayAsar.id,
@@ -461,5 +483,6 @@ module.exports = {
     copyPortableRuntimeEntry,
     copyPortableRuntimeExecutable,
     ensurePortableRuntimeCopy,
+    publishPortableRuntime,
   },
 };

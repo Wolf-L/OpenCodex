@@ -136,5 +136,13 @@
   "web.workspaceRoot.error.notDirectory": "该路径不是文件夹。",
   "web.workspaceRoot.error.noAccess": "没有权限访问该路径。",
   "web.workspaceRoot.error.unavailable": "无法使用该文件夹路径。",
-  "web.workspaceRoot.error.addFailed": "添加文件夹失败：{error}"
+  "web.workspaceRoot.error.addFailed": "添加文件夹失败：{error}",
+  "launcher.runtime.check": "预检更新",
+  "launcher.runtime.apply": "应用并重启",
+  "launcher.runtime.checking": "正在读取并校验官方安装；当前服务继续运行。",
+  "launcher.runtime.plan": "候选 {version} · {platform}。预留空间估计 {required} GiB，可用 {available} GiB。应用后通过启动确认再切换。",
+  "launcher.runtime.blocked": "预检未通过：请检查目录写入权限与磁盘空间。预计需要 {required} GiB，可用 {available} GiB。",
+  "launcher.runtime.retry": " 此来源上次启动失败，应用将明确重试一次。",
+  "launcher.runtime.unchanged": " 来源内容与当前版本一致。",
+  "launcher.runtime.failed": "上次候选版本未通过启动确认：{reason}。自动扫描将跳过该来源，可预检后重试。"
 }

@@ -90,6 +90,19 @@ class RuntimeVersionStore {
     this.bundleDir = path.resolve(bundleDir);
     this.root = `${this.bundleDir}.versions`;
     this.pointerPath = `${this.bundleDir}.current.json`;
+    this.startupPath = `${this.bundleDir}.startup.json`;
+  }
+  startupState() {
+    if (!fs.existsSync(this.startupPath)) return null;
+    const state = JSON.parse(fs.readFileSync(this.startupPath, "utf8"));
+    if (state.schemaVersion !== FORMAT || !validId(state.id) || !["pending", "failed", "confirmed"].includes(state.state)
+      || typeof state.originIdentity !== "string") throw new Error("运行时启动记录无效");
+    return state;
+  }
+  recordStartup(record, state, reason = "") {
+    // 保留失败身份，自动扫描不反复试启动同一坏版本；明确重试才能解除。
+    writeJsonAtomicSync(this.startupPath, { schemaVersion: FORMAT, id: record.id, originIdentity: record.originIdentity,
+      state, reason: String(reason).slice(0, 1000), at: new Date().toISOString() });
   }
   pointer() {
     if (!fs.existsSync(this.pointerPath)) return null;
@@ -122,8 +135,15 @@ class RuntimeVersionStore {
     let fd;
     try { fd = fs.openSync(lock, "wx", 0o600); }
     catch (error) { if (error.code === "EEXIST") throw new Error(`已有运行时准备任务，或上次意外退出留下锁；确认无准备进程后再清理：${lock}`); throw error; }
+    let released = false;
+    const release = () => {
+      if (released) return; released = true;
+      fs.closeSync(fd); fs.unlinkSync(lock);
+    };
+    // 正常退出也释放本进程持有的锁；强制断电/kill 遗留的锁仍不按超时抢占。
+    process.once("exit", release);
     try { fs.writeFileSync(fd, String(process.pid)); return await operation(); }
-    finally { fs.closeSync(fd); fs.unlinkSync(lock); }
+    finally { process.off("exit", release); release(); }
   }
   sourcePlan(layout, sourceInfo) {
     const roots = [{ source: layout.platform === "darwin" ? layout.appRoot : layout.runtimeRoot, target: "runtime" }];
@@ -184,11 +204,12 @@ class RuntimeVersionStore {
     writeJsonAtomicSync(path.join(candidate.dir, "version.json"), record);
     return record;
   }
-  activate(id, expected) {
+  activate(id, expected, beforePublish = () => {}) {
     this.read(id);
     const current = this.pointer();
     if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("运行时版本指针已被另一任务修改，拒绝覆盖");
     if (current?.current === id) return;
+    beforePublish();
     // 所有组件和清单已落盘并通过内容校验后，最后仅原子替换一个入口指针。
     writeJsonAtomicSync(this.pointerPath, { schemaVersion: FORMAT, current: id, previous: current?.current || null });
   }

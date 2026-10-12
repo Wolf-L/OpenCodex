@@ -6,7 +6,7 @@ const path = require('path');
 const vm = require('vm');
 const { createRequire } = require('module');
 const asar = require('@electron/asar');
-const { RuntimeVersionStore } = require('../runtime/runtime-version-store.cjs');
+const { RuntimeVersionStore, inventory } = require('../runtime/runtime-version-store.cjs');
 const { assertRuntimeBinding } = require('../runtime/runtime-source-binding.cjs');
 const { OfficialBundleCache } = require('../dist/official/OfficialBundleCache.js');
 const { OfficialBundleFileSystem } = require('../dist/official/OfficialBundleFileSystem.js');
@@ -56,8 +56,8 @@ test('parent prepares a complete version before switching; offline restart and r
   }
   const fakeRequire = id => {
     if (id === '../dist/official/LocalCodexBundleProvider.js') return { LocalCodexBundleProvider: Provider };
-    if (id === './official-layout.cjs') return { findOfficialRuntimeLayout: ({ bundle }) => ({ platform: process.platform, appRoot: bundle.sourceAppPath, runtimeRoot: bundle.sourceAppPath, resourcesDir: bundle.sourceResourcesPath, asarPath: bundle.sourceAsarPath, executablePath: exe }) };
-    if (id === './linux-runtime.cjs') return { assertLinuxRuntimeLayout() {} };
+    if (id === './official-layout.cjs' || id === '../runner/official-layout.cjs') return { findOfficialRuntimeLayout: ({ bundle }) => ({ platform: process.platform, appRoot: bundle.sourceAppPath, runtimeRoot: bundle.sourceAppPath, resourcesDir: bundle.sourceResourcesPath, asarPath: bundle.sourceAsarPath, executablePath: exe }) };
+    if (id === './linux-runtime.cjs' || id === '../runner/linux-runtime.cjs') return { assertLinuxRuntimeLayout() {} };
     if (id === './platform/portable.cjs' || id === './platform/macos.cjs') return { createPortableRunner: createRunner, createMacRunner: createRunner };
     return realRequire(id);
   };
@@ -65,12 +65,23 @@ test('parent prepares a complete version before switching; offline restart and r
   vm.runInNewContext(fs.readFileSync(modulePath, 'utf8'), sandbox);
   const prepare = sandbox.module.exports.prepareOfficialElectronRuntime;
   const base = path.join(root, 'cache/bundle'), store = new RuntimeVersionStore(base);
-  const opts = { runtimeDir: path.join(root, 'runtime'), officialBundleDir: base, autoScanUpgrade: true };
+  const opts = { runtimeDir: path.join(root, 'runtime'), officialBundleDir: base, autoScanUpgrade: true, startRuntime: async (_runtime, confirm) => confirm(() => {}) };
   const first = await prepare(opts);
   const firstId = store.pointer().current;
   assert.equal(scans, 1, 'child snapshot provider must not rescan original install');
   assert.ok(first.runtimeBinding.bundleDir.startsWith(store.root));
   assert.notEqual(first.runtimeBinding.codexBinaryPath, cli);
+  const preflightPath = path.join(__dirname, '../runtime/runtime-preflight.cjs');
+  const preflightRequire = createRequire(preflightPath);
+  const preflightSandbox = { require: id => ['../dist/official/LocalCodexBundleProvider.js', '../runner/official-layout.cjs', '../runner/linux-runtime.cjs'].includes(id) ? fakeRequire(id) : preflightRequire(id),
+    module: { exports: {} }, process, __filename: preflightPath, setTimeout, clearTimeout };
+  vm.runInNewContext(fs.readFileSync(preflightPath, 'utf8'), preflightSandbox);
+  const beforePreview = inventory(root);
+  const preview = preflightSandbox.module.exports.inspectRuntimeUpdate({ officialBundleDir: base, env: {} });
+  assert.equal(preview.changed, false);
+  assert.equal(preview.retryRequired, false);
+  assert.ok(preview.sourceBytes > 0);
+  assert.deepEqual(inventory(root), beforePreview, 'preflight must not create or modify files');
   if (process.platform === 'win32') assert.ok(first.executablePath.startsWith(opts.runtimeDir), 'Windows executes a content-verified stable working copy');
   const beforeWarm = runnerCalls;
   await prepare({ ...opts, autoScanUpgrade: false });
@@ -99,10 +110,42 @@ test('parent prepares a complete version before switching; offline restart and r
   store.read(firstId);
   await archive('2.0.0'); write(cli, 'cli-v2'); write(unpacked, 'native-v2');
   failRunner = true;
-  await assert.rejects(prepare(opts), /injected runner/);
+  // 模拟候选生成失败，但原版本必须仍能准备，以验证只回退一次。
+  failRunner = false;
+  const failedStarts = [];
+  const rolledBack = await prepare({ ...opts, startRuntime: async (runtime, confirm) => {
+    const id = path.basename(path.dirname(runtime.runtimeBinding.bundleDir));
+    failedStarts.push(id);
+    assert.equal(store.pointer().current, firstId, 'pointer remains old until actual confirmation');
+    if (id !== firstId) throw new Error('injected candidate boot failure');
+    await confirm(() => {});
+  } });
+  assert.equal(rolledBack.recovery.reason, 'injected candidate boot failure');
+  assert.equal(failedStarts.length, 2);
+  assert.equal(store.startupState().state, 'failed');
+  const skipStarts = [];
+  await prepare({ ...opts, startRuntime: async (runtime, confirm) => {
+    skipStarts.push(path.basename(path.dirname(runtime.runtimeBinding.bundleDir))); await confirm(() => {});
+  } });
+  assert.deepEqual(skipStarts, [firstId], 'failed source is not retried by automatic scan');
+  let attempts = 0;
+  await assert.rejects(prepare({ ...opts, retryFailed: true, startRuntime: async () => { attempts++; throw new Error('both versions fail'); } }), error => error.runtimeFallbackAttempted === true);
+  assert.equal(attempts, 2, 'fallback is attempted once, never in an infinite loop');
+  assert.equal(store.pointer().current, firstId);
+  attempts = 0;
+  await assert.rejects(prepare({ ...opts, retryFailed: true, startRuntime: async () => {
+    attempts++; const error = new Error('child remains alive'); error.runtimeStopFailed = true; throw error;
+  } }), /child remains alive/);
+  assert.equal(attempts, 1, 'do not overwrite the working copy while a failed child is still running');
+  const retainedCandidate = store.startupState().id;
+  assert.ok(fs.existsSync(store.directory(retainedCandidate)), 'never delete a live candidate');
   assert.equal(store.pointer().current, firstId);
   failRunner = false;
-  await prepare(opts);
+  await prepare({ ...opts, retryFailed: true, startRuntime: async (_runtime, confirm) => {
+    assert.equal(store.pointer().current, firstId); await confirm(() => {});
+  } });
+  assert.equal(store.startupState().state, 'confirmed');
+  assert.equal(store.pointer().current, retainedCandidate, 'explicit retry reuses the same verified candidate');
   assert.equal(store.pointer().previous, firstId);
   const cache = new OfficialBundleCache({ projectRoot: root, configuredBundleDir: base, logger: { warn() {} }, fileSystem: new OfficialBundleFileSystem() });
   assert.equal(cache.backupState().version, '1.0.0');
@@ -111,8 +154,7 @@ test('parent prepares a complete version before switching; offline restart and r
   const offline = await prepare({ ...opts, autoScanUpgrade: false });
   assert.equal(scans, beforeScans);
   assert.equal(JSON.parse(fs.readFileSync(path.join(offline.runtimeBinding.bundleDir, 'manifest.json'))).version, '2.0.0');
-  cache.restoreBackup();
-  const restored = await prepare({ ...opts, rollbackPinned: true });
+  const restored = await prepare({ ...opts, rollbackPinned: true, selectedVersionId: firstId });
   const manifest = JSON.parse(fs.readFileSync(path.join(restored.runtimeBinding.bundleDir, 'manifest.json')));
   assertRuntimeBinding(restored.runtimeBinding, restored.runtimeBinding.bundleDir, manifest);
   assert.equal(manifest.version, '1.0.0');

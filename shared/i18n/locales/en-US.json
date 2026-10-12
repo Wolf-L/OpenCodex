@@ -136,5 +136,13 @@
   "web.workspaceRoot.error.notDirectory": "That path is not a folder.",
   "web.workspaceRoot.error.noAccess": "You do not have permission to access that path.",
   "web.workspaceRoot.error.unavailable": "That folder path cannot be used.",
-  "web.workspaceRoot.error.addFailed": "Failed to add folder: {error}"
+  "web.workspaceRoot.error.addFailed": "Failed to add folder: {error}",
+  "launcher.runtime.check": "Preview update",
+  "launcher.runtime.apply": "Apply and restart",
+  "launcher.runtime.checking": "Reading and verifying the installed runtime. The current service keeps running.",
+  "launcher.runtime.plan": "Candidate {version} · {platform}. Estimated free space needed: {required} GiB; available: {available} GiB. Activation follows startup verification.",
+  "launcher.runtime.blocked": "Preflight blocked: check write permission and disk space. Estimated need: {required} GiB; available: {available} GiB.",
+  "launcher.runtime.retry": " This source failed startup previously. Apply retries it once.",
+  "launcher.runtime.unchanged": " Source contents match the current version.",
+  "launcher.runtime.failed": "The last candidate failed startup verification: {reason}. Automatic scans skip that source; preview to retry."
 }
