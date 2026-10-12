@@ -12,13 +12,13 @@ permissions:
   actions: read
 
 concurrency:
-  group: publish-linux-c710152
+  group: publish-linux-mobile-cache
   cancel-in-progress: false
 
 env:
-  SOURCE_RUN: '38182788309'
-  SOURCE_SHA: c7101525282bd3c785b2bcaca0f372eaf161c0f1
-  RELEASE_TAG: linux-2.1.0-c710152
+  SOURCE_RUN: '38192180311'
+  SOURCE_SHA: 4559effd24e687ba0fa62953adf7459e389dcf25
+  RELEASE_TAG: linux-2.1.0-mobile-cache
 
 jobs:
   package:
@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: c7101525282bd3c785b2bcaca0f372eaf161c0f1
+          ref: 4559effd24e687ba0fa62953adf7459e389dcf25
 
       - uses: actions/setup-node@v6
         with:
@@ -72,7 +72,7 @@ jobs:
           # 复用原产物的编译结果与生产依赖，仅补入相同提交已有的命令行入口。
           cp -a unpacked/resources/app/. headless/
           mkdir -p headless/scripts headless/gateway/dev
-          cp scripts/linux-{common,init,doctor,start}.cjs headless/scripts/
+          cp scripts/linux-{common,init,doctor,start,cache}.cjs headless/scripts/
           cp gateway/dev/run-gateway.cjs headless/gateway/dev/
           test -s headless/gateway/dist/official/CodexAsarScanner.js
           node --check headless/gateway/dev/run-gateway.cjs
@@ -81,6 +81,8 @@ jobs:
           export OPENCODEX_LINUX_DATA_DIR="$RUNNER_TEMP/headless-smoke-$BUILD_ARCH"
           printf '%s\n' 'ci-only-package-smoke-password' | node headless/scripts/linux-init.cjs --password-stdin
           test "$(stat -c '%a' "$OPENCODEX_LINUX_DATA_DIR/config.yaml")" = 600
+          node headless/scripts/linux-cache.cjs enable --if-missing
+          test "$(stat -c '%a' "$OPENCODEX_LINUX_DATA_DIR/runtime/official-startup-cache.json")" = 600
           cat > headless/opencodex <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -90,7 +92,8 @@ jobs:
           if (( $# )); then shift; fi
           case "$action" in
             init|doctor|start) exec node "$root/scripts/linux-$action.cjs" "$@" ;;
-            *) printf 'Usage: %s {init|doctor|start} [options]\n' "$0" >&2; exit 2 ;;
+            cache) exec node "$root/scripts/linux-cache.cjs" "$@" ;;
+            *) printf 'Usage: %s {init|doctor|start|cache} [options]\n' "$0" >&2; exit 2 ;;
           esac
           SH
           chmod 755 headless/opencodex
@@ -130,7 +133,13 @@ jobs:
           done
           (cd assets && sha256sum OpenCodex-* > SHA256SUMS)
           cat > "$RUNNER_TEMP/release-notes.md" <<'MD'
-          Linux ARM64 / x64 packages, from verified build [38182788309](https://github.com/Wolf-L/OpenCodex/actions/runs/38182788309), commit `c7101525282bd3c785b2bcaca0f372eaf161c0f1`.
+          Linux ARM64 / x64 packages, from verified build [38192180311](https://github.com/Wolf-L/OpenCodex/actions/runs/38192180311), commit `4559effd24e687ba0fa62953adf7459e389dcf25`.
+
+          ## Mobile UI and Linux startup cache fix
+
+          - Mobile Images, Tasks, Library, Plugins and Explore navigation now lives in the left drawer, with Account at the bottom. The specified quota upsell and Get Plus header button are hidden on phones only.
+          - Exact Linux 26.1007.21434 desktop and preauth startup cache support. Existing Windows snapshots remain compatible. Quick install creates missing opt-in settings; existing disabled settings are preserved.
+          - After updating, keep working network access, open the main page and profile, and check both `coverage.desktop` and `coverage.preauth` plus actual writes/hits in `/api/health` before testing VPN-off startup. Personal cached responses are never included in downloads. Model requests and login renewal still use their normal network paths.
 
           - `headless-arm64.tar.gz`: Android-kernel Kali ARM64 without KeX; precompiled gateway, production dependencies and `./opencodex init|doctor|start`. Requires system Node >=22.12.0 and Xvfb. No pnpm or source compilation.
           - `headless-x64.tar.gz`: equivalent package for x64 Linux.
@@ -149,6 +158,6 @@ jobs:
             gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
           else
             gh release create "$RELEASE_TAG" assets/* --draft --target "$SOURCE_SHA" \
-              --title 'OpenCodex 2.1.0 Linux ARM64 / x64' --notes-file "$RUNNER_TEMP/release-notes.md"
+              --title 'OpenCodex 2.1.0 Linux — Mobile UI and Startup Cache' --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest
