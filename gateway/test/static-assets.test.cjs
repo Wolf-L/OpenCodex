@@ -147,6 +147,7 @@ function createAppHostBridgeBehaviorHarness(bridge, { wsReady = true } = {}) {
   const publishedData = [];
   const fakeWindow = {
     __OpenCodexAppHostMessageCodec: codec,
+    dispatchEvent() {},
     WebSocket: { OPEN: 1 },
     crypto: { randomUUID: () => "app-host-test-port" },
   };
@@ -187,6 +188,8 @@ function createAppHostBridgeBehaviorHarness(bridge, { wsReady = true } = {}) {
     "queueAppHostRelayPayload",
     "finalizeAppHostRelay",
     "closeAppHostRelay",
+    "failAppHostRecovery",
+    "publishConnectionState",
     "handleAppHostGatewayMessage",
     "installAppHostMessagePortBridge",
   ];
@@ -220,6 +223,8 @@ function createAppHostBridgeBehaviorHarness(bridge, { wsReady = true } = {}) {
       ({ appHostPortRelays, installAppHostMessagePortBridge, handleAppHostGatewayMessage, w })
     `,
     {
+      // 使用生产失效处理和状态发布，不能把畸形帧只测成单个端口关闭。
+      CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
       diagnostics,
       publishedData,
       socketContext: fakeSocket,
@@ -1109,6 +1114,8 @@ test("bridge closes malformed app-host frames and retains offline terminal data"
   });
   assert.equal(malformed.state.closed, true);
   assert.equal(malformed.harness.fakePort.closed, true);
+  assert.equal(malformed.harness.w.__OpenCodexConnectionState.appHostState, "reload-required");
+  assert.equal(malformed.harness.appHostPortRelays.size, 0);
   assert.equal(
     malformed.harness.wsMessages.filter((message) => message.type === "app-host-port-message" && message.data === null).length,
     1

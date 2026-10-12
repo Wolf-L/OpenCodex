@@ -305,3 +305,22 @@ test("disconnect after a successful legacy handshake still requires reload witho
   assert.deepEqual(next.sent.map(frame => frame.type), ["hello"]);
   h.dispose();
 });
+
+test("a later successful WebSocket handshake cannot clear an explicit application RPC failure", () => {
+  const h = harness({ realAppHost: true }), first = h.sockets[0];
+  first.emit("open"); first.ack(true, { version: 1, status: "new", token: "same-session" });
+  // 通过真实 WS 消息分发触发故障，避免只测状态发布函数而漏掉握手覆盖。
+  first.emit("message", { data: JSON.stringify({ type: "opencodex:app-host-frame", sequence: 1,
+    payload: { type: "app-host-port-error", portId: "rpc", error: "official relay failed" } }) });
+  assert.equal(h.context.wsReady, true);
+  assert.equal(h.context.w.__OpenCodexConnectionState.appHostState, "reload-required");
+  assert.equal(h.port.closedPort, true); assert.equal(h.context.appHostPortRelays.size, 0);
+
+  first.emit("close"); h.advance(375);
+  const next = h.sockets[1]; next.emit("open");
+  next.ack(true, { version: 1, status: "resumed", token: "same-session" });
+  assert.equal(h.state, "connected");
+  assert.equal(h.context.w.__OpenCodexConnectionState.appHostState, "reload-required");
+  assert.deepEqual(next.sent.map(frame => frame.type), ["hello"]);
+  h.dispose(); assert.equal(h.timers.size, 0);
+});

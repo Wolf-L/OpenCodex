@@ -6,13 +6,14 @@ const test = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "../../web-shell/internal/providers/codex-bridge-polyfill.js"), "utf8");
 
 function harness() {
-  const sent = [], delivered = [];
+  const sent = [], delivered = [], connectionEvents = [];
   const socket = () => ({ OPEN: 1, readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } });
   const context = {
-    w: { WebSocket: { OPEN: 1 }, __OpenCodexConnectionState: { state: "connected" } },
+    w: { WebSocket: { OPEN: 1 }, __OpenCodexConnectionState: { state: "connected" },
+      dispatchEvent(event) { connectionEvents.push(event.detail); } },
     ws: socket(), wsReady: false, appHostPortRelays: new Map(), clientId: "page",
     clientDiagnostic() {}, websocketStateName: () => "open", settleWsReadyWaiters() {},
-    publishConnectionState(state) { context.w.__OpenCodexConnectionState = { state }; },
+    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     appHostWsPayload: (state, payload) => ({ clientId: "page", portId: state.portId, ...payload }),
     APP_HOST_PENDING_MESSAGE_LIMIT: 64, APP_HOST_PENDING_MESSAGE_CHARS_LIMIT: 10000,
     decodeAppHostMessageData: m => m.data, publishAppHostData: data => data,
@@ -22,12 +23,13 @@ function harness() {
     ["  const appHostRecovery =", "  function waitForGatewayWsReady"],
     ["  function sendAppHostWsPayload", "  function sendGatewayControlPayload"],
     ["  function flushAppHostRelayMessages", "  function installAppHostMessagePortBridge"],
+    ["  function publishConnectionState", "  function connect()"],
   ].map(([a, b]) => source.slice(source.indexOf(a), source.indexOf(b)));
   vm.createContext(context); vm.runInContext(fragments.join("\n"), context);
   const state = { portId: "rpc", pending: [], pendingChars: 0, connected: false,
     port: { postMessage(data) { delivered.push(data); }, close() { state.closedPort = true; } } };
   context.appHostPortRelays.set(state.portId, state);
-  return { context, state, sent, delivered, socket, get recovery() { return vm.runInContext("appHostRecovery", context); } };
+  return { context, state, sent, delivered, connectionEvents, socket, get recovery() { return vm.runInContext("appHostRecovery", context); } };
 }
 
 test("first handshake flushes one connect; resume flushes unsent RPC without reconnecting the port", () => {
@@ -84,4 +86,55 @@ test("recovery failure releases a port already waiting to send its terminal fram
   h.context.failAppHostRecovery();
   assert.equal(h.state.closed, true); assert.equal(h.state.pending.length, 0);
   assert.equal(h.context.appHostPortRelays.size, 0); assert.equal(h.sent.length, 0);
+});
+
+for (const recoveryEnabled of [true, false]) {
+  for (const failure of ["gateway-error", "decode-failed", "post-failed"]) {
+    test(`${failure} requires application reload even while ${recoveryEnabled ? "recoverable" : "legacy"} WebSocket stays ready`, () => {
+      const h = harness(), c = h.context;
+      if (recoveryEnabled) c.acceptAppHostRecoveryHello({ version: 1, status: "new", token: "token" });
+      c.markGatewayWsReady(); h.sent.length = 0;
+      // 第二个端口仍保有未发送的旧对象引用；整页失效后也不能冲刷它们。
+      const other = { portId: "other", pending: [{ type: "app-host-port-message", data: "do-not-replay" }], pendingChars: 300,
+        port: { close() { other.closedPort = true; } } };
+      c.appHostPortRelays.set(other.portId, other);
+      if (failure === "decode-failed") c.decodeAppHostMessageData = () => { throw Error("invalid wire data"); };
+      if (failure === "post-failed") h.state.port.postMessage = () => { throw Error("closed browser port"); };
+      const payload = failure === "gateway-error"
+        ? { type: "app-host-port-error", portId: "rpc", error: "private diagnostic" }
+        : { type: "app-host-port-message", portId: "rpc", data: "result" };
+      if (recoveryEnabled) c.handleAppHostRecoveryMessage({ type: "opencodex:app-host-frame", sequence: 1, payload });
+      else c.handleAppHostGatewayMessage(payload);
+
+      assert.equal(c.wsReady, true);
+      assert.equal(h.recovery.failed, true);
+      assert.equal(h.state.closedPort, true); assert.equal(other.closedPort, true);
+      assert.equal(c.appHostPortRelays.size, 0); assert.equal(other.pending.length, 0);
+      assert.equal(c.w.__OpenCodexConnectionState.state, "connected");
+      assert.equal(c.w.__OpenCodexConnectionState.appHostState, "reload-required");
+      assert.equal(h.connectionEvents.length, 1);
+      assert.equal(JSON.stringify(h.connectionEvents).includes("private diagnostic"), false);
+      // 解码/投递异常可发一次 terminal 通知，但不得重发旧业务数据。
+      assert.equal(h.sent.some(frame => (frame.payload || frame).data === "do-not-replay"), false);
+      const sentBeforeRetry = h.sent.length;
+      c.markGatewayWsReady(); c.flushAllAppHostRelayMessages();
+      c.handleAppHostGatewayMessage(payload);
+      assert.equal(h.sent.length, sentBeforeRetry);
+      assert.equal(h.connectionEvents.length, 1);
+    });
+  }
+}
+
+test("normal official closure and stale unknown-port errors do not fail the application session", () => {
+  for (const payload of [
+    { type: "app-host-port-close", portId: "rpc", reason: "official_closed" },
+    { type: "app-host-port-message", portId: "rpc", data: null },
+    { type: "app-host-port-error", portId: "already-removed", error: "late error" },
+  ]) {
+    const h = harness(), c = h.context;
+    c.acceptAppHostRecoveryHello({ version: 1, status: "new", token: "token" }); c.markGatewayWsReady();
+    c.handleAppHostRecoveryMessage({ type: "opencodex:app-host-frame", sequence: 1, payload });
+    assert.equal(h.recovery.failed, false);
+    assert.equal(h.connectionEvents.length, 0);
+  }
 });

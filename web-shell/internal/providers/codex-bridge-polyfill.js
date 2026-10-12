@@ -2445,6 +2445,8 @@
         portId,
       });
       closeAppHostRelay(state, "gateway_error", false);
+      // WS 仍可存活，但官方 RPC 已明确失败；不能继续向用户报告应用可用。
+      failAppHostRecovery();
       return true;
     }
     if (message.type === "app-host-port-close") {
@@ -2461,6 +2463,8 @@
         portId,
       });
       closeAppHostRelay(state, "decode_failed", true);
+      // 无法解码意味着旧对象表的消息链已断裂，只允许用户显式重载，不重放请求。
+      failAppHostRecovery();
       return true;
     }
     data = publishAppHostData(data, "server");
@@ -2474,6 +2478,8 @@
         portId,
       });
       closeAppHostRelay(state, "post_to_browser_failed", true);
+      // 已收到却未能交付给 renderer 的帧不能靠 WS 重连补发，保持应用失效状态。
+      failAppHostRecovery();
     }
     return true;
   }
