@@ -596,3 +596,106 @@ test("isolates app-host relay failures by port and client", async (t) => {
   assert.deepEqual(relayByKey.get("isolated-client:port-two").messages, ["still-alive"]);
   assert.deepEqual(relayByKey.get("other-client:port-one").messages, ["also-alive"]);
 });
+
+
+// 有状态 RPC 夹具：导出引用只存在于创建它的 relay；新建通道不能冒充原对象表。
+async function recoveryFixture(t) {
+  const server = http.createServer(), relays = [], peers = [];
+  const hub = createWsHub(server, {
+    isAuthed: () => true,
+    getAuthContext: req => req.headers["x-test-auth"] || "auth",
+    createAppHostRelay(options) {
+      const exports = new Map();
+      const relay = { options, writes: [], closed: false,
+        postMessage(value) {
+          this.writes.push(value);
+          if (value === "allocate") { exports.set(7, "original"); options.onMessage("reference:7"); }
+          if (value === "call:7") options.onMessage(exports.get(7) || "missing-reference");
+          return true;
+        },
+        close() { this.closed = true; },
+      };
+      relays.push(relay); return relay;
+    },
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { hub.dispose(); await new Promise(resolve => server.close(resolve)); });
+  async function peer({ token, sent = 0, received = 0, auth = "auth", clientId = "page" } = {}) {
+    const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws`, { headers: { "x-test-auth": auth } });
+    const messages = [], waiters = new Set();
+    const p = { ws, sent, received, messages,
+      take(predicate) {
+        const match = messages.findIndex(predicate);
+        if (match >= 0) return Promise.resolve(messages.splice(match, 1)[0]);
+        return new Promise((resolve, reject) => {
+          const entry = { predicate, resolve, timer: setTimeout(() => { waiters.delete(entry); reject(Error("missing recovery frame")); }, 2000) };
+          waiters.add(entry);
+        });
+      },
+      frame(payload, sequence = ++p.sent) { ws.send(JSON.stringify({ type: "opencodex:app-host-frame", sequence, payload: { clientId, portId: "rpc", ...payload } })); },
+    };
+    ws.on("message", raw => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "opencodex:app-host-frame") p.received = m.sequence;
+      const waiter = [...waiters].find(w => w.predicate(m));
+      if (waiter) { waiters.delete(waiter); clearTimeout(waiter.timer); waiter.resolve(m); } else messages.push(m);
+    });
+    peers.push(p); await waitForOpen(ws);
+    ws.send(JSON.stringify({ type: "hello", clientId, appHostRecovery: { version: 1, ...(token ? { token, sent, received } : {}) } }));
+    p.ack = await p.take(m => m.type === "hello-ack"); return p;
+  }
+  return { peer, relays, hub };
+}
+
+test("negotiated reconnect preserves RPC references and flushes only unsent downlink", async t => {
+  const h = await recoveryFixture(t), first = await h.peer();
+  first.frame({ type: "app-host-connect" });
+  await first.take(m => m.payload?.type === "app-host-port-connected");
+  first.frame({ type: "app-host-port-message", data: "allocate" });
+  await first.take(m => m.payload?.data === "reference:7");
+  const token = first.ack.appHostRecovery.token;
+  first.ws.close(); await waitForClose(first.ws);
+  assert.equal(h.relays[0].closed, false);
+  h.relays[0].options.onMessage("offline-notice");
+  const second = await h.peer({ token, sent: first.sent, received: first.received });
+  assert.equal(second.ack.appHostRecovery.status, "resumed");
+  const buffered = await second.take(m => m.payload?.data === "offline-notice");
+  assert.equal(buffered.sequence, 3);
+  second.frame({ type: "app-host-port-message", data: "call:7" });
+  await second.take(m => m.payload?.data === "original");
+  assert.equal(h.relays.length, 1);
+  assert.deepEqual(h.relays[0].writes, ["allocate", "call:7"]);
+});
+
+test("an uncertain incoming frame never reaches a new or resumed RPC", async t => {
+  const h = await recoveryFixture(t), first = await h.peer();
+  first.frame({ type: "app-host-connect" }); await first.take(m => m.payload?.type === "app-host-port-connected");
+  first.ws.close(); await waitForClose(first.ws);
+  const second = await h.peer({ token: first.ack.appHostRecovery.token, sent: first.sent + 1, received: first.received });
+  assert.equal(second.ack.appHostRecovery.status, "reset");
+  second.frame({ type: "app-host-port-message", data: "allocate" });
+  assert.equal(h.relays.length, 1); assert.equal(h.relays[0].closed, true);
+  assert.deepEqual(h.relays[0].writes, []);
+});
+
+test("wrong auth does not resume a session and late old frames cannot close its replacement", async t => {
+  const h = await recoveryFixture(t), first = await h.peer();
+  first.frame({ type: "app-host-connect" }); await first.take(m => m.payload?.type === "app-host-port-connected");
+  const token = first.ack.appHostRecovery.token;
+  const wrong = await h.peer({ token, sent: first.sent, received: first.received, auth: "different" });
+  assert.equal(wrong.ack.appHostRecovery.status, "reset");
+  const next = await h.peer({ token, sent: first.sent, received: first.received });
+  assert.equal(next.ack.appHostRecovery.status, "resumed");
+  next.frame({ type: "app-host-port-message", data: "allocate" });
+  await next.take(m => m.payload?.data === "reference:7");
+  assert.equal(h.relays.length, 1); assert.equal(h.relays[0].closed, false);
+});
+
+test("repeated hello cannot downgrade a negotiated socket to unsequenced RPC", async t => {
+  const h = await recoveryFixture(t), first = await h.peer();
+  first.frame({ type: "app-host-connect" }); await first.take(m => m.payload?.type === "app-host-port-connected");
+  first.ws.send(JSON.stringify({ type: "hello", clientId: "page" }));
+  assert.equal((await first.take(m => m.type === "hello-ack")).appHostRecovery.status, "reset");
+  first.ws.send(JSON.stringify({ type: "app-host-port-message", clientId: "page", portId: "rpc", data: "allocate" }));
+  assert.equal(h.relays[0].closed, true); assert.deepEqual(h.relays[0].writes, []);
+});

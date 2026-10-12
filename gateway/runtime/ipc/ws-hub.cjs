@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { createAppHostRecovery } = require("./app-host-recovery.cjs");
 let WebSocketServer = null;
 try {
   ({ WebSocketServer } = require("ws"));
@@ -112,6 +113,7 @@ function createWsHub(
     handleIpcInvoke,
     handleNotificationEvent,
     isAuthed,
+    getAuthContext = () => null,
     maxAppHostRelays = APP_HOST_RELAY_MAX_ENTRIES,
     maxBufferedBytes = WS_MAX_BUFFERED_BYTES,
     maxClients = WS_MAX_CLIENTS,
@@ -149,6 +151,23 @@ function createWsHub(
   let suppressedAuthRejectCount = 0;
   const appHostTraffic = new Map();
   let nextAppHostRelayGeneration = 0;
+  const recovery = createAppHostRecovery({
+    send: (ws, payload) => safeSend(ws, payload, { suppressDiagnostic: true }),
+    closeSession(session, reason) {
+      for (const context of [...session.ports.values()]) {
+        closeAppHostRelay(session.ports, context, reason, { notify: false });
+      }
+    },
+  });
+  let disposed = false;
+  function dispose() {
+    if (disposed) return;
+    disposed = true; recovery.dispose();
+    for (const ws of clients) { closeAppHostRelays(ws, "shutdown"); ws.terminate(); }
+    wss.close();
+  }
+  server.once("close", dispose);
+  function sendAppHost(ws, payload) { return recovery.send(ws, payload); }
 
   function socketRemoteAddress(socket) {
     return (socket && socket.__codexRemoteAddress) || "";
@@ -420,6 +439,8 @@ function createWsHub(
 
   function appHostRelaysForSocket(ws) {
     // app-host MessagePort 的生命周期必须跟浏览器页面一致，不能做成跨页面共享的全局状态。
+    const retained = recovery.session(ws);
+    if (retained) return retained.ports;
     if (!ws.__codexAppHostRelays) ws.__codexAppHostRelays = new Map();
     return ws.__codexAppHostRelays;
   }
@@ -437,7 +458,7 @@ function createWsHub(
     // 失败路径只发一次 error；底层 close 回调看到 terminal 状态后不会再追加 close。
     if (!context.terminalNotified) {
       context.terminalNotified = true;
-      safeSend(
+      sendAppHost(
         context.ws,
         { type: "app-host-port-error", portId: context.portId, error: error instanceof Error ? error.message : String(error) },
         { suppressDiagnostic: true }
@@ -456,7 +477,7 @@ function createWsHub(
     if (relays.get(context.portId) === context) relays.delete(context.portId);
     if (notify && reason !== "replaced" && !context.terminalNotified) {
       context.terminalNotified = true;
-      safeSend(
+      sendAppHost(
         context.ws,
         { type: "app-host-port-close", portId: context.portId, reason },
         { suppressDiagnostic: true }
@@ -488,7 +509,8 @@ function createWsHub(
 
   function removeClient(ws) {
     flushAppHostTrafficForClient(socketClientId(ws));
-    closeAppHostRelays(ws, "client_disconnected");
+    // 已协商的页面短暂保留原 MessagePort；旧 socket 的迟到 close 不能终止新的连接。
+    if (!recovery.detach(ws)) closeAppHostRelays(ws, "client_disconnected");
     clients.delete(ws);
     if (ws.__codexWebClientId && clientsById.get(ws.__codexWebClientId) === ws) {
       const clientId = ws.__codexWebClientId;
@@ -636,7 +658,7 @@ function createWsHub(
         clientId: shortId(clientId),
         portId: shortId(portId),
       });
-      safeSend(ws, { type: "app-host-port-error", portId, error: "App host relay is unavailable" });
+      sendAppHost(ws, { type: "app-host-port-error", portId, error: "App host relay is unavailable" });
       return true;
     }
 
@@ -706,7 +728,7 @@ function createWsHub(
             failAppHostRelay(relays, context, new Error("Invalid app-host transport data"), "encode_failed");
             return;
           }
-          const sent = safeSend(
+          const sent = sendAppHost(
             context.ws,
             { type: "app-host-port-message", portId, ...wireData },
             { suppressDiagnostic: true }
@@ -730,7 +752,7 @@ function createWsHub(
         return true;
       }
       relays.set(portId, context);
-      if (!safeSend(ws, { type: "app-host-port-connected", portId }, { suppressDiagnostic: true })) {
+      if (!sendAppHost(ws, { type: "app-host-port-connected", portId }, { suppressDiagnostic: true })) {
         failAppHostRelay(
           relays,
           context,
@@ -752,7 +774,7 @@ function createWsHub(
         error: error instanceof Error ? error.message : String(error),
         portId: shortId(portId),
       });
-      safeSend(
+      sendAppHost(
         ws,
         {
           type: "app-host-port-error",
@@ -791,7 +813,7 @@ function createWsHub(
       if (failedContext) {
         failAppHostRelay(relays, failedContext, new Error("Invalid app-host transport data"), "decode_failed");
       } else {
-        safeSend(
+        sendAppHost(
           ws,
           { type: "app-host-port-error", portId, error: "Invalid app-host transport data" },
           { suppressDiagnostic: true }
@@ -800,8 +822,11 @@ function createWsHub(
       return true;
     }
     let context = relays.get(portId);
+    if (!context && ws.__opencodexRecoveryRequested) {
+      recovery.fail(ws, "missing_port"); return true;
+    }
     if (!context) {
-      // WS 重连会释放旧 socket 上的 relay，但浏览器 MessagePort 仍会继续发送；按原身份懒重建后再转发首帧。
+      // 旧客户端兼容路径：WS 重连会释放旧 socket 上的 relay，但浏览器 MessagePort 仍会继续发送；按原身份懒重建后再转发首帧。
       handleAppHostConnect(ws, req, { ...message, type: "app-host-connect" });
       context = relays.get(portId);
       if (!context) {
@@ -899,6 +924,18 @@ function createWsHub(
 
   function handleWsControlMessage(ws, req, message) {
     if (!message || typeof message !== "object") return false;
+    if (message.type === "opencodex:app-host-frame") {
+      const payload = message.payload;
+      if (!ws.__opencodexRecoveryRequested) return true;
+      if (!payload || !["app-host-connect", "app-host-port-message"].includes(payload.type) ||
+          payload.clientId !== ws.__codexWebClientId) { recovery.fail(ws); return true; }
+      if (!recovery.accept(ws, message.sequence)) return true;
+      return payload.type === "app-host-connect"
+        ? handleAppHostConnect(ws, req, payload) : handleAppHostPortMessage(ws, req, payload);
+    }
+    if (ws.__opencodexRecoveryRequested && ["app-host-connect", "app-host-port-message"].includes(message.type)) {
+      recovery.fail(ws); return true;
+    }
     if (message.type === "opencodex:ipc-invoke") return handleIpcInvokeMessage(ws, req, message);
     if (message.type === "opencodex:notification-event") {
       // 通知 click/close 只从已认证 WS 回传；hub 不理解官方通知语义，直接交回 runtime 的 fake Notification。
@@ -944,6 +981,21 @@ function createWsHub(
           const clientId = message && typeof message.clientId === "string" ? message.clientId : "";
           // hello 是浏览器接入 IPC 的握手消息，拿到 clientId 后才能定向投递事件。
           if (message && message.type === "hello" && clientId) {
+            const authContext = getAuthContext(req, url);
+            const requestsRecovery = message.appHostRecovery?.version === 1;
+            // 同一 socket 一旦协商新协议，就不能通过重复 hello 降级绕过序号校验。
+            ws.__opencodexRecoveryRequested ||= requestsRecovery;
+            // 只保存认证上下文的摘要，不把 token 或恢复标识写入日志/持久存储。
+            let appHostRecovery = null;
+            if (ws.__opencodexRecoveryRequested) {
+              if (!requestsRecovery || authContext == null) {
+                recovery.fail(ws, "identity_changed");
+                appHostRecovery = { version: 1, status: "reset" };
+              } else {
+                appHostRecovery = recovery.negotiate(ws, clientId,
+                  crypto.createHash("sha256").update(String(authContext)).digest("hex"), message.appHostRecovery);
+              }
+            }
             const previousClientId = ws.__codexWebClientId;
             if (previousClientId && previousClientId !== clientId && clientsById.get(previousClientId) === ws) {
               clientsById.delete(previousClientId);
@@ -977,7 +1029,8 @@ function createWsHub(
             }
             try {
               // ack 明确告诉浏览器：clientId 已经进入路由表，可以开始发会产生异步回包的官方 IPC。
-              ws.send(JSON.stringify({ type: "hello-ack", clientId, heartbeat: true }));
+              ws.send(JSON.stringify({ type: "hello-ack", clientId, heartbeat: true, ...(appHostRecovery ? { appHostRecovery } : {}) }));
+              recovery.flush(ws);
               if (DEBUG_LOGS) diagnosticLog("ws-hub", "hello_ack", { clientId: shortId(clientId) });
             } catch (error) {
               diagnosticWarn("ws-hub", "hello_ack_failed", {
@@ -1039,7 +1092,7 @@ function createWsHub(
     });
   });
 
-  return { broadcast, clients, sendTo, hasClient, onClientReady, onClientRemoved };
+  return { broadcast, clients, sendTo, hasClient, onClientReady, onClientRemoved, dispose };
 }
 
 module.exports = {

@@ -25,7 +25,7 @@
   let focusedEditor = null;
   let disposeEditorObservation = null;
   let readTimer = null;
-  let details, summary, status, notice, select, preview, copy, retry, clear;
+  let details, summary, status, notice, select, preview, copy, retry, clear, reload;
 
   function prune(value) {
     const now = Date.now();
@@ -112,9 +112,10 @@
   function render() {
     if (!panel || disposed) return;
     const state = w.__OpenCodexConnectionState?.state || "connecting";
-    const connected = state === "connected";
-    summary.textContent = `${connected ? "●" : label("○ 未连接 ·", "○ Disconnected ·")} ${label("文字草稿", "Text drafts")} (${entries.length})`;
-    panel.dataset.connection = state;
+    const needsReload = w.__OpenCodexConnectionState?.appHostState === "reload-required";
+    const connected = state === "connected" && !needsReload;
+    summary.textContent = `${needsReload ? label("○ 应用需重载 ·", "○ App reload needed ·") : connected ? "●" : label("○ 未连接 ·", "○ Disconnected ·")} ${label("文字草稿", "Text drafts")} (${entries.length})`;
+    panel.dataset.connection = needsReload ? "reload-required" : state;
     const messages = {
       connected: label("Gateway 已连接", "Gateway connected"),
       connecting: label("正在连接 Gateway…", "Connecting to Gateway…"),
@@ -122,8 +123,13 @@
       offline: label("浏览器报告离线，自动重试已暂停；局域网可手动重试。", "Browser reports offline; auto-retry paused. LAN may still work."),
       paused: label("后台重试已暂停，回到页面后恢复。", "Retries paused in background; resume on return."),
     };
-    status.textContent = messages[state] || messages.connecting;
-    retry.hidden = connected;
+    status.textContent = needsReload && state === "connected"
+      ? label("Gateway 已连接，应用通道无法安全恢复。消息未自动重发；请核对发送状态。", "Gateway connected; the app channel could not safely recover. Messages were not replayed; verify send status.")
+      : messages[state] || messages.connecting;
+    retry.hidden = state === "connected";
+    reload.hidden = !needsReload;
+    // 重载会丢失编辑器附件/格式；只提供明确的用户操作入口，不替用户刷新或自动粘贴。
+    reload.title = label("请先复制所需文字并检查附件；文字副本不包含附件、格式和项目设置。", "Copy needed text and check attachments first; copies exclude attachments, formatting and project settings.");
     notice.textContent = captureWarning || saveState || label("本标签页文字副本，最多 8 份 / 24 小时；不含附件、格式和项目设置。可能已发送，请核对后手动粘贴，不会自动恢复或重发。共用设备请清空副本。", "This tab only: up to 8 text copies / 24 hours. No attachments, formatting or project settings. Copies may already be sent; verify and paste manually. Never restored or resent automatically. Clear on shared devices.");
     if (!details.open) return;
     // 只在展开时建立小型列表；不扫描全页，不干预官方编辑器/焦点/IME。
@@ -216,6 +222,7 @@
     const body = create("div", details); body.className = "draft-body";
     status = create("p", body); status.setAttribute("role", "status");
     retry = create("button", body, label("立即重试", "Retry now")); retry.type = "button";
+    reload = create("button", body, label("重新加载页面（先保存附件）", "Reload page (save attachments first)")); reload.type = "button";
     notice = create("p", body);
     select = create("select", body); select.setAttribute("aria-label", label("文字副本", "Text copies"));
     preview = create("textarea", body); preview.readOnly = true;
@@ -225,6 +232,7 @@
     observe(details, "toggle", () => { entries = prune(entries); render(); });
     observe(select, "change", () => { selection = select.value; render(); });
     observe(retry, "click", () => w.dispatchEvent(new CustomEvent("opencodex:retry-connection")));
+    observe(reload, "click", () => { persist(); w.location.reload(); });
     observe(clear, "click", clearDrafts);
     observe(copy, "click", async () => {
       try {

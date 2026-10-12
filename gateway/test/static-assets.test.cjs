@@ -204,6 +204,7 @@ function createAppHostBridgeBehaviorHarness(bridge, { wsReady = true } = {}) {
       const APP_HOST_PENDING_MESSAGE_LIMIT = 2000;
       const APP_HOST_PENDING_MESSAGE_CHARS_LIMIT = 16 * 1024 * 1024;
       const appHostPortRelays = new Map();
+      const appHostRecovery = { enabled: false, failed: false };
       const adapterHost = {
         events: {
           observe({ target, type, callback }) {

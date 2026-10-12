@@ -146,3 +146,17 @@ test("explicit clear and logout cannot resurrect the still-visible focused compo
   h.input(editor); h.observation.callback([]); h.emit(h.w, "opencodex:clear-drafts");
   h.flush(); h.emit(h.w, "pagehide"); h.dispose(); assert.equal(h.records().length, 0);
 });
+
+test("lost RPC continuity is not presented as recovered and reload requires an explicit click", () => {
+  const h = harness(); let reloads = 0;
+  h.w.location.reload = () => { reloads++; };
+  h.input(h.editor("unsent draft"));
+  h.w.__OpenCodexConnectionState = { state: "connected", appHostState: "reload-required" };
+  h.emit(h.w, "opencodex:connection-state");
+  const reload = h.nodes.find(n => n.textContent === "重新加载页面（先保存附件）");
+  assert.equal(reloads, 0); assert.equal(reload.hidden, false);
+  assert.match(h.node("summary").textContent, /应用需重载/);
+  assert.equal(h.node("aside").dataset.connection, "reload-required");
+  h.emit(reload, "click"); assert.equal(reloads, 1);
+  assert.equal(h.records()[0].text, "unsent draft");
+});

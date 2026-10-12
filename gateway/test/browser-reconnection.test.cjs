@@ -25,6 +25,8 @@ function harness({ online = true, hidden = false } = {}) {
   const w = { WebSocket: Socket, dispatchEvent() {} };
   const context = {
     w, WebSocket: Socket, ws: null, wsReady: false, scheduler,
+    appHostRecovery: { enabled: true, failed: false }, appHostRecoveryHello: () => ({ version: 1 }),
+    acceptAppHostRecoveryHello() {}, handleAppHostRecoveryMessage: () => false, failAppHostRecovery() {},
     navigator: { onLine: online }, document: { visibilityState: hidden ? "hidden" : "visible" },
     cfg: { gatewayWsUrl: "ws://fixture" }, clientId: "test",
     reconnectTimer: null, reconnectDelay: 500, reconnectDeferredUntilVisible: false,

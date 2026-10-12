@@ -2013,12 +2013,58 @@
     }
   }
 
+  const appHostRecovery = { enabled: false, token: null, sent: 0, received: 0, failed: false };
+  function appHostRecoveryHello() {
+    return { version: 1, ...(appHostRecovery.token ? {
+      token: appHostRecovery.token, sent: appHostRecovery.sent, received: appHostRecovery.received,
+    } : {}) };
+  }
+  function failAppHostRecovery() {
+    if (appHostRecovery.failed) return;
+    appHostRecovery.failed = true;
+    // RPC 对象表已经不能证明连续，禁止新建 relay 冒充旧会话；不自动刷新或重放旧队列。
+    for (const state of [...appHostPortRelays.values()]) {
+      closeAppHostRelay(state, "recovery_failed", false);
+      // 已在等待发送 terminal 帧的端口也必须释放，不能留着失败会话的离线队列。
+      finalizeAppHostRelay(state);
+    }
+    publishConnectionState(w.__OpenCodexConnectionState?.state || "connecting");
+  }
+  function acceptAppHostRecoveryHello(reply) {
+    if (appHostRecovery.failed) return;
+    if (!reply) {
+      if (appHostRecovery.token) failAppHostRecovery();
+      return;
+    }
+    const hadSession = appHostRecovery.token !== null;
+    if (reply.version !== 1 || typeof reply.token !== "string" || !reply.token ||
+        (hadSession ? reply.status !== "resumed" || reply.token !== appHostRecovery.token : reply.status !== "new")) {
+      failAppHostRecovery(); return;
+    }
+    appHostRecovery.enabled = true; appHostRecovery.token = reply.token;
+  }
+  function handleAppHostRecoveryMessage(message) {
+    if (message?.type === "opencodex:app-host-reset") { failAppHostRecovery(); return true; }
+    if (message?.type !== "opencodex:app-host-frame") return false;
+    if (appHostRecovery.failed) return true;
+    if (!appHostRecovery.enabled || !Number.isSafeInteger(message.sequence) ||
+        message.sequence !== appHostRecovery.received + 1 ||
+        !["app-host-port-connected", "app-host-port-message", "app-host-port-close", "app-host-port-error"].includes(message.payload?.type)) {
+      failAppHostRecovery(); return true;
+    }
+    appHostRecovery.received = message.sequence;
+    handleAppHostGatewayMessage(message.payload);
+    return true;
+  }
+
   function markGatewayWsReady() {
     wsReady = true;
     settleWsReadyWaiters(true);
-    // 新 WS 没有旧 relay；先重发仍存活 port 的 connect，再冲刷断线期间积压的数据帧。
+    // 新协议接回原 RPC 会话；只有旧协议首次握手需要补 connect。失效后绝不冲刷旧队列。
+    if (appHostRecovery.failed) return;
     for (const state of appHostPortRelays.values()) {
       if (
+        !appHostRecovery.enabled &&
         !state.closed &&
         !state.closing &&
         !state.connected &&
@@ -2083,9 +2129,15 @@
     // app-host 比普通 IPC 更早启动；WS 未 open 或 hello 未完成时不能直接发送，否则 gateway 无法建立路由。
     if (!ws || ws.readyState !== w.WebSocket.OPEN || !wsReady) return false;
     try {
-      ws.send(JSON.stringify(payload));
+      if (appHostRecovery.failed) return false;
+      // 只记录已发送位置，不保存可重放副本；服务端必须确认接收位置完全一致才能恢复。
+      if (appHostRecovery.enabled) {
+        if (appHostRecovery.sent >= Number.MAX_SAFE_INTEGER) { failAppHostRecovery(); return false; }
+        ws.send(JSON.stringify({ type: "opencodex:app-host-frame", sequence: ++appHostRecovery.sent, payload }));
+      } else ws.send(JSON.stringify(payload));
       return true;
     } catch (error) {
+      if (appHostRecovery.enabled) failAppHostRecovery();
       clientDiagnostic("app-host-ws-send-failed", {
         error: error instanceof Error ? error.message : String(error),
         errorName: error && error.name ? String(error.name) : "",
@@ -2255,7 +2307,7 @@
   }
 
   function flushAppHostRelayMessages(state) {
-    if (!state || state.closed || state.flushing) return;
+    if (!state || state.closed || state.flushing || appHostRecovery.failed) return;
     state.flushing = true;
     try {
       while (!state.closed && state.pending.length > 0) {
@@ -2290,7 +2342,7 @@
   }
 
   function queueAppHostRelayPayload(state, payload) {
-    if (!state || state.closed || state.closing) return;
+    if (!state || state.closed || state.closing || appHostRecovery.failed) return;
     const framedPayload = appHostWsPayload(state, payload);
     const nextPendingChars = state.pendingChars + appHostPendingPayloadChars(framedPayload);
     if (
@@ -2442,6 +2494,7 @@
         });
         return;
       }
+      if (appHostRecovery.failed) { port.close(); return; }
       const state = {
         closed: false,
         closing: false,
@@ -3568,7 +3621,7 @@
   }
   function publishConnectionState(state, retryInMs = 0) {
     // 只发布状态，不暴露 token、错误原文或业务正文；UI 不参与 IPC 重放。
-    w.__OpenCodexConnectionState = { state, retryInMs };
+    w.__OpenCodexConnectionState = { state, retryInMs, appHostState: appHostRecovery.failed ? "reload-required" : "ready" };
     w.dispatchEvent(new CustomEvent("opencodex:connection-state", { detail: w.__OpenCodexConnectionState }));
   }
 
@@ -3636,6 +3689,8 @@
       rejectPendingGatewayIpc(new Error("Gateway WebSocket disconnected"), socket);
       settleWsReadyWaiters(false);
       wsReady = false;
+      // 老 Gateway 无法保留 RPC 身份，首次断开后明确要求重新加载，不能无声重建对象表。
+      if (!appHostRecovery.enabled && appHostPortRelays.size) failAppHostRecovery();
       for (const state of appHostPortRelays.values()) state.connected = false;
       releaseSocket();
       scheduleReconnect();
@@ -3677,7 +3732,7 @@
       if (ws !== socket) return;
       // hello 会把本页面 clientId 注册到 gateway，后续审批/fetch 响应才能定向回来。
       try {
-        socket.send(JSON.stringify({ type: "hello", clientId }));
+        socket.send(JSON.stringify({ type: "hello", clientId, appHostRecovery: appHostRecoveryHello() }));
         clientDiagnostic("ws-hello-sent", {
           wsReady,
           wsState: websocketStateName(socket),
@@ -3714,6 +3769,7 @@
           handshakeTimer = null;
           heartbeatSupported = msg.heartbeat === true;
           // ack 表示 gateway 已经把 clientId 写入路由表，之后再发 IPC 才不会丢首批异步回包。
+          acceptAppHostRecoveryHello(msg.appHostRecovery);
           markGatewayWsReady();
           publishConnectionState("connected");
           // 只有稳定就绪才重置退避，避免服务端反复开门后掉线形成重连风暴。
@@ -3746,6 +3802,10 @@
             heartbeatTimer = scheduler.setTimeout(heartbeat, 20_000);
           }
           return;
+        }
+        if (handleAppHostRecoveryMessage(msg)) return;
+        if (appHostRecovery.enabled && /^app-host-port-/.test(msg?.type || "")) {
+          failAppHostRecovery(); return;
         }
         if (handleGatewayIpcResult(msg)) {
           if (WS_DEBUG_ENABLED) {

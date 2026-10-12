@@ -334,7 +334,8 @@ function installShutdownHandlers(
   pickedFiles,
   appServerService,
   compatibilityService,
-  hiddenRuntimeGcmSockets
+  hiddenRuntimeGcmSockets,
+  webSocketHub = null
 ) {
   let shuttingDown = false;
   let restartScheduled = false;
@@ -345,6 +346,8 @@ function installShutdownHandlers(
     // 退出时先释放短期 token 和待处理的官方内部请求，避免请求一直挂起。
     localFiles.dispose();
     if (pickedFiles && typeof pickedFiles.dispose === "function") pickedFiles.dispose();
+    // 先终止在线/保留中的网页 RPC，会话期限不能让退出后仍留下官方端口。
+    webSocketHub?.dispose?.();
     appServerService.dispose(new Error("gateway shutting down"));
     if (compatibilityService && typeof compatibilityService.dispose === "function") {
       compatibilityService.dispose();
@@ -854,6 +857,7 @@ async function createGateway() {
   let startupLocalFiles;
   let startupPickedFiles;
   let startupServer;
+  let startupWsHub;
   try {
     // 先完成共享传输、路由和历史预览装配，再让官方 bootstrap 启动唯一 CLI。
     appServerService = createGatewayAppServerService({
@@ -910,7 +914,7 @@ async function createGateway() {
     });
 
     // 注入 app-host relay 工厂：WS hub 只管理浏览器连接，真正的官方 MessagePort 仍由 official-runtime 创建。
-    const webSocketHub = createWsHub(server, {
+    const webSocketHub = startupWsHub = createWsHub(server, {
       createAppHostRelay: createOfficialAppHostRelay,
       handleIpcInvoke({ clientId, request, req }) {
         return handleWsIpcInvoke(
@@ -926,6 +930,10 @@ async function createGateway() {
       },
       handleNotificationEvent: handleOfficialNotificationEvent,
       isAuthed,
+      getAuthContext(req, url) {
+        const auth = authResultForRequest(req, url);
+        return auth.authenticated ? (auth.authRequired ? auth.token : "auth-disabled") : null;
+      },
       observeAppHostFrame(frame) {
         pluginService.smartSchedulingPresentation?.observeAppHostFrame(frame);
       },
@@ -942,7 +950,8 @@ async function createGateway() {
       pickedFiles,
       appServerService,
       compatibilityService,
-      hiddenRuntimeGcmSockets
+      hiddenRuntimeGcmSockets,
+      webSocketHub
     );
     requestRestart = shutdownController.requestRestart;
     await listen(server);
@@ -966,6 +975,7 @@ async function createGateway() {
     // 覆盖装配、官方 bootstrap 及监听失败；先退役共享请求，再保留原始启动错误。
     const cleanups = [
       () => shutdownController?.removeHandlers(),
+      () => startupWsHub?.dispose?.(),
       () => appServerService?.dispose(error),
       () => startupLocalFiles?.dispose(),
       () => startupPickedFiles?.dispose(),

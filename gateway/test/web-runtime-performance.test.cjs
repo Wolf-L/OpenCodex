@@ -1986,6 +1986,7 @@ test("app-host oversized frames bypass the limit only when they can be sent imme
     `(() => {
       const APP_HOST_PENDING_MESSAGE_LIMIT = 3;
       const APP_HOST_PENDING_MESSAGE_CHARS_LIMIT = 512;
+      const appHostRecovery = { enabled: false, failed: false };
       let sendable = false;
       const sent = [];
       const closed = [];
