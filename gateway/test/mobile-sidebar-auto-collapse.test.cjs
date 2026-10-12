@@ -75,7 +75,7 @@ function createElement(tagName, initialAttributes = {}) {
   return element;
 }
 
-function createHarness(iconPath, promotions = [], { mobilePlatform = true, narrowViewport = false } = {}) {
+function createHarness(iconPath, promotions = [], { mobilePlatform = true, narrowViewport = false, enabled = true } = {}) {
   const listeners = new Map();
   const timers = new Map();
   let nextTimerId = 1;
@@ -160,7 +160,7 @@ function createHarness(iconPath, promotions = [], { mobilePlatform = true, narro
   const dispose = registeredPlugin.activate({
     events: { on: () => () => {} },
     platform: { isMobile: () => mobilePlatform },
-    plugin: { isEnabled: () => true },
+    plugin: { isEnabled: () => enabled },
     scope: "renderer",
   });
 
@@ -187,14 +187,15 @@ function createHarness(iconPath, promotions = [], { mobilePlatform = true, narro
     },
     pointerDown(target, pointerType) {
       let stopped = 0;
-      listeners.get("pointerdown").handler({
+      const event = {
         pointerType,
         stopPropagation() {
           stopped += 1;
         },
         target,
-      });
-      return stopped;
+      };
+      listeners.get("pointerdown").handler(event);
+      return { event, stopped };
     },
     listenerCapture(type) {
       return listeners.get(type)?.capture;
@@ -238,7 +239,7 @@ test("mobile sidebar ignores unrelated sidebar icon buttons", () => {
   harness.dispose();
 });
 
-test("mobile sidebar keeps touch scrolling out of the official thread drag sensor", () => {
+test("mobile sidebar skips only dragging while allowing the native long-press event to propagate", () => {
   const harness = createHarness("M0 0 unrelated");
   const threadRow = createElement("div", {
     "data-app-action-sidebar-thread-id": "thread-1",
@@ -249,10 +250,26 @@ test("mobile sidebar keeps touch scrolling out of the official thread drag senso
 
   harness.appendSidebarChild(threadRow);
   assert.equal(harness.listenerCapture("pointerdown"), true);
-  assert.equal(harness.pointerDown(threadRow, "touch"), 1);
-  assert.equal(harness.pointerDown(threadRow, "mouse"), 0);
-  assert.equal(harness.pointerDown(unrelated, "touch"), 0);
+  const touch = harness.pointerDown(threadRow, "touch");
+  assert.equal(touch.stopped, 0);
+  assert.equal(touch.event.__opencodexSkipSidebarTouchDrag, true);
+  for (const result of [harness.pointerDown(threadRow, "mouse"), harness.pointerDown(unrelated, "touch")]) {
+    assert.equal(result.stopped, 0);
+    assert.equal(result.event.__opencodexSkipSidebarTouchDrag, undefined);
+  }
   harness.dispose();
+});
+
+test("touch drag marker preserves desktop, disabled-plugin and unrelated targets", () => {
+  for (const options of [{ mobilePlatform: false }, { enabled: false }]) {
+    const harness = createHarness("unrelated", [], options);
+    const row = createElement("div", { "data-app-action-sidebar-thread-row": "", "data-app-action-sidebar-thread-id": "thread", "data-app-action-sidebar-thread-kind": "local" });
+    harness.appendSidebarChild(row);
+    const result = harness.pointerDown(row, "touch");
+    assert.equal(result.stopped, 0);
+    assert.equal(result.event.__opencodexSkipSidebarTouchDrag, undefined);
+    harness.dispose();
+  }
 });
 
 test("mobile promotion markers target only Plus and quota cards and recover when the card becomes an error", () => {

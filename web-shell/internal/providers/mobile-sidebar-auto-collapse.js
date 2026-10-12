@@ -11,6 +11,8 @@
 
   const AUTO_COLLAPSE_DELAY_MS = 80;
   const PHONE_LAYOUT_QUERY = "(max-width: 767px), (max-width: 960px) and (max-height: 500px)";
+  // 与响应期 PointerSensor 补丁使用同一事件标记，不拦截 React 的长按/右键事件。
+  const SIDEBAR_TOUCH_DRAG_FLAG = "__opencodexSkipSidebarTouchDrag";
   const SIDEBAR_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
   const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
   const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
@@ -256,8 +258,8 @@
       const handlePointerDown = (event) => {
         if (!isEnabled() || !isMobile() || event.pointerType !== "touch") return;
         if (!sidebarConversationRowFromTarget(event.target)) return;
-        // 官方 dnd-kit 移动 6px 就激活拖拽；隔离触摸起点，让浏览器保留纵向滚动。
-        event.stopPropagation();
+        // 只退出官方拖拽传感器，不能 stopPropagation，否则 Radix 收不到长按起点。
+        event[SIDEBAR_TOUCH_DRAG_FLAG] = true;
       };
 
       const disposeViewMessage = context.events.on("view:message", (payload) => {
