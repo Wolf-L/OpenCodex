@@ -107,11 +107,11 @@ test("scanner falls back from a missing cached Codex source to ChatGPT and still
   const scanner = new CodexAsarScanner({ defaultCandidates: [chatGptRoot, codexRoot] });
   assert.equal(
     scanner.find({ cachedAsarPath: path.join(root, "missing", "app.asar") }).asarPath,
-    fs.realpathSync(chatGptAsar)
+    fs.realpathSync.native(chatGptAsar)
   );
 
   fs.rmSync(chatGptRoot, { recursive: true, force: true });
-  assert.equal(scanner.find().asarPath, fs.realpathSync(codexAsar));
+  assert.equal(scanner.find().asarPath, fs.realpathSync.native(codexAsar));
 });
 
 test("Windows CLI locator prefers the newest versioned runtime over a legacy root binary", (t) => {
@@ -686,6 +686,9 @@ test("runtime optimizer skips unavailable macOS push registration only in the hi
 });
 
 test("runtime optimizer bounds hidden gateway sidebar Git discovery without changing explicit timeouts", async (t) => {
+  // 生产超时主动 unref；纯夹具没有 Electron/HTTP 句柄，需保持事件循环直到断言结束。
+  const keepAlive = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(keepAlive));
   const bundleDir = temporaryDirectory(t);
   const workerPath = path.join(bundleDir, ".vite", "build", "worker.js");
   writeFile(

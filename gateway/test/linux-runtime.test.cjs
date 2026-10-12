@@ -209,7 +209,7 @@ test("Linux scanner gives an explicit app path precedence over a still-valid old
   const cli = writeFile(path.join(root, "explicit-cli"));
   const scanner = new CodexAsarScanner({ platform: "linux", env: { CODEX_DESKTOP_APP_PATH: path.join(root, "current"), CODEX_CLI_PATH: cli } });
   const result = scanner.find({ cachedAsarPath: oldAsar });
-  assert.equal(result.asarPath, fs.realpathSync(currentAsar));
+  assert.equal(result.asarPath, fs.realpathSync.native(currentAsar));
   assert.equal(result.codexBinaryPath, cli);
 });
 
@@ -226,7 +226,7 @@ test("Linux scanner precedence does not change Windows and macOS cached-source s
   writeFile(path.join(root, "current", "resources", "app.asar"));
   for (const platform of ["win32", "darwin"]) {
     const scanner = new CodexAsarScanner({ platform, configuredPath: path.join(root, "current"), env: {}, homeDir: path.join(root, "home") });
-    assert.equal(scanner.find({ cachedAsarPath: oldAsar }).asarPath, fs.realpathSync(oldAsar));
+    assert.equal(scanner.find({ cachedAsarPath: oldAsar }).asarPath, fs.realpathSync.native(oldAsar));
   }
 });
 
@@ -267,8 +267,9 @@ test("Linux provider disabled auto-scan honors a new explicit desktop source", (
   for (const key of ["createCache", "synchronizeCompatibilityRuntime", "reportCachedOptimizationCompatibility", "logSourceInfo", "logCacheHit"]) replacement[key] = fixture.provider[key];
   replacement.sourceInfoReader.read = fixture.provider.sourceInfoReader.read;
   const result = replacement.ensure({ projectRoot: fixture.root });
-  assert.equal(result.sourceAsarPath, fs.realpathSync(currentAsar));
-  assert.equal(result.codexBinaryPath, currentCli);
+  assert.equal(result.sourceAsarPath, fs.realpathSync.native(currentAsar));
+  // 默认 CLI 来自已规范化的安装布局；CI 的 Windows TEMP 可能含 8.3 短路径。
+  assert.equal(result.codexBinaryPath, fs.realpathSync.native(currentCli));
   fs.unlinkSync(currentAsar);
   assert.throws(() => replacement.ensure({ projectRoot: fixture.root }), /CODEX_DESKTOP_APP_PATH.*fallback is disabled/);
 });

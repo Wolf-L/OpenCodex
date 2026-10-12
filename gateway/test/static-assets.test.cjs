@@ -1851,7 +1851,7 @@ test("external plugins require an SDK-compatible ESM v2 entry and never execute 
     const entries = listPluginEntries();
     const modern = entries.find((entry) => entry.manifest.id === "example.modern");
     const legacy = entries.find((entry) => entry.manifest.id === "example.legacy");
-    assert.equal(modern.entryFile, fs.realpathSync(path.join(modernDir, "dist", "index.mjs")));
+    assert.equal(modern.entryFile, fs.realpathSync.native(path.join(modernDir, "dist", "index.mjs")));
     assert.match(modern.urlPath, /modern-plugin\/entry\.mjs$/);
     assert.equal(pluginEntryFileFromRequestPath(`/opencodex-plugins/${modern.urlPath}`), modern.entryFile);
     assert.equal(legacy.entryFile, null);
