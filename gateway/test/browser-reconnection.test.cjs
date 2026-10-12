@@ -170,3 +170,72 @@ test("foreground re-arms a handshake whose deadline elapsed in background", () =
   h.context.document.visibilityState = "visible"; h.event("visibilitychange"); h.advance(12_000);
   assert.equal(h.state, "reconnecting");
 });
+
+test("hiding a scheduled retry publishes paused and resumes only one attempt", () => {
+  const h = harness(); h.sockets[0].emit("close");
+  h.context.document.visibilityState = "hidden"; h.event("visibilitychange");
+  assert.equal(h.state, "paused"); assert.equal(h.context.reconnectTimer, null);
+  h.advance(60_000); assert.equal(h.sockets.length, 1);
+  h.context.document.visibilityState = "visible"; h.event("visibilitychange"); h.event("pageshow"); h.event("resume");
+  h.advance(375); assert.equal(h.sockets.length, 2);
+});
+
+test("repeated manual retries cannot extend an outstanding hello deadline", () => {
+  const h = harness();
+  h.advance(11_000); h.event("opencodex:retry-connection");
+  h.advance(999); h.event("opencodex:retry-connection");
+  h.advance(1); assert.equal(h.state, "reconnecting");
+  h.advance(375); assert.equal(h.sockets.length, 2);
+});
+
+test("duplicate wake events do not replace a pending heartbeat or extend its deadline", () => {
+  const h = harness(), socket = h.sockets[0]; socket.emit("open"); socket.ack(); h.advance(20_000);
+  h.advance(9_000);
+  for (const type of ["focus", "pageshow", "resume", "visibilitychange", "opencodex:retry-connection"]) h.event(type);
+  assert.equal(socket.sent.filter((frame) => frame.type === "opencodex-ping").length, 1);
+  h.advance(1000); assert.equal(h.state, "reconnecting");
+});
+
+for (const wake of ["pageshow", "resume", "focus"]) {
+  test(`${wake} probes a silently dead socket without requiring visibilitychange`, () => {
+    const h = harness(), socket = h.sockets[0]; socket.emit("open"); socket.ack();
+    h.event(wake);
+    assert.equal(socket.sent.at(-1).type, "opencodex-ping");
+    h.advance(10_000); assert.equal(h.state, "reconnecting");
+    h.advance(375); const current = h.sockets[1]; current.emit("open"); current.ack();
+    socket.ack(); socket.emit("close");
+    assert.equal(h.state, "connected"); assert.equal(h.context.ws, current);
+    assert.deepEqual(current.sent.map((frame) => frame.type), ["hello"]);
+  });
+}
+
+test("pagehide suspends deadlines until pageshow and preserves the socket", () => {
+  const h = harness(), socket = h.sockets[0]; socket.emit("open"); socket.ack(); h.advance(20_000);
+  h.event("pagehide"); h.advance(120_000);
+  assert.equal(h.state, "connected"); assert.equal(h.context.ws, socket);
+  h.event("pageshow"); assert.equal(socket.sent.at(-1).sequence, 2);
+  h.advance(10_000); assert.equal(h.state, "reconnecting");
+});
+
+test("online during page suspension waits for pageshow before retrying", () => {
+  const h = harness(); h.event("pagehide"); h.sockets[0].emit("close"); h.event("online");
+  h.advance(60_000); assert.equal(h.sockets.length, 1); assert.equal(h.state, "paused");
+  h.event("pageshow"); h.advance(375); assert.equal(h.sockets.length, 2);
+});
+
+test("wake retires CLOSING sockets even if close never arrives", () => {
+  const h = harness(), socket = h.sockets[0]; socket.emit("open"); socket.ack();
+  socket.readyState = 2; h.event("focus");
+  assert.equal(h.state, "reconnecting"); h.advance(375); assert.equal(h.sockets.length, 2);
+});
+
+test("hidden/offline wake does not connect and disposed wake does not leave timers", () => {
+  const h = harness({ hidden: true }); h.sockets[0].emit("close");
+  for (const type of ["pageshow", "resume", "focus"]) h.event(type);
+  h.advance(60_000); assert.equal(h.sockets.length, 1);
+  h.context.document.visibilityState = "visible"; h.context.navigator.onLine = false;
+  h.event("pageshow"); assert.equal(h.state, "offline");
+  h.dispose();
+  for (const type of ["pageshow", "resume", "focus", "visibilitychange", "opencodex:retry-connection"]) h.event(type);
+  assert.equal(h.timers.size, 0);
+});

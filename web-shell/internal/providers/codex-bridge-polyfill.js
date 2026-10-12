@@ -3562,6 +3562,10 @@
   let stopSocketMonitoring = () => {};
   let resumeSocketMonitoring = () => {};
   let retireCurrentSocket = () => {};
+  let connectionPageSuspended = false;
+  function connectionPageHidden() {
+    return connectionPageSuspended || document.visibilityState === "hidden";
+  }
   function publishConnectionState(state, retryInMs = 0) {
     // 只发布状态，不暴露 token、错误原文或业务正文；UI 不参与 IPC 重放。
     w.__OpenCodexConnectionState = { state, retryInMs };
@@ -3637,15 +3641,16 @@
       scheduleReconnect();
     }
     function armHandshakeDeadline() {
-      if (handshakeTimer !== null) scheduler.clearTimeout(handshakeTimer);
+      // 重试/唤醒事件可能连续到达；不能重置同一次握手的截止时间，让坏连接一直存活。
+      if (handshakeTimer !== null || connectionPageHidden()) return;
       handshakeTimer = scheduler.setTimeout(() => {
         handshakeTimer = null;
-        if (document.visibilityState !== "hidden" && !wsReady) disconnect();
+        if (!connectionPageHidden() && !wsReady) disconnect();
       }, 12_000);
     }
     retireCurrentSocket = disconnect;
     function heartbeat() {
-      if (ws !== socket || !wsReady || !heartbeatSupported || document.visibilityState === "hidden") return;
+      if (ws !== socket || !wsReady || !heartbeatSupported || connectionPageHidden() || pendingHeartbeat !== null) return;
       if (heartbeatTimer !== null) scheduler.clearTimeout(heartbeatTimer);
       pendingHeartbeat = ++heartbeatSequence;
       try {
@@ -3656,6 +3661,8 @@
     stopSocketMonitoring = () => {
       // 后台标签页计时器会被冻结；暂停心跳判死，回前台重新探测，不终止后台任务。
       if (heartbeatTimer !== null) scheduler.clearTimeout(heartbeatTimer);
+      if (handshakeTimer !== null) scheduler.clearTimeout(handshakeTimer);
+      handshakeTimer = null;
       heartbeatTimer = null;
       pendingHeartbeat = null;
     };
@@ -3713,7 +3720,7 @@
           stableTimer = scheduler.setTimeout(() => {
             if (ws === socket && wsReady) reconnectDelay = 500;
           }, 10_000);
-          if (heartbeatSupported && document.visibilityState !== "hidden") {
+          if (heartbeatSupported && !connectionPageHidden()) {
             heartbeatTimer = scheduler.setTimeout(heartbeat, 20_000);
           }
           clientDiagnostic("ws-hello-ack", {
@@ -3892,7 +3899,7 @@
       publishConnectionState("offline");
       return;
     }
-    if (document.visibilityState === "hidden") {
+    if (connectionPageHidden()) {
       reconnectDeferredUntilVisible = true;
       publishConnectionState("paused");
       return;
@@ -3914,18 +3921,25 @@
   }
 
   function handleReconnectVisibilityChange() {
-    if (document.visibilityState === "hidden") {
+    if (modificationScope?.active?.() === false) return;
+    if (connectionPageHidden()) {
       stopSocketMonitoring();
       if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
       reconnectTimer = null;
-      if (!ws || ws.readyState === w.WebSocket.CLOSED) reconnectDeferredUntilVisible = true;
+      if (!ws || ws.readyState === w.WebSocket.CLOSED || ws.readyState === w.WebSocket.CLOSING) {
+        reconnectDeferredUntilVisible = true;
+        publishConnectionState(navigator.onLine === false ? "offline" : "paused");
+      }
       return;
     }
+    // close 事件在冻结/恢复交界可能迟到；已关闭或正在关闭的通道必须先按旧连接退役。
+    if (ws && (ws.readyState === w.WebSocket.CLOSED || ws.readyState === w.WebSocket.CLOSING)) retireCurrentSocket();
     resumeSocketMonitoring();
     if (reconnectDeferredUntilVisible || !ws || ws.readyState === w.WebSocket.CLOSED) scheduleReconnect();
   }
 
   function retryConnection() {
+    if (modificationScope?.active?.() === false) return;
     if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
     reconnectTimer = null;
     // onLine 只是系统提示，手动重试仍允许访问局域网/回环地址；不禁用编辑或发送入口。
@@ -3962,8 +3976,19 @@
 
   // 已连接 socket 保持后台业务语义；只有断线重试暂停，回到前台后再按原退避策略恢复。
   adapterHost.events.observe({ key: {}, target: document, type: "visibilitychange", callback: handleReconnectVisibilityChange });
+  // bfcache 与页面冻结恢复不保证再发 visibilitychange；只恢复探测，不重载页面或重放业务请求。
+  adapterHost.events.observe({ key: {}, target: w, type: "pagehide", callback: () => {
+    connectionPageSuspended = true;
+    handleReconnectVisibilityChange();
+  } });
+  adapterHost.events.observe({ key: {}, target: w, type: "pageshow", callback: () => {
+    connectionPageSuspended = false;
+    handleReconnectVisibilityChange();
+  } });
+  adapterHost.events.observe({ key: {}, target: document, type: "resume", callback: handleReconnectVisibilityChange });
+  adapterHost.events.observe({ key: {}, target: w, type: "focus", callback: handleReconnectVisibilityChange });
   adapterHost.events.observe({ key: {}, target: w, type: "online", callback: () => {
-    if (document.visibilityState !== "hidden") retryConnection();
+    if (!connectionPageHidden()) retryConnection();
   } });
   adapterHost.events.observe({ key: {}, target: w, type: "offline", callback: handleOffline });
   adapterHost.events.observe({ key: {}, target: w, type: "opencodex:retry-connection", callback: retryConnection });
