@@ -25,7 +25,8 @@
     // 只检查官方顶栏与首页额度卡片，避免把聊天正文或其他故障提示误当作推广。
     const text = String(element.textContent || "").replace(/\s+/g, " ").trim();
     if (element.matches("button")) return /^(?:获取\s*Plus|Get Plus)$/i.test(text);
-    const title = String(element.querySelector("h3")?.textContent || "").replace(/\s+/g, " ").trim();
+    // 官方英文文案使用弯引号，与直引号视为同一标题；仍只精确匹配指定额度卡片。
+    const title = String(element.querySelector("h3")?.textContent || "").replace(/[’‘]/g, "'").replace(/\s+/g, " ").trim();
     return /^(?:Codex\s*和工作使用额度已用完|You've (?:hit|reached) (?:your )?Codex and Work (?:usage )?limit|You're out of Codex and Work usage)[.!。]?$/i.test(title);
   }
 

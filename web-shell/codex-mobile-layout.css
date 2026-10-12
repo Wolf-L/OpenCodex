@@ -34,7 +34,7 @@
   }
 
   [data-app-shell-sidebar-open="true"][data-app-shell-feature-navigation="true"] .app-shell-left-panel {
-    width: 100% !important;
+    width: min(340px, calc(100vw - 48px)) !important;
     background: var(--color-surface-secondary, #181818);
     box-shadow: 0 12px 24px rgb(0 0 0 / 14%);
   }
@@ -59,6 +59,7 @@
     flex-direction: column !important;
     width: 100% !important;
     min-height: 0 !important;
+    padding-bottom: 56px;
   }
 
   #app-shell-sidebar > div:has(> [data-app-navigation-rail]) > .sidebar-navigation {
@@ -205,7 +206,7 @@
   /* 功能入口改为抽屉内的纵向文字菜单，聊天区不再为底部导航预留高度。 */
   [data-app-navigation-rail] {
     pointer-events: auto !important;
-    position: relative !important;
+    position: static !important;
     inset: auto !important;
     display: flex !important;
     flex: 0 1 auto !important;
@@ -231,6 +232,17 @@
 
   [data-app-navigation-rail] div:has(button) {
     display: contents !important;
+  }
+
+  /* 账户固定在抽屉底部，不再被功能列表的滚动区裁掉；仍使用原生菜单按钮。 */
+  [data-app-navigation-rail] > div:last-child:has(button[aria-haspopup="menu"]) {
+    display: flex !important;
+    position: absolute !important;
+    inset: auto 12px 8px !important;
+    width: auto !important;
+    height: 44px;
+    z-index: 2;
+    background: var(--color-surface-secondary, #181818);
   }
 
   [data-app-navigation-rail] > [aria-hidden="true"],

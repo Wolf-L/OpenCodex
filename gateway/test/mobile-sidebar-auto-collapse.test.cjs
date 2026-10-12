@@ -273,6 +273,11 @@ test("mobile promotion markers target only Plus and quota cards and recover when
   assert.equal(quota.getAttribute(marker), "true");
   assert.equal(ordinary.getAttribute(marker), null);
   assert.equal(error.getAttribute(marker), null);
+  // 官方翻译回退可能使用弯引号，真实英文额度文案同样应隐藏。
+  title.textContent = "You’re out of Codex and Work usage";
+  harness.notifyMutation();
+  harness.flushTimers();
+  assert.equal(quota.getAttribute(marker), "true");
   // React 可能复用同一 aside：文案变为实际故障后必须立即解除隐藏。
   title.textContent = "认证已过期";
   harness.notifyMutation();

@@ -43,7 +43,7 @@ test("closed phone drawer cannot intercept content clicks while native navigatio
   assert.match(css, /\[data-app-shell-sidebar-open="false"\] \.app-shell-left-panel\s*\{[^}]*pointer-events: none !important/s);
   assert.match(css, /\[data-app-navigation-rail\]\s*\{[^}]*pointer-events: auto !important/s);
   assert.match(css, /\[data-slate-sidebar-content\]\s*\{[^}]*visibility: hidden !important;[^}]*pointer-events: none !important/s);
-  assert.match(css, /\[data-app-shell-sidebar-open="true"\]\[data-app-shell-feature-navigation="true"\] \.app-shell-left-panel\s*\{[^}]*width: 100% !important/s);
+  assert.match(css, /\[data-app-shell-sidebar-open="true"\]\[data-app-shell-feature-navigation="true"\] \.app-shell-left-panel\s*\{[^}]*width: min\(340px, calc\(100vw - 48px\)\) !important/s);
   assert.doesNotMatch(css, /_[A-Z][A-Za-z]+_[a-z0-9]{5}_/);
 });
 
@@ -114,7 +114,7 @@ test("phone split view uses a full-width native content pane without changing wo
 test("phone destinations use vertical drawer rows instead of a fixed bottom bar", () => {
   assert.match(css, /#app-shell-sidebar > div:has\(> \[data-app-navigation-rail\]\)\s*\{[^}]*flex-direction: column !important/s);
   assert.match(css, /button\[aria-haspopup="menu"\]:not\(:has\(\.sr-only\)\) > span:first-child::after/);
-  assert.match(css, /\[data-app-navigation-rail\]\s*\{[^}]*position: relative !important;[^}]*flex-direction: column !important/s);
+  assert.match(css, /\[data-app-navigation-rail\]\s*\{[^}]*position: static !important;[^}]*flex-direction: column !important/s);
   assert.match(css, /\[data-app-shell-sidebar-open="false"\] \[data-app-navigation-rail\]\s*\{[^}]*display: none !important/s);
   assert.match(css, /--opencodex-phone-nav-space: 0px/);
   assert.doesNotMatch(css, /\[data-app-navigation-rail\]\s*\{[^}]*position: fixed/s);
