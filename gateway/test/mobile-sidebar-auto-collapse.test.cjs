@@ -75,7 +75,7 @@ function createElement(tagName, initialAttributes = {}) {
   return element;
 }
 
-function createHarness(iconPath, promotions = []) {
+function createHarness(iconPath, promotions = [], { mobilePlatform = true, narrowViewport = false } = {}) {
   const listeners = new Map();
   const timers = new Map();
   let nextTimerId = 1;
@@ -123,6 +123,7 @@ function createHarness(iconPath, promotions = []) {
       return { display: "block", visibility: "visible" };
     },
     location: { origin: "http://localhost" },
+    matchMedia() { return { matches: narrowViewport }; },
     postMessage() {
       fallbackMessageCount += 1;
     },
@@ -158,7 +159,7 @@ function createHarness(iconPath, promotions = []) {
   vm.runInNewContext(PLUGIN_SOURCE, { console, document, window });
   const dispose = registeredPlugin.activate({
     events: { on: () => () => {} },
-    platform: { isMobile: () => true },
+    platform: { isMobile: () => mobilePlatform },
     plugin: { isEnabled: () => true },
     scope: "renderer",
   });
@@ -295,6 +296,31 @@ test("mobile destination selection collapses drawer but leaves account and Explo
     harness.clickDestination(target);
     harness.flushTimers();
     assert.equal(harness.toggleClickCount(), menu ? 0 : 1);
+    harness.dispose();
+  }
+});
+
+test("Explore route buttons collapse the drawer but pin toggles and disabled routes do not", () => {
+  // 触屏选择功能应显示正文；固定动作只更新侧栏，不关闭探索菜单。
+  for (const mode of ["route", "pin", "disabled"]) {
+    const harness = createHarness("M0 unrelated");
+    const button = createElement("button");
+    button.disabled = mode === "disabled";
+    const target = { closest: selector => selector === "[data-explore-row] > button" && mode !== "pin" ? button : null };
+    harness.clickDestination(target);
+    harness.flushTimers();
+    assert.equal(harness.toggleClickCount(), mode === "route" ? 1 : 0);
+    harness.dispose();
+  }
+});
+
+test("narrow desktop windows follow drawer selection behavior while wide desktops stay unchanged", () => {
+  for (const narrowViewport of [true, false]) {
+    const harness = createHarness("M0 unrelated", [], { mobilePlatform: false, narrowViewport });
+    const button = createElement("button");
+    harness.clickDestination({ closest: selector => selector === "[data-explore-row] > button" ? button : null });
+    harness.flushTimers();
+    assert.equal(harness.toggleClickCount(), narrowViewport ? 1 : 0);
     harness.dispose();
   }
 });

@@ -10,6 +10,7 @@
     : pluginSystem.registerPlugin.bind(pluginSystem);
 
   const AUTO_COLLAPSE_DELAY_MS = 80;
+  const PHONE_LAYOUT_QUERY = "(max-width: 767px), (max-width: 960px) and (max-height: 500px)";
   const SIDEBAR_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
   const SIDEBAR_SCROLL_SELECTOR = "[data-app-action-sidebar-scroll]";
   const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
@@ -188,7 +189,8 @@
       let promotionTimer = null;
       const markedPromotions = new Set();
       const isEnabled = () => context.plugin.isEnabled();
-      const isMobile = () => !!context.platform.isMobile();
+      // 窄窗口同样呈现手机抽屉，不能只按 UA/触屏判断，否则选中功能后正文仍被抽屉遮住。
+      const isMobile = () => !!context.platform.isMobile() || !!w.matchMedia?.(PHONE_LAYOUT_QUERY).matches;
 
       const updatePromotions = () => {
         promotionTimer = null;
@@ -240,8 +242,11 @@
         if (event.defaultPrevented || event.button > 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const destination = event.target?.closest?.("[data-app-navigation-rail] button");
+        // Explore 的首个直属按钮才是跳转；旁边 span 内的固定按钮不能触发收起。
+        const exploreDestination = event.target?.closest?.("[data-explore-row] > button");
         // 功能入口选中后回到正文；账户和“更多”原生菜单保持展开供用户继续操作。
-        const selectedDestination = destination && !destination.disabled && !destination.hasAttribute("aria-haspopup");
+        const selectedDestination = (destination && !destination.disabled && !destination.hasAttribute("aria-haspopup")) ||
+          (exploreDestination && !exploreDestination.disabled && exploreDestination.getAttribute("aria-disabled") !== "true");
         if (!selectedDestination && !sidebarConversationRowFromTarget(event.target) && !sidebarNewConversationButtonFromTarget(event.target)) {
           return;
         }

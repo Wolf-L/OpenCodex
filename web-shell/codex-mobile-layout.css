@@ -331,7 +331,7 @@
   }
 
   /* 手机聊天顶栏优先侧栏和标签；历史箭头会占掉固定的左侧安全空间。设置页保留返回按钮。 */
-  [data-app-shell-frame]:not(:has(#settings-search)) [data-app-shell-header-slot="start"] button:not([data-app-shell-sidebar-trigger]) {
+  [data-app-shell-frame]:not(:has(#settings-search)):has([data-app-shell-sidebar-trigger]) [data-app-shell-header-slot="start"] button:not([data-app-shell-sidebar-trigger]) {
     display: none !important;
   }
 
@@ -456,7 +456,38 @@
     overscroll-behavior-x: contain;
   }
 
-  /* Radix 自带翻转定位；这里只限制尺寸，不强行覆盖 transform 或焦点管理。 */
+  /* 探索原本锚在桌面窄 rail 右侧；手机抽屉变宽后会把固定按钮推到屏外。
+   * 仅将含原生 explore-row 的弹层放在视口内，保留焦点管理、点击关闭和原生固定动作。
+   */
+  [data-radix-popper-content-wrapper]:has(> [role="dialog"] > [data-explore-row]) {
+    position: fixed !important;
+    /* 位于“探索”触发按钮下方，避免 hover 打开后遮住触发点，令同一次点击误入某个功能。 */
+    inset: calc(var(--app-shell-titlebar-height, 52px) + 112px) auto auto 8px !important;
+    transform: none !important;
+    width: min(340px, calc(100vw - 16px)) !important;
+  }
+
+  [data-radix-popper-content-wrapper] > [role="dialog"]:has(> [data-explore-row]) {
+    width: 100% !important;
+    margin: 0 !important;
+    max-height: calc(var(--opencodex-ios-visual-viewport-height, var(--codex-visual-viewport-height, 100dvh)) - 180px) !important;
+    animation: none !important;
+  }
+
+  [data-explore-row] > button,
+  [data-explore-row] > span button {
+    min-height: 44px !important;
+    min-width: 44px !important;
+    touch-action: manipulation;
+  }
+
+  [data-explore-row] > span:has(button) {
+    /* 触屏没有 hover，固定/取消固定控件须一直可见且可点。 */
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  /* 其他 Radix 弹层继续使用原生定位，只限制尺寸。 */
   [data-radix-popper-content-wrapper] {
     max-width: calc(100vw - 16px) !important;
   }

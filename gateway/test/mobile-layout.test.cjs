@@ -137,3 +137,12 @@ test("phone destinations use vertical drawer rows instead of a fixed bottom bar"
   assert.match(css, /\[data-opencodex-mobile-promotion="true"\]\s*\{[^}]*display: none !important/s);
   assert.doesNotMatch(css, /aside\[role="status"\]\s*\{[^}]*display: none/s);
 });
+
+test("mobile Explore keeps native pin buttons visible and inside the viewport", () => {
+  // 仅定位含官方 explore-row 的弹层，避免连带更改账户、设置或编辑器菜单。
+  assert.match(css, /\[data-radix-popper-content-wrapper\]:has\(> \[role="dialog"\] > \[data-explore-row\]\)\s*\{[^}]*transform: none !important;[^}]*width: min\(340px, calc\(100vw - 16px\)\)/s);
+  assert.match(css, /\[data-explore-row\] > span:has\(button\)\s*\{[^}]*opacity: 1 !important;[^}]*pointer-events: auto !important/s);
+  assert.match(css, /\[data-explore-row\] > span button\s*\{[^}]*min-height: 44px !important;[^}]*min-width: 44px !important/s);
+  assert.match(css, /inset: calc\(var\(--app-shell-titlebar-height, 52px\) \+ 112px\) auto auto 8px !important/);
+  assert.match(css, /:has\(\[data-app-shell-sidebar-trigger\]\) \[data-app-shell-header-slot="start"\] button:not\(\[data-app-shell-sidebar-trigger\]\)/);
+});
