@@ -7,7 +7,7 @@ const { createHostModificationRuntime } = require("../runtime/modification/produ
 const path = require("path");
 const fs = require("fs");
 const { RuntimeVersionStore, inventory, hash } = require("../runtime/runtime-version-store.cjs");
-const { RUNTIME_BINDING_ENV, ROLLBACK_PIN_ENV, sourceIdentity, createRuntimeBinding, digestFile } = require("../runtime/runtime-source-binding.cjs");
+const { RUNTIME_BINDING_ENV, ROLLBACK_PIN_ENV, sourceIdentity, createRuntimeBinding, digestFile, withPhysicalAsarAccess } = require("../runtime/runtime-source-binding.cjs");
 
 async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, logger, autoScanUpgrade = process.env.CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE !== "0", rollbackPinned = false }) {
   const { LocalCodexBundleProvider } = require("../dist/official/LocalCodexBundleProvider.js");
@@ -41,12 +41,12 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
       // 旧格式迁移先验证原有缓存的来源，不能借迁移偷偷升级用户已固定的版本。
       const legacy = provider.ensure({ projectRoot });
       layout = findOfficialRuntimeLayout({ officialBundleDir, logger, bundle: legacy, rollbackPinned });
-      sourceInfo = provider.sourceInfoReader.read({ installRoot: legacy.sourceAppPath, resourcesDir: legacy.sourceResourcesPath,
+      sourceInfo = withPhysicalAsarAccess(() => provider.sourceInfoReader.read({ installRoot: legacy.sourceAppPath, resourcesDir: legacy.sourceResourcesPath,
         asarPath: legacy.sourceAsarPath, codexBinaryPath: legacy.codexBinaryPath, layoutKind: legacy.manifest.sourceLayoutKind,
-        platformHint: legacy.manifest.sourcePlatformHint });
+        platformHint: legacy.manifest.sourcePlatformHint }));
     } else {
       let scanned;
-      try { scanned = provider.scanner.find({ cachedAsarPath: current?.origin?.asarPath }); }
+      try { scanned = withPhysicalAsarAccess(() => provider.scanner.find({ cachedAsarPath: current?.origin?.asarPath })); }
       catch (error) {
         const override = env.CODEX_DESKTOP_APP_PATH;
         if (!current || (override && ![current.origin.asarPath, current.origin.installRoot, current.origin.resourcesDir].includes(override))) throw error;
@@ -54,7 +54,8 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         logger?.("[official-bundle] 更新扫描不可用，校验并复用完整离线快照\n");
         return useCurrent();
       }
-      sourceInfo = provider.sourceInfoReader.read(scanned);
+      // 此路径在 Electron Launcher 内执行，stat 必须针对物理 ASAR 而非虚拟目录。
+      sourceInfo = withPhysicalAsarAccess(() => provider.sourceInfoReader.read(scanned));
       layout = findOfficialRuntimeLayout({ officialBundleDir, logger, bundle: {
         sourceAppPath: sourceInfo.installRoot, sourceResourcesPath: sourceInfo.resourcesDir,
         sourceAsarPath: sourceInfo.asarPath, codexBinaryPath: sourceInfo.codexBinaryPath,

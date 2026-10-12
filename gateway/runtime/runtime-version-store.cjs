@@ -28,6 +28,8 @@ function resolvedPath(file) {
 function inventory(root) {
   return withPhysicalAsarAccess(() => {
     const entries = [];
+    // 同步遍历复用单个缓冲区，避免数万小文件各分配 1MB 引发大量 GC。
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
     function visit(relative) {
       const file = path.join(root, relative);
       const stat = fs.lstatSync(file);
@@ -41,7 +43,7 @@ function inventory(root) {
         entries.push([name, "dir"]);
         for (const child of fs.readdirSync(file).sort()) visit(path.join(relative, child));
       } else if (stat.isFile()) {
-        entries.push([name, "file", stat.size, digestFile(file), process.platform === "win32" ? 0 : stat.mode & 0o777]);
+        entries.push([name, "file", stat.size, digestFile(file, buffer), process.platform === "win32" ? 0 : stat.mode & 0o777]);
       } else throw new Error("运行时快照只接受普通文件、目录和内部符号链接");
     }
     visit("");

@@ -38,6 +38,8 @@ test('parent prepares a complete version before switching; offline restart and r
   class Provider extends RealProvider {
     constructor(options) {
       super(options);
+      const read = this.sourceInfoReader.read.bind(this.sourceInfoReader);
+      this.sourceInfoReader.read = (...args) => { assert.equal(process.noAsar, true, 'parent metadata must use physical ASAR access'); return read(...args); };
       this.scanner.find = () => { scans++; return { installRoot: app, resourcesDir: resources, asarPath, codexBinaryPath: cli, layoutKind: 'electron-resources', platformHint: process.platform }; };
     }
   }

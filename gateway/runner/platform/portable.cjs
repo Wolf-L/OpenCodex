@@ -431,6 +431,8 @@ async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild =
         version: 2, prepared: true, fingerprint, gatewaySha256,
         executableSha256: executableSha256(stagedExecutable), copiedAt: new Date().toISOString(),
       } });
+      // Windows SxS 以最终路径加载程序集；目录切换后仍需执行已知的清单普通读写修复。
+      refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger });
     }
   } finally {
     removePreparedDirectory(stagingDir);

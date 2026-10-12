@@ -6,11 +6,10 @@ const { withPhysicalAsarAccess } = require("../runner/shared/fs-utils.cjs");
 const RUNTIME_BINDING_ENV = "OPENCODEX_RUNTIME_SOURCE_BINDING";
 const ROLLBACK_PIN_ENV = "OPENCODEX_OFFICIAL_ROLLBACK_PIN";
 
-function digestFile(filePath) {
+function digestFile(filePath, buffer = Buffer.allocUnsafe(1024 * 1024)) {
   return withPhysicalAsarAccess(() => {
     const hash = crypto.createHash("sha256");
     const fd = fs.openSync(filePath, "r");
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
     try {
       let count;
       while ((count = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count));
