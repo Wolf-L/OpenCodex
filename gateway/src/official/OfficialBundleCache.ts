@@ -2,6 +2,7 @@
 export {};
 
 const path = require("path");
+const { RuntimeVersionStore, resolveBundleDirectory } = require("../../runtime/runtime-version-store.cjs");
 const { MANIFEST_SCHEMA_VERSION } = require("./constants");
 const { OfficialRuntimeEntryResolver } = require("./OfficialRuntimeEntryResolver");
 const { sourceIdentityBlockReason, withPhysicalAsarAccess } = require("../../runtime/runtime-source-binding.cjs");
@@ -75,10 +76,14 @@ class OfficialBundleCache {
     this.runtimeEntryResolver = runtimeEntryResolver;
   }
 
-  get bundleDir(): string {
+  get configuredPath(): string {
     return path.isAbsolute(this.configuredBundleDir)
       ? this.configuredBundleDir
       : path.resolve(this.projectRoot, this.configuredBundleDir);
+  }
+
+  get bundleDir(): string {
+    return resolveBundleDirectory(this.configuredPath);
   }
 
   get webviewDir(): string {
@@ -152,10 +157,22 @@ class OfficialBundleCache {
   }
 
   get backupDir(): string {
+    const store = new RuntimeVersionStore(this.configuredPath);
+    const pointer = store.pointer();
+    if (pointer?.previous) return path.join(store.directory(pointer.previous), "bundle");
     return `${this.bundleDir}-bak`;
   }
 
   backupState({ verifyContents = false } = {}): any {
+    const store = new RuntimeVersionStore(this.configuredPath);
+    const pointer = store.pointer();
+    if (pointer) {
+      if (!pointer.previous) return { available: false, version: "", reason: "尚无完整运行时版本备份" };
+      try {
+        const previous = store.read(pointer.previous, { verify: verifyContents });
+        return { available: true, version: previous.version, reason: "" };
+      } catch (error) { return { available: false, version: "", reason: error.message }; }
+    }
     // 使用同一套缓存校验，避免还原后因备份不完整而自动重新解压新版。
     const backup = new OfficialBundleCache({
       projectRoot: this.projectRoot,
@@ -172,6 +189,8 @@ class OfficialBundleCache {
   }
 
   restoreBackup(): void {
+    const store = new RuntimeVersionStore(this.configuredPath);
+    if (store.pointer()) { store.restore(); return; }
     const backup = this.backupState({ verifyContents: true });
     if (!backup.available) throw new Error(`无法还原备份：${backup.reason}`);
     // 先暂存当前目录，备份改名失败时仍能恢复当前版本；成功后才删除新版。
@@ -188,6 +207,7 @@ class OfficialBundleCache {
   }
 
   replaceWith(sourceDir: string): void {
+    if (new RuntimeVersionStore(this.configuredPath).pointer()) throw new Error("完整运行时版本必须通过 Launcher 准备，不能单独替换 bundle");
     // 仅保留上一版；新目录安装失败时，同时保住当前版本和原有备份。
     const retiredBackup = `${this.backupDir}.tmp-${process.pid}-${Date.now()}`;
     const hadCurrent = this.fileSystem.exists(this.bundleDir);

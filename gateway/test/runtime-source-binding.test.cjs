@@ -164,7 +164,7 @@ test("physical ASAR reads restore the previous Electron setting on failure", () 
   } finally { process.noAsar = previous; }
 });
 
-test("runner selects a bundle before choosing layout and rejects changes while copying", async (t) => {
+test("selected runner rejects source changes while copying", async (t) => {
   const f = fixture(t);
   const events = [];
   const selected = { bundleDir: f.bundleDir, manifest: f.manifest };
@@ -182,6 +182,6 @@ test("runner selects a bundle before choosing layout and rejects changes while c
   const source = fs.readFileSync(path.join(__dirname, "../runner/index.cjs"), "utf8");
   const sandbox = { require: fakeRequire, module: { exports: {} }, process, __dirname: path.join(__dirname, "../runner") };
   vm.runInNewContext(source, sandbox);
-  await assert.rejects(sandbox.module.exports.prepareOfficialElectronRuntime({ runtimeDir: f.root, officialBundleDir: f.bundleDir, rollbackPinned: true }), /准备过程中发生变化/);
-  assert.deepEqual(events, ["bundle", "layout", "copy"]);
+  await assert.rejects(sandbox.module.exports.__test.prepareSelectedRuntime({ runtimeDir: f.root, bundle: selected, layout: { executablePath: f.sourceExecutable } }), /准备过程中发生变化/);
+  assert.deepEqual(events, ["copy"]);
 });

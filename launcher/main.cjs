@@ -1,6 +1,8 @@
 const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, powerSaveBlocker, shell } = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
+const { writeFileAtomicSync, writeJsonAtomicSync } = require("../shared/atomic-file.cjs");
+const { findAuthPasswordScalar, replaceAuthPasswordScalar } = require("../shared/auth-config.cjs");
 const net = require("net");
 const os = require("os");
 const path = require("path");
@@ -331,7 +333,7 @@ function saveLauncherSettings(paths, settings) {
       defaultSettings().officialAutoScanUpgrade
     ),
   };
-  fs.writeFileSync(paths.settingsPath, `${JSON.stringify(nextSettings, null, 2)}\n`, "utf8");
+  writeJsonAtomicSync(paths.settingsPath, nextSettings);
   return nextSettings;
 }
 
@@ -432,9 +434,7 @@ function parseYamlStringScalar(rawValue) {
 function readAuthEnabled(configPath) {
   try {
     const raw = fs.readFileSync(configPath, "utf8");
-    const match = raw.match(/^\s*password\s*:\s*(.*)$/m);
-    if (!match) return false;
-    return !!parseYamlStringScalar(match[1]).trim();
+    return !!findAuthPasswordScalar(raw)?.value?.trim();
   } catch {
     return false;
   }
@@ -443,7 +443,9 @@ function readAuthEnabled(configPath) {
 function writeAuthConfig(paths, password) {
   const value = String(password || "").trim();
   const stored = value ? `sha256-v1:${sha256Hex(value)}` : "";
-  fs.writeFileSync(paths.configPath, `auth:\n  password: ${JSON.stringify(stored)}\n`, "utf8");
+  const raw = fs.existsSync(paths.configPath) ? fs.readFileSync(paths.configPath, "utf8") : "";
+  // 同步读改写只触碰 auth.password；原子替换失败时其它设置与旧密码保持原样。
+  writeFileAtomicSync(paths.configPath, replaceAuthPasswordScalar(raw, stored));
 }
 
 function externalPluginStatus(pluginDirs) {
@@ -914,7 +916,7 @@ async function startGatewayOnce() {
     CODEX_WEB_RUNTIME_DIR: paths.runtimeDir,
     CODEX_WEB_CONFIG_PATH: paths.configPath,
     CODEX_WEB_REPORTS_DIR: paths.reportsDir,
-    CODEX_WEB_OFFICIAL_BUNDLE_DIR: paths.officialBundleDir,
+    CODEX_WEB_OFFICIAL_BUNDLE_DIR: officialRuntime.runtimeBinding.bundleDir,
     CODEX_WEB_GATEWAY_BASE_URL: gatewayState.primaryUrl,
     CODEX_WEB_LAUNCHER_TOKEN: gatewayState.token,
     [OFFICIAL_AUTO_SCAN_UPGRADE_ENV]: officialAutoScanUpgrade ? "1" : "0",

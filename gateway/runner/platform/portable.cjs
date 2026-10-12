@@ -383,7 +383,7 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
   return { copied: true };
 }
 
-async function createPortableRunner({ layout, runtimeDir, logger, runCompatibility = (_point, operation) => operation() }) {
+async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild = false, runCompatibility = (_point, operation) => operation() }) {
   const workDir = path.join(runtimeDir, "official-electron-runner");
   const runnerRootDir = path.join(workDir, `${process.platform}-${process.arch}`);
   const runnerExecutablePath = path.join(runnerRootDir, runnerExecutableNameForPlatform());
@@ -401,7 +401,7 @@ async function createPortableRunner({ layout, runtimeDir, logger, runCompatibili
     const gatewaySha256 = executableSha256(runnerAsarPath);
     const fingerprint = portableRuntimeFingerprint(layout);
     const previous = readJsonIfPresent(markerPath);
-    let cacheHit = hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform: process.platform });
+    let cacheHit = !forceRebuild && hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform: process.platform });
     try {
       cacheHit = cacheHit && previous.prepared === true && previous.gatewaySha256 === gatewaySha256 &&
         executableSha256(path.join(runnerRootDir, "resources", "app.asar")) === gatewaySha256;

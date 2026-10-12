@@ -59,7 +59,7 @@ function spawnGateway(officialRuntime, officialRuntimeArgs) {
       // dev 入口固定使用 package.json 同级的 config.yaml；只有显式 CODEX_WEB_CONFIG_PATH 才允许覆盖。
       CODEX_WEB_CONFIG_PATH: configPath,
       CODEX_WEB_REPORTS_DIR: reportsDir,
-      CODEX_WEB_OFFICIAL_BUNDLE_DIR: officialBundleDir,
+      CODEX_WEB_OFFICIAL_BUNDLE_DIR: officialRuntime.runtimeBinding.bundleDir,
       CODEX_WEB_OFFICIAL_USER_DATA_DIR: officialUserDataDir,
       CODEX_ELECTRON_USER_DATA_PATH: officialUserDataDir,
     },

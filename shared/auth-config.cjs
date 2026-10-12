@@ -101,4 +101,50 @@ function findAuthPasswordScalar(rawConfig) {
   return null;
 }
 
-module.exports = { findAuthPasswordScalar };
+function replaceAuthPasswordScalar(rawConfig, value) {
+  const raw = String(rawConfig || "");
+  const newline = raw.includes("\r\n") ? "\r\n" : "\n";
+  const lines = raw.split(/\r?\n/);
+  const fail = () => { throw new Error("无法安全更新 auth.password：请使用唯一的顶层 auth 块和普通 password 标量"); };
+  let auth = -1;
+  // 只修改项目支持的块式配置；多文档、别名、重复键不能靠猜测决定认证语义。
+  for (let i = 0; i < lines.length; i++) {
+    const logical = stripYamlComment(lines[i]);
+    if (/^(?:---|\.\.\.)(?:\s|$)/.test(logical) || /^['"]auth['"]\s*:/.test(logical) || /^<<\s*:/.test(logical)) fail();
+    if (/^auth\s*:/.test(logical)) {
+      if (auth !== -1 || !/^auth\s*:\s*$/.test(logical)) fail();
+      auth = i;
+    }
+  }
+  if (auth === -1) return `${raw}${raw && !raw.endsWith("\n") ? newline : ""}auth:${newline}  password: ${JSON.stringify(value)}${newline}`;
+  let end = lines.length;
+  let indent = null;
+  let password = -1;
+  for (let i = auth + 1; i < lines.length; i++) {
+    const logical = stripYamlComment(lines[i]);
+    if (!logical.trim()) continue;
+    if (!/^\s/.test(logical)) { end = i; break; }
+    if (/^\s*\t/.test(logical) || /^\s*(?:<<\s*:|['"]password['"]\s*:)/.test(logical)) fail();
+    const spaces = leadingIndent(logical);
+    if (indent === null) indent = spaces;
+    if (spaces < indent) fail();
+    if (spaces !== indent || !/^\s*password\s*:/.test(logical)) continue;
+    if (password !== -1) fail();
+    const scalar = logical.replace(/^\s*password\s*:\s*/, "").trim();
+    if (/^[>|&*!{\[]/.test(scalar)) fail();
+    parseYamlStringScalar(scalar);
+    password = i;
+  }
+  if (password !== -1) {
+    // 保留当前行缩进和注释，不重写任何其它配置字段。
+    const line = lines[password];
+    const comment = line.slice(stripYamlComment(line).length);
+    lines[password] = `${line.match(/^\s*/)[0]}password: ${JSON.stringify(value)}${comment ? ` ${comment}` : ""}`;
+  } else {
+    // 插入到 auth 块的起始处，不吞掉尾部注释或文件原有换行风格。
+    lines.splice(auth + 1, 0, `${" ".repeat(indent || 2)}password: ${JSON.stringify(value)}`);
+  }
+  return lines.join(newline);
+}
+
+module.exports = { findAuthPasswordScalar, replaceAuthPasswordScalar };

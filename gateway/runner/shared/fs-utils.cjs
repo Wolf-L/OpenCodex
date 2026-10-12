@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { writeJsonAtomicSync } = require("../../../shared/atomic-file.cjs");
 
 function withPhysicalAsarAccess(read) {
   /**
@@ -80,7 +81,7 @@ function readJsonIfPresent(filePath) {
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeJsonAtomicSync(filePath, value);
 }
 
 function fileFingerprint(filePath) {

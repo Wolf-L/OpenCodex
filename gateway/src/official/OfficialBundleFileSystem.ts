@@ -4,6 +4,7 @@ export {};
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { writeJsonAtomicSync } = require("../../../shared/atomic-file.cjs");
 
 const WINDOWS_READ_WRITE_COPY_BUFFER_SIZE = 8 * 1024 * 1024;
 
@@ -85,7 +86,8 @@ class OfficialBundleFileSystem {
   }
 
   writeJson(filePath: string, value: unknown): void {
-    this.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+    // 清单只在临时文件同步成功后替换，不让中断写入暴露半份 JSON。
+    writeJsonAtomicSync(filePath, value);
   }
 
   ensureDir(dirPath: string): void {

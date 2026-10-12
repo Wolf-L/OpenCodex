@@ -89,6 +89,7 @@ function runtimeBindingEnvironment(binding) {
   // 官方 bootstrap 也可能直接读取 CLI 覆盖值；子进程继承的环境必须与已选来源一致。
   return {
     [RUNTIME_BINDING_ENV]: JSON.stringify(binding),
+    CODEX_WEB_OFFICIAL_BUNDLE_DIR: binding.bundleDir,
     CODEX_DESKTOP_APP_PATH: binding.sourceAsarPath,
     CODEX_DESKTOP_EXECUTABLE_PATH: binding.sourceExecutable,
     CODEX_APP_SERVER_BINARY_PATH: binding.codexBinaryPath || "",
