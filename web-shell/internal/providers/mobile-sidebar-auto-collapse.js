@@ -167,6 +167,173 @@
     return isSidebarNewConversationButton(button) ? button : null;
   }
 
+  // 只增加触屏导航控件；菜单项和设置分类仍由官方 React 节点执行，避免复制操作回调。
+  function createMobilePanelLayout() {
+    const settings = new Map();
+    const menus = new Map();
+    const accountMenus = new Map();
+    // 下拉选择器按下时就会打开，移动其位置可能误触；仅调整长按/右键上下文菜单。
+    const contextMenuSelector = '[data-radix-popper-content-wrapper] > [role="menu"][style*="--radix-context-menu-content-"]';
+    const chinese = () => !/^en\b/i.test(document.documentElement.lang || "zh");
+    const set = (element, name, value) => {
+      if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+    };
+    const text = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+    const closeSettings = (nav, restoreFocus = false) => {
+      const state = settings.get(nav);
+      if (!state) return;
+      set(nav, "data-opencodex-settings-expanded", "false");
+      set(state.button, "aria-expanded", "false");
+      if (restoreFocus) state.button.focus();
+    };
+    const clearSettings = (nav, state) => {
+      state.button.remove();
+      nav.removeAttribute("data-opencodex-phone-settings");
+      nav.removeAttribute("data-opencodex-settings-expanded");
+      settings.delete(nav);
+    };
+    const clearMenu = (menu, state) => {
+      state.bar.remove();
+      state.wrapper.removeAttribute("data-opencodex-phone-menu");
+      state.wrapper.removeAttribute("data-opencodex-menu-covered");
+      menu.removeAttribute("data-opencodex-menu-panel");
+      menus.delete(menu);
+    };
+    const clearAccountMenu = (menu, wrapper) => {
+      wrapper.removeAttribute("data-opencodex-phone-account-menu");
+      accountMenus.delete(menu);
+    };
+    return {
+      refresh(enabled) {
+        for (const [nav, state] of settings) if (!enabled || !nav.isConnected) clearSettings(nav, state);
+        for (const [menu, state] of menus) if (!enabled || !menu.isConnected || !menu.matches(contextMenuSelector) || menu.getAttribute("data-state") === "closed") clearMenu(menu, state);
+        for (const [menu, wrapper] of accountMenus) if (!enabled || !menu.isConnected || menu.getAttribute("data-state") === "closed") clearAccountMenu(menu, wrapper);
+        if (!enabled) return;
+        // 账号入口已移至抽屉底部，弹层也必须留在屏内，并避开打开它的手指位置。
+        for (const menu of document.querySelectorAll('[data-radix-popper-content-wrapper] > [role="menu"][style*="--radix-dropdown-menu-content-"]')) {
+          const trigger = document.getElementById(menu.getAttribute("aria-labelledby"));
+          if (menu.getAttribute("data-state") !== "closed" && trigger?.closest("[data-app-navigation-rail]")) {
+            accountMenus.set(menu, menu.parentElement);
+            set(menu.parentElement, "data-opencodex-phone-account-menu", "true");
+          }
+        }
+        const nav = document.querySelector("nav:has(#settings-search)");
+        const search = nav?.querySelector("#settings-search");
+        const header = search?.closest("[data-sidebar-header-search]")?.parentElement?.parentElement;
+        if (nav && header) {
+          let state = settings.get(nav);
+          if (!state) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "opencodex-settings-sections";
+            button.setAttribute("data-opencodex-settings-toggle", "");
+            header.appendChild(button);
+            state = { button };
+            settings.set(nav, state);
+            set(nav, "data-opencodex-phone-settings", "true");
+            closeSettings(nav);
+          }
+          const selected = nav.querySelector('button[aria-current="page"]');
+          const label = selected?.getAttribute("aria-label") || selected?.textContent || (chinese() ? "设置" : "Settings");
+          text(state.button, `${chinese() ? "设置分类" : "Categories"} · ${label.trim()}`);
+          if (search.value?.trim() && state.lastSearch !== search.value) {
+            set(nav, "data-opencodex-settings-expanded", "true");
+            set(state.button, "aria-expanded", "true");
+          }
+          state.lastSearch = search.value;
+        }
+        for (const menu of document.querySelectorAll(contextMenuSelector)) {
+          if (menu.getAttribute("data-state") === "closed") continue;
+          let state = menus.get(menu);
+          if (!state) {
+            const wrapper = menu.parentElement;
+            const bar = document.createElement("div");
+            bar.className = "opencodex-menu-bar";
+            bar.setAttribute("role", "presentation");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.tabIndex = -1;
+            button.setAttribute("data-opencodex-menu-back", "");
+            bar.appendChild(button);
+            const title = document.createElement("span");
+            title.className = "opencodex-menu-title";
+            bar.appendChild(title);
+            // 新增控件放在 React 未持有引用的独立节点中，官方菜单子树保持原位置。
+            menu.prepend(bar);
+            state = { wrapper, bar, button, title };
+            menus.set(menu, state);
+            set(wrapper, "data-opencodex-phone-menu", "true");
+            set(menu, "data-opencodex-menu-panel", "true");
+          }
+          const labelledBy = menu.getAttribute("aria-labelledby");
+          const trigger = labelledBy ? document.getElementById(labelledBy) : null;
+          const parent = trigger?.closest('[role="menu"]');
+          state.parent = parent && parent !== menu ? parent : null;
+          const label = trigger?.getAttribute("aria-label") || trigger?.textContent || "";
+          text(state.title, state.parent ? label.trim() : (chinese() ? "操作" : "Actions"));
+          text(state.button, state.parent ? (chinese() ? "‹ 返回" : "‹ Back") : (chinese() ? "关闭" : "Close"));
+          set(state.button, "aria-label", state.parent ? (chinese() ? "返回上一级菜单" : "Back to previous menu") : (chinese() ? "关闭菜单" : "Close menu"));
+        }
+        const parents = new Set([...menus.values()].map(state => state.parent).filter(Boolean));
+        for (const [menu, state] of menus) set(state.wrapper, "data-opencodex-menu-covered", parents.has(menu) ? "true" : "false");
+      },
+      click(event) {
+        const toggle = event.target?.closest?.("[data-opencodex-settings-toggle]");
+        if (toggle) {
+          const nav = toggle.closest("nav");
+          const expanded = toggle.getAttribute("aria-expanded") !== "true";
+          set(nav, "data-opencodex-settings-expanded", String(expanded));
+          set(toggle, "aria-expanded", String(expanded));
+          return true;
+        }
+        const back = event.target?.closest?.("[data-opencodex-menu-back]");
+        if (back) {
+          const menu = back.closest('[role="menu"]');
+          const state = menus.get(menu);
+          if (!state) return false;
+          // 委托原生菜单的返回/关闭键，保持焦点恢复、子菜单状态和动作清理一致。
+          event.preventDefault();
+          event.stopPropagation();
+          const parentState = menus.get(state.parent);
+          if (parentState) set(parentState.wrapper, "data-opencodex-menu-covered", "false");
+          menu.focus();
+          const key = state.parent ? (w.getComputedStyle(menu).direction === "rtl" ? "ArrowRight" : "ArrowLeft") : "Escape";
+          menu.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true }));
+          return true;
+        }
+        for (const [nav] of settings) {
+          if (!nav.contains(event.target) || event.target?.closest?.("[data-settings-panel-slug], [class~='group/nav-list'] button")) closeSettings(nav);
+        }
+        return false;
+      },
+      pointermove(event) {
+        const trigger = event.target?.closest?.('[role="menuitem"][aria-haspopup="menu"]');
+        // 单面板不使用桌面悬停展开，否则点击前新面板会移到鼠标下导致选中别的项目。
+        if (event.pointerType === "mouse" && trigger && menus.has(trigger.closest('[role="menu"]'))) event.stopPropagation();
+      },
+      keydown(event) {
+        const menu = event.target?.closest?.('[role="menu"]');
+        const state = menus.get(menu);
+        const parentState = state && menus.get(state.parent);
+        // 原生返回会立即聚焦父菜单项，必须先解除隐藏，不能等下一轮 DOM 观察。
+        if (parentState && event.key === (w.getComputedStyle(menu).direction === "rtl" ? "ArrowRight" : "ArrowLeft")) {
+          set(parentState.wrapper, "data-opencodex-menu-covered", "false");
+        }
+        if (event.key !== "Escape") return;
+        for (const [nav] of settings) if (nav.contains(event.target) && nav.getAttribute("data-opencodex-settings-expanded") === "true") {
+          closeSettings(nav, true);
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      },
+      dispose() {
+        for (const [nav, state] of settings) clearSettings(nav, state);
+        for (const [menu, state] of menus) clearMenu(menu, state);
+        for (const [menu, wrapper] of accountMenus) clearAccountMenu(menu, wrapper);
+      },
+    };
+  }
+
   registerPlugin({
     id: "opencodex.mobile-sidebar-auto-collapse",
     name: "Mobile sidebar auto collapse",
@@ -193,9 +360,12 @@
       const isEnabled = () => context.plugin.isEnabled();
       // 窄窗口同样呈现手机抽屉，不能只按 UA/触屏判断，否则选中功能后正文仍被抽屉遮住。
       const isMobile = () => !!context.platform.isMobile() || !!w.matchMedia?.(PHONE_LAYOUT_QUERY).matches;
+      const mobilePanels = createMobilePanelLayout();
 
       const updatePromotions = () => {
         promotionTimer = null;
+        // 面板增强必须与 CSS 断点一致；平板/宽窗口不留下无样式的辅助按钮。
+        mobilePanels.refresh(isEnabled() && !!w.matchMedia?.(PHONE_LAYOUT_QUERY).matches);
         for (const element of markedPromotions) {
           if (!isEnabled() || !element.isConnected || !isMobilePromotion(element)) {
             element.removeAttribute(PROMOTION_ATTRIBUTE);
@@ -217,7 +387,7 @@
       const disposePromotionObservation = adapterHost.dom?.observe?.({
         key: {},
         root: document.documentElement,
-        options: { childList: true, subtree: true, characterData: true },
+        options: { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["aria-current", "aria-expanded", "data-state"] },
         callback: schedulePromotions,
       });
       updatePromotions();
@@ -241,6 +411,7 @@
 
       const handleClick = (event) => {
         if (!isEnabled() || !isMobile()) return;
+        if (mobilePanels.click(event)) return;
         if (event.defaultPrevented || event.button > 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const destination = event.target?.closest?.("[data-app-navigation-rail] button");
@@ -280,6 +451,10 @@
         capture: true,
         callback: handlePointerDown,
       });
+      const disposePanelKeys = adapterHost.events.observe({ key: {}, target: document, type: "keydown", capture: true, callback: event => mobilePanels.keydown(event) });
+      const disposePanelMove = adapterHost.events.observe({ key: {}, target: document, type: "pointermove", capture: true, callback: event => mobilePanels.pointermove(event) });
+      const disposePanelInput = adapterHost.events.observe({ key: {}, target: document, type: "input", callback: event => { if (event.target?.id === "settings-search") schedulePromotions(); } });
+      const disposePanelResize = adapterHost.events.observe({ key: {}, target: w, type: "resize", callback: schedulePromotions });
 
       return () => {
         if (collapseTimer) scheduler.clearTimeout(collapseTimer);
@@ -290,6 +465,11 @@
         disposeViewMessage();
         disposeClick();
         disposePointerDown();
+        disposePanelKeys();
+        disposePanelMove();
+        disposePanelInput();
+        disposePanelResize();
+        mobilePanels.dispose();
         document.__opencodexMobileSidebarPluginInstalled = false;
       };
     },

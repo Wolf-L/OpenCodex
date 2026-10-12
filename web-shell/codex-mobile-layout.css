@@ -13,7 +13,7 @@
     --codex-window-zoom: 1 !important;
     --app-shell-navigation-rail-width: 0px !important;
     --app-shell-titlebar-height: 52px !important;
-    --thread-body-inline-padding: 12px;
+    --thread-body-inline-padding: 16px;
     box-sizing: border-box;
     width: 100% !important;
     height: var(--opencodex-ios-visual-viewport-height, var(--codex-visual-viewport-height, 100dvh)) !important;
@@ -188,6 +188,81 @@
     touch-action: manipulation;
   }
 
+  /* 手机分类入口展开原来的按钮网格；完整名称不再挤在横向滚动的一条窄栏里。 */
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"] .opencodex-settings-sections {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 48px;
+    padding: 10px 14px;
+    margin-top: 6px;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 600;
+    color: var(--color-text, inherit);
+    background: var(--color-background-secondary-soft-alpha, #292929);
+    border: 1px solid var(--color-border, #444);
+    border-radius: 14px;
+  }
+
+  .opencodex-settings-sections::after { content: "⌄"; }
+  .opencodex-settings-sections[aria-expanded="true"]::after { content: "⌃"; }
+
+  .app-shell-left-panel:has(nav[data-opencodex-phone-settings="true"]),
+  .app-shell-left-panel :has(nav[data-opencodex-phone-settings="true"]) {
+    overflow: visible !important;
+    contain: none !important;
+    z-index: 60;
+  }
+
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"] > div > div:not(:has(#settings-search)) {
+    display: none;
+  }
+
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"][data-opencodex-settings-expanded="true"] > div > div:not(:has(#settings-search)) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px;
+    position: absolute;
+    inset: 112px 12px auto;
+    z-index: 60;
+    max-height: calc(var(--opencodex-ios-visual-viewport-height, var(--codex-visual-viewport-height, 100dvh)) - 192px);
+    padding: 12px !important;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y pinch-zoom;
+    border: 1px solid var(--color-border, #444);
+    border-radius: 18px;
+    background: var(--color-surface-secondary, #202020);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+  }
+
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"] [class~="group/nav-list"] button {
+    width: 100%;
+    min-height: 52px;
+    height: auto;
+    padding: 10px;
+    border: 1px solid var(--color-border, #444);
+    font-size: 15px;
+    line-height: 22px;
+    white-space: normal;
+    text-align: start;
+  }
+
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"] [class~="group/nav-list"] button [class~="truncate"] {
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  nav:has(#settings-search)[data-opencodex-phone-settings="true"] [class~="group/nav-list"] button[aria-current="page"] {
+    border-color: var(--color-text-info, #6a9cff);
+  }
+
   /* 窄屏长说明与右侧操作上下排列，避免表单操作区被挤出视口。 */
   [class~="group/settings"] [class~="@container/settings-row"] {
     flex-wrap: wrap;
@@ -216,6 +291,26 @@
   [class~="group/settings"] input,
   [class~="group/settings"] textarea {
     font-size: 16px;
+  }
+
+  /* 给说明和操作保留呼吸空间，减少桌面大标题与块间留白占掉手机首屏。 */
+  [class~="group/settings"] {
+    padding-inline: 16px !important;
+  }
+
+  [class~="group/settings"] h1 {
+    font-size: 26px;
+    line-height: 34px;
+  }
+
+  [class~="group/settings"] :is([class~="text-sm"], [class~="text-xs"]) {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  [class~="group/settings"] [class~="text-base"] {
+    font-size: 16px;
+    line-height: 1.5;
   }
 
   /* 功能入口改为抽屉内的纵向文字菜单，聊天区不再为底部导航预留高度。 */
@@ -312,6 +407,22 @@
 
   html:lang(en) [data-app-navigation-rail] button[aria-haspopup="menu"]:not(:has(.sr-only)) > span:first-child::after {
     content: "Account";
+  }
+
+  /* 账号菜单在底部入口上方展开，避免横向越界或抬手时选中菜单项。 */
+  [data-radix-popper-content-wrapper][data-opencodex-phone-account-menu="true"] {
+    position: fixed !important;
+    inset: auto 12px max(64px, calc(56px + env(safe-area-inset-bottom))) !important;
+    transform: none !important;
+    min-width: 0 !important;
+    width: calc(100vw - 24px) !important;
+    z-index: 70 !important;
+  }
+
+  [data-opencodex-phone-account-menu="true"] > [role="menu"] {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: calc(var(--opencodex-ios-visual-viewport-height, var(--codex-visual-viewport-height, 100dvh)) - 88px) !important;
   }
 
   /* 只消费插件识别出的官方推广节点，不隐藏普通错误、认证提示或用户消息。 */
@@ -421,7 +532,7 @@
   /* 输入与发送保持原组件；16px 避免 iOS 聚焦时自动放大。 */
   [data-codex-composer-root] {
     --height-token-button-composer: 44px;
-    --composer-editor-min-height: 48px;
+    --composer-editor-min-height: 60px;
     --composer-editor-max-height: 30dvh;
     min-width: 0;
     max-width: 100%;
@@ -438,6 +549,26 @@
     min-height: 44px !important;
     min-width: 44px;
     touch-action: manipulation;
+  }
+
+  [data-codex-composer-root] {
+    margin-inline: 0;
+    width: 100%;
+  }
+
+  [class~="group/home-composer-layout"] {
+    --thread-body-inline-padding: 4px;
+    --home-composer-inline-inset: 8px;
+  }
+
+  [data-codex-composer-root] [data-composer-navigation-target="workspace-project"] [data-composer-footer-collapse] {
+    display: inline-flex !important;
+    max-width: calc(100vw - 100px) !important;
+    font-size: 14px;
+  }
+
+  [data-codex-composer-root] [data-composer-navigation-target="reasoning"] {
+    max-width: calc(100vw - 210px);
   }
 
   [data-composer-navigation-target="reasoning"] {
@@ -505,6 +636,94 @@
   [role="menuitemcheckbox"],
   [role="option"] {
     min-height: 44px;
+  }
+
+  /* 各级菜单共用一块手机面板，不沿桌面触发点向两侧展开；菜单项与焦点仍归 Radix 管理。 */
+  [data-radix-popper-content-wrapper][data-opencodex-phone-menu="true"] {
+    position: fixed !important;
+    inset: auto 12px max(12px, env(safe-area-inset-bottom, 0px)) !important;
+    transform: none !important;
+    width: calc(100vw - 24px) !important;
+    min-width: 0 !important;
+    max-width: calc(100vw - 24px) !important;
+    z-index: 70 !important;
+  }
+
+  [data-opencodex-phone-menu="true"][data-opencodex-menu-covered="true"] {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  [data-radix-popper-content-wrapper] > [role="menu"][data-opencodex-menu-panel="true"] {
+    box-sizing: border-box;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    max-height: min(78dvh, calc(var(--opencodex-ios-visual-viewport-height, var(--codex-visual-viewport-height, 100dvh)) - 76px)) !important;
+    margin: 0 !important;
+    padding: 0 10px 10px !important;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-radius: 20px !important;
+    background: var(--color-surface-elevated-secondary, #292929);
+    animation: none !important;
+    touch-action: pan-y pinch-zoom;
+    scroll-padding-top: 60px;
+  }
+
+  [data-opencodex-menu-panel] .opencodex-menu-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    min-height: 56px;
+    padding: 4px 2px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--color-border, #444);
+    background: var(--color-surface-elevated-secondary, #292929);
+  }
+
+  .opencodex-menu-bar button {
+    flex: 0 0 auto;
+    min-height: 48px;
+    min-width: 64px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 16px;
+    touch-action: manipulation;
+  }
+
+  .opencodex-menu-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 600;
+  }
+
+  [data-opencodex-menu-panel] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+    flex: 0 0 auto;
+    min-height: 52px !important;
+    height: auto !important;
+    padding: 12px !important;
+    font-size: 16px !important;
+    line-height: 24px;
+    touch-action: manipulation;
+  }
+
+  [data-opencodex-menu-panel] [class~="truncate"] {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  /* 手机无需为桌面快捷键留半行，保留实际菜单名称、图标和子菜单箭头。 */
+  [data-opencodex-menu-panel] [aria-hidden="true"][class~="text-xs"] {
+    display: none;
   }
 
   /* 官方表单继续使用自身焦点陷阱；仅扩大触控区域并约束到可视视口。 */
