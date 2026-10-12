@@ -8,7 +8,7 @@ const KEY = "opencodex.text-drafts.v1";
 
 function harness({ storage = new Map(), blocked = false, now = 1_800_000_000_000 } = {}) {
   const events = [], owned = [], timers = new Map(), nodes = [];
-  let id = 0, clock = now, writes = 0, hits = 0;
+  let id = 0, clock = now, writes = 0, hits = 0, observation = null;
   class Element {
     constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attrs = {}; this.value = ""; nodes.push(this); }
     appendChild(node) { this.children.push(node); }
@@ -29,6 +29,7 @@ function harness({ storage = new Map(), blocked = false, now = 1_800_000_000_000
       removeItem(key) { if (blocked) throw Error("blocked"); storage.delete(key); },
     },
     __OpenCodexAdapterHost: {
+      dom: { observe(value) { observation = value; return () => { observation = null; }; } },
       events: { observe(value) { events.push(value); } },
       scheduler: { capture: () => ({ setTimeout(fn) { const key = ++id; timers.set(key, fn); return key; }, clearTimeout(key) { timers.delete(key); } }) },
     },
@@ -41,6 +42,7 @@ function harness({ storage = new Map(), blocked = false, now = 1_800_000_000_000
   return {
     w, document, storage, timers, nodes, node,
     get writes() { return writes; }, get hits() { return hits; },
+    get observation() { return observation; },
     records() { return JSON.parse(storage.get(KEY) || '{"entries":[]}').entries; },
     editor(text = "") { return { innerText: text, closest(selector) { assert.equal(selector, '[data-codex-composer="true"][contenteditable="true"]'); return this; } }; },
     input(editor, isComposing = false) { emit(document, "input", { target: editor, isComposing }); },
@@ -125,4 +127,22 @@ test("plain-text preview never interprets stored HTML and unsupported schema is 
   assert.equal(h.node("textarea").value, text);
   const invalid = harness({ storage: new Map([[KEY, JSON.stringify({ schemaVersion: 2, entries: h.records() })]]) }); invalid.open();
   assert.equal(invalid.node("textarea").value, "");
+});
+
+test("focused-editor observation captures rich-text paste/undo without an input event", () => {
+  const h = harness(), editor = h.editor(); h.emit(h.document, "focusin", { target: editor });
+  assert.equal(h.observation.root, editor);
+  editor.innerText = "pasted without input";
+  h.observation.callback([]); h.observation.callback([]);
+  assert.equal(h.timers.size, 1);
+  h.flush(); h.flush(); assert.equal(h.records()[0].text, editor.innerText);
+  editor.innerText = "undo transaction"; h.observation.callback([]);
+  h.emit(h.w, "pagehide"); assert.equal(h.records()[0].text, "undo transaction");
+  h.emit(h.document, "focusout", { target: editor }); assert.equal(h.observation, null);
+});
+
+test("explicit clear and logout cannot resurrect the still-visible focused composer", () => {
+  const h = harness(), editor = h.editor("keep visible"); h.emit(h.document, "focusin", { target: editor });
+  h.input(editor); h.observation.callback([]); h.emit(h.w, "opencodex:clear-drafts");
+  h.flush(); h.emit(h.w, "pagehide"); h.dispose(); assert.equal(h.records().length, 0);
 });

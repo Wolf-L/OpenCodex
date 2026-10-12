@@ -2,7 +2,7 @@
   const w = window;
   const scope = w.__OpenCodexCurrentProviderScope;
   const host = w.__OpenCodexAdapterHost;
-  if (!host?.events?.observe || !scope?.own) return;
+  if (!host?.events?.observe || !host?.dom?.observe || !scope?.own) return;
   const scheduler = host.scheduler?.capture?.() || w;
   const STORAGE_KEY = "opencodex.text-drafts.v1";
   const MAX_TEXT = 32_768;
@@ -22,6 +22,9 @@
   let selection = "";
   let disposed = false;
   let composition = new WeakSet();
+  let focusedEditor = null;
+  let disposeEditorObservation = null;
+  let readTimer = null;
   let details, summary, status, notice, select, preview, copy, retry, clear;
 
   function prune(value) {
@@ -35,6 +38,10 @@
   }
 
   function persist() {
+    // 富文本粘贴/撤销可绕过 input；退出前读取当前聚焦编辑器，避免丢失尚未处理的 mutation。
+    if (focusedEditor) capture({ target: focusedEditor });
+    if (readTimer !== null) scheduler.clearTimeout(readTimer);
+    readTimer = null;
     if (saveTimer !== null) scheduler.clearTimeout(saveTimer);
     saveTimer = null;
     entries = prune(entries);
@@ -73,7 +80,7 @@
 
   function capture(event) {
     const editor = editorFrom(event);
-    if (!editor || disposed || composition.has(editor) || event.isComposing) return;
+    if (!editor || editor.isConnected === false || disposed || composition.has(editor) || event.isComposing) return;
     const text = String(editor.innerText || "").replace(/\r\n/g, "\n");
     const route = routeLabel();
     if (!text.trim()) {
@@ -138,7 +145,41 @@
     host.events.observe({ key: {}, target, type, callback });
   }
 
+  function watchEditor(event) {
+    const editor = editorFrom(event);
+    if (!editor || editor === focusedEditor) return;
+    if (focusedEditor) capture({ target: focusedEditor });
+    disposeEditorObservation?.();
+    focusedEditor = editor;
+    // 只观察当前聚焦的官方输入框，捕获 ProseMirror 自行处理的粘贴、撤销和格式事务。
+    // 不观察 document/body，更不在流式正文变化时扫描整页。
+    disposeEditorObservation = host.dom.observe({
+      key: {}, root: editor, options: { childList: true, subtree: true, characterData: true },
+      callback() {
+        if (readTimer !== null) return;
+        readTimer = scheduler.setTimeout(() => {
+          readTimer = null;
+          if (focusedEditor) capture({ target: focusedEditor });
+        }, 0);
+      },
+    });
+  }
+
+  function unwatchEditor(event) {
+    if (editorFrom(event) !== focusedEditor) return;
+    capture(event);
+    disposeEditorObservation?.();
+    disposeEditorObservation = null;
+    focusedEditor = null;
+    if (readTimer !== null) scheduler.clearTimeout(readTimer);
+    readTimer = null;
+  }
+
   function clearDrafts() {
+    // 清空是用户明确意图；先解除聚焦观察，不能在 persist/pagehide 时从仍显示的输入框复活副本。
+    disposeEditorObservation?.();
+    disposeEditorObservation = null;
+    focusedEditor = null;
     entries = [];
     groups = new WeakMap();
     selection = "";
@@ -202,6 +243,8 @@
   }
 
   observe(document, "input", capture);
+  observe(document, "focusin", watchEditor);
+  observe(document, "focusout", unwatchEditor);
   observe(document, "compositionstart", (event) => { const editor = editorFrom(event); if (editor) composition.add(editor); });
   observe(document, "compositionend", (event) => { const editor = editorFrom(event); if (editor) composition.delete(editor); capture({ target: editor }); });
   observe(document, "visibilitychange", () => { if (document.visibilityState === "hidden") persist(); });
@@ -210,5 +253,5 @@
   observe(w, "opencodex:clear-drafts", clearDrafts);
   if (document.body) mount();
   else observe(document, "DOMContentLoaded", mount);
-  scope.own(() => { persist(); disposed = true; composition = new WeakSet(); });
+  scope.own(() => { persist(); disposed = true; disposeEditorObservation?.(); focusedEditor = null; composition = new WeakSet(); });
 })();
