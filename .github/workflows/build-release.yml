@@ -174,9 +174,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build and test Windows runtime
+        # 测试的 pretest 已完成构建；单独步骤失败后不能继续上传安装包。
+        run: pnpm test
+
       - name: Build NSIS installer
         run: |
-          pnpm run build
           # 安装包由后续 job 统一发布，禁止 electron-builder 在 CI 中自动上传。
           pnpm exec electron-builder --win nsis --x64 --publish never
 
@@ -230,10 +233,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and test Linux deployment support
-        run: |
-          pnpm run build
-          # 这里只测试 Linux 适配，既不启动真实账户，也不掩盖已有的全量测试基线问题。
-          node --test gateway/test/gateway-listen.test.cjs gateway/test/linux-runtime.test.cjs gateway/test/linux-deployment.test.cjs gateway/test/linux-packaging.test.cjs gateway/test/linux-cache-config.test.cjs gateway/test/official-startup-cache-settings.test.cjs gateway/test/official-startup-cache-policy.test.cjs gateway/test/official-startup-cache-hook.test.cjs gateway/test/official-startup-response-cache.test.cjs gateway/test/mobile-layout.test.cjs gateway/test/mobile-navigation-defaults.test.cjs gateway/test/mobile-sidebar-auto-collapse.test.cjs
+        # 两种原生架构均跑完整夹具测试，覆盖运行时恢复；不会启动真实账户。
+        run: pnpm test
 
       - name: Build DEB and portable archive
         run: |

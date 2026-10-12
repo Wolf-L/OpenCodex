@@ -69,9 +69,16 @@ test("Linux CI builds and tests natively on x64 and ARM64 before artifact upload
   assert.match(linux, /arch:\s*arm64\s+runner:\s*ubuntu-24\.04-arm(?:\s|$)/);
   assert.match(linux, /runs-on:\s*\$\{\{\s*matrix\.runner\s*\}\}/);
   assert.match(linux, /process\.arch !== process\.env\.EXPECTED_ARCH/);
-  assert.ok(linux.indexOf("pnpm run build") < linux.indexOf("node --test"));
-  for (const name of linuxTests) assert.ok(linux.includes(`gateway/test/${name}.test.cjs`));
-  assert.doesNotMatch(linux, /pnpm\s+(?:run\s+)?test\b/);
+  // 全量测试入口包含 Linux 与恢复夹具，并由 pretest 构建，打包必须在它成功之后。
+  assert.match(linux, /run:\s*pnpm test/);
+  assert.match(pkg.scripts.pretest, /build:gateway/);
+  assert.ok(linux.indexOf("pnpm test") < linux.indexOf("electron-builder"));
+  for (const name of [...linuxTests, "portable-runtime-recovery", "runtime-source-binding"]) {
+    assert.ok(pkg.scripts.test.includes(`gateway/test/${name}.test.cjs`));
+  }
+  const windows = workflowJob("build-windows");
+  assert.match(windows, /run:\s*pnpm test/);
+  assert.ok(windows.indexOf("pnpm test") < windows.indexOf("electron-builder"));
   assert.match(linux, /electron-builder --linux deb tar\.gz --\$\{\{ matrix\.arch \}\} --publish never/);
   assert.ok(linux.includes("release/*-linux-${{ matrix.deb_arch }}.deb"));
   assert.ok(linux.includes("release/*-linux-${{ matrix.arch }}.tar.gz"));

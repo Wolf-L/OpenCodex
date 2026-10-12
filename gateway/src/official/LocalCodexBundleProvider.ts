@@ -14,6 +14,7 @@ const { AsarWebviewExtractor } = require("./AsarWebviewExtractor");
 const { OfficialRuntimeOptimizer } = require("./OfficialRuntimeOptimizer");
 const { createHostModificationRuntime } = require("../../runtime/modification/production-runtime.cjs");
 const { staticMain: staticMainPoints } = require("../../runtime/modification/point-refs.cjs");
+const { RUNTIME_BINDING_ENV, ROLLBACK_PIN_ENV, assertRuntimeBinding, sourceIdentity, withPhysicalAsarAccess } = require("../../runtime/runtime-source-binding.cjs");
 
 const OFFICIAL_AUTO_SCAN_UPGRADE_ENV = "CODEX_WEB_OFFICIAL_AUTO_SCAN_UPGRADE";
 
@@ -99,12 +100,26 @@ class LocalCodexBundleProvider {
   }
 
   ensure({ projectRoot }: { projectRoot: string }): EnsureOfficialBundleResult {
+    // Launcher 也在 Electron 中执行；这里必须读取物理 ASAR，而不是虚拟目录。
+    return withPhysicalAsarAccess(() => this.ensureSelectedBundle({ projectRoot }));
+  }
+
+  private ensureSelectedBundle({ projectRoot }: { projectRoot: string }): EnsureOfficialBundleResult {
     /**
      * ensure 是 official gateway 启动前的唯一入口。
      * 它会尽量复用缓存；只有 app.asar 文件身份或缓存完整性不满足时才重新解压。
      */
     const cache = this.createCache(projectRoot);
     const manifest = cache.readManifest();
+    const bindingText = this.env[RUNTIME_BINDING_ENV];
+    const rollbackPinned = this.env[ROLLBACK_PIN_ENV] === "1";
+    if (bindingText || rollbackPinned) {
+      // 父进程选定的版本及用户刚还原的版本优先于 Linux 显式路径，禁止再次扫描替换。
+      const reason = cache.reuseWithoutSourceScanBlockReason(manifest, { verifyContents: !bindingText });
+      if (reason) throw new Error(`无法启动已固定的官方运行时：${reason}。请恢复匹配的官方安装源或启用更新扫描。`);
+      if (bindingText) assertRuntimeBinding(JSON.parse(bindingText), cache.bundleDir, manifest);
+      return this.resultFromCachedManifest({ cache, manifest });
+    }
     // 显式 Linux 安装/CLI 路径优先于旧缓存；关闭自动扫描不能把新配置静默替换成旧的二进制。
     const explicitLinuxPaths = this.platform === "linux" && [
       this.appPathEnv,
@@ -116,11 +131,16 @@ class LocalCodexBundleProvider {
       if (!blockReason) {
         return this.resultFromCachedManifest({ cache, manifest });
       }
+      // 已有完整缓存的来源变化不等于缓存丢失，关闭扫描时不能偷偷升级或混用 ABI。
+      if (manifest && /身份|内容|校验/.test(blockReason)) throw new Error(`${blockReason}。请启用官方运行时更新扫描后重试。`);
       this.logger.info(`自动扫描官方运行时更新已关闭，但${blockReason}，将扫描一次以重建缓存`);
     }
 
     const layout = this.scanner.find({ cachedAsarPath: manifest?.sourceAsarPath });
     const sourceInfo = this.sourceInfoReader.read(layout);
+    // 在解包前记录来源内容，并在发布缓存前复核，避免安装器同时升级造成混合副本。
+    const selectedIdentity = sourceIdentity({ sourceAsarPath: sourceInfo.asarPath, sourceUnpackedAsarPath: sourceInfo.unpackedAsarDir, sourceCodexBinaryPath: sourceInfo.codexBinaryPath });
+    sourceInfo.sourceIdentity = selectedIdentity;
     this.synchronizeCompatibilityRuntime(sourceInfo);
     const reason = cache.refreshReason(manifest, sourceInfo);
 
@@ -302,6 +322,7 @@ class LocalCodexBundleProvider {
         );
       }
       const manifest = this.manifestFactory.create(sourceInfo, runtimeOptimizations);
+      if (JSON.stringify(sourceIdentity(manifest)) !== JSON.stringify(sourceInfo.sourceIdentity)) throw new Error("官方安装源在解包过程中发生变化，请重试");
       this.fileSystem.writeJson(path.join(tmpDir, "manifest.json"), manifest);
       cache.replaceWith(tmpDir);
       this.logger.info(

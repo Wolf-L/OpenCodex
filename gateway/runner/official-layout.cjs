@@ -176,9 +176,9 @@ function windowsManifestExecutablePath(appRoot, logger = null) {
   return "";
 }
 
-function windowsElectronExecutableCandidates(appRoot, logger = null) {
+function windowsElectronExecutableCandidates(appRoot, logger = null, env = process.env) {
   return uniqueNonEmpty([
-    process.env.CODEX_DESKTOP_EXECUTABLE_PATH,
+    env.CODEX_DESKTOP_EXECUTABLE_PATH,
     windowsManifestExecutablePath(appRoot, logger),
     // 新版 MSIX 同时保留 Codex.exe 兼容壳，必须在 manifest 失效时优先尝试真正的 ChatGPT Electron 入口。
     path.join(appRoot, "ChatGPT.exe"),
@@ -217,7 +217,7 @@ function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null, { 
   const asarPath = scannedLayout.asarPath || path.join(resourcesDir, "app.asar");
   const executableCandidates =
     platform === "win32"
-      ? windowsElectronExecutableCandidates(appRoot, logger)
+      ? windowsElectronExecutableCandidates(appRoot, logger, env)
       : linuxElectronExecutableCandidates(appRoot, env);
   const explicitLinuxExecutable = platform === "linux" ? env.CODEX_DESKTOP_EXECUTABLE_PATH?.trim() : "";
   if (explicitLinuxExecutable && !isFile(explicitLinuxExecutable)) {
@@ -255,16 +255,24 @@ function portableRuntimeLayoutFromInstallLayout(scannedLayout, logger = null, { 
   };
 }
 
-function officialRuntimeLayoutFromScannedLayout(scannedLayout, logger = null) {
+function officialRuntimeLayoutFromScannedLayout(scannedLayout, logger = null, options = {}) {
   if (process.platform === "darwin") return macRuntimeLayoutFromAppRoot(scannedLayout.installRoot, logger);
   if (process.platform === "win32" || process.platform === "linux") {
-    return portableRuntimeLayoutFromInstallLayout(scannedLayout, logger);
+    return portableRuntimeLayoutFromInstallLayout(scannedLayout, logger, options);
   }
   return null;
 }
 
-function findOfficialRuntimeLayout({ officialBundleDir, logger }) {
-  const scannedLayout = scanOfficialInstallLayout({ officialBundleDir });
+function findOfficialRuntimeLayout({ officialBundleDir, logger, bundle, rollbackPinned = false }) {
+  // 启动入口传入已选择的 bundle，Runner 不再独立扫描到另一个官方版本。
+  const scannedLayout = bundle ? {
+    installRoot: bundle.sourceAppPath,
+    resourcesDir: bundle.sourceResourcesPath,
+    asarPath: bundle.sourceAsarPath,
+    codexBinaryPath: bundle.codexBinaryPath,
+    layoutKind: bundle.manifest.sourceLayoutKind,
+    platformHint: bundle.manifest.sourcePlatformHint,
+  } : scanOfficialInstallLayout({ officialBundleDir });
   logJsonLine(logger, "official Electron install scanned:", {
     installRoot: scannedLayout.installRoot,
     resourcesDir: scannedLayout.resourcesDir,
@@ -272,7 +280,7 @@ function findOfficialRuntimeLayout({ officialBundleDir, logger }) {
     layoutKind: scannedLayout.layoutKind,
     platformHint: scannedLayout.platformHint,
   });
-  const layout = officialRuntimeLayoutFromScannedLayout(scannedLayout, logger);
+  const layout = officialRuntimeLayoutFromScannedLayout(scannedLayout, logger, rollbackPinned ? { env: {} } : {});
   if (layout) return layout;
   throw new Error(
     `已找到 Codex/ChatGPT Desktop 官方 app.asar，但未找到可复用的官方 Electron 运行时：${JSON.stringify({

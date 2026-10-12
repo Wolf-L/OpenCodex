@@ -4,6 +4,7 @@ export {};
 const path = require("path");
 const { MANIFEST_SCHEMA_VERSION } = require("./constants");
 const { OfficialRuntimeEntryResolver } = require("./OfficialRuntimeEntryResolver");
+const { sourceIdentityBlockReason, withPhysicalAsarAccess } = require("../../runtime/runtime-source-binding.cjs");
 
 /** 按统一 schema 和 app.asar 文件身份判断缓存是否需要刷新。 */
 class OfficialBundleRefreshPolicy {
@@ -104,7 +105,11 @@ class OfficialBundleCache {
     }
   }
 
-  reuseWithoutSourceScanBlockReason(manifest: any | null): string {
+  reuseWithoutSourceScanBlockReason(manifest: any | null, { verifyContents = true } = {}): string {
+    return withPhysicalAsarAccess(() => this.cachedSourceBlockReason(manifest, verifyContents));
+  }
+
+  private cachedSourceBlockReason(manifest: any | null, verifyContents: boolean): string {
     if (!manifest) return "缓存清单不存在";
     const schemaVersion = Number.isFinite(Number(this.refreshPolicy?.schemaVersion))
       ? this.refreshPolicy.schemaVersion
@@ -132,6 +137,8 @@ class OfficialBundleCache {
       typeof manifest.sourceCodexBinaryPath === "string" ? manifest.sourceCodexBinaryPath : "";
     // 如果 manifest 记录了 CLI 路径，就必须确认它仍可用，避免 app-server hook 指向失效二进制。
     if (sourceCodexBinaryPath && !this.fileSystem.isFile(sourceCodexBinaryPath)) return "缓存记录的 Codex CLI 不存在";
+    const identityReason = sourceIdentityBlockReason(manifest, { verifyContents });
+    if (identityReason) return identityReason;
     return "";
   }
 
@@ -140,14 +147,15 @@ class OfficialBundleCache {
       manifest,
       sourceInfo,
       webviewReady: this.isWebviewReady(),
-    });
+    }) || (manifest?.sourceAsarPath !== sourceInfo.asarPath || manifest?.sourceCodexBinaryPath !== sourceInfo.codexBinaryPath ? "安装来源路径变化" : "")
+      || (sourceInfo.sourceIdentity && JSON.stringify(manifest?.sourceIdentity) !== JSON.stringify(sourceInfo.sourceIdentity) ? "安装来源身份需要更新" : "");
   }
 
   get backupDir(): string {
     return `${this.bundleDir}-bak`;
   }
 
-  backupState(): any {
+  backupState({ verifyContents = false } = {}): any {
     // 使用同一套缓存校验，避免还原后因备份不完整而自动重新解压新版。
     const backup = new OfficialBundleCache({
       projectRoot: this.projectRoot,
@@ -158,12 +166,13 @@ class OfficialBundleCache {
       runtimeEntryResolver: this.runtimeEntryResolver,
     });
     const manifest = backup.readManifest();
-    const reason = backup.reuseWithoutSourceScanBlockReason(manifest);
+    // UI 状态只做轻量检查，避免每次轮询都读取整个安装包；真正还原时必须严格校验。
+    const reason = backup.reuseWithoutSourceScanBlockReason(manifest, { verifyContents });
     return { available: !reason, version: manifest?.version || "", reason };
   }
 
   restoreBackup(): void {
-    const backup = this.backupState();
+    const backup = this.backupState({ verifyContents: true });
     if (!backup.available) throw new Error(`无法还原备份：${backup.reason}`);
     // 先暂存当前目录，备份改名失败时仍能恢复当前版本；成功后才删除新版。
     const discardedDir = `${this.bundleDir}.restore-${process.pid}-${Date.now()}`;
@@ -248,6 +257,7 @@ class OfficialBundleManifestFactory {
       build: sourceInfo.build,
       sourceAsarSize: sourceInfo.sourceAsarSize,
       sourceAsarMtimeMs: sourceInfo.sourceAsarMtimeMs,
+      sourceIdentity: sourceInfo.sourceIdentity,
       runtimeOptimizations,
       processedAt: new Date().toISOString(),
     };

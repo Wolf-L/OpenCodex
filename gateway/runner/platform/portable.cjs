@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const {
   RUNNER_LINUX_EXECUTABLE_NAME,
   RUNNER_WINDOWS_EXECUTABLE_NAME,
@@ -10,7 +11,7 @@ const {
   isFile,
   realpathSafe,
   readJsonIfPresent,
-  writeJson,
+  withPhysicalAsarAccess,
 } = require("../shared/fs-utils.cjs");
 const { logLine } = require("../shared/logging.cjs");
 const { writeGatewayAsar } = require("../shared/runner-asar.cjs");
@@ -43,17 +44,21 @@ function shouldSkipPortableRuntimeEntry(entry, sourcePath, layout) {
 
 function portableRuntimeFingerprint(layout, platform = process.platform) {
   const entries = [];
-  try {
-    for (const entry of fs.readdirSync(layout.runtimeRoot, { withFileTypes: true })) {
-      const sourcePath = path.join(layout.runtimeRoot, entry.name);
-      if (shouldSkipPortableRuntimeEntry(entry, sourcePath, layout)) continue;
+  // 目录 mtime 不反映子文件原位修改，递归记录资源文件，且不沿符号链接递归。
+  function visit(directory, relative = "") {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const sourcePath = path.join(directory, entry.name);
+      if (!relative && shouldSkipPortableRuntimeEntry(entry, sourcePath, layout)) continue;
+      const name = path.join(relative, entry.name);
       entries.push({
-        name: entry.name,
+        name,
         kind: entry.isDirectory() ? "dir" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
         stat: fileFingerprint(sourcePath),
       });
+      if (entry.isDirectory()) visit(sourcePath, name);
     }
-  } catch {}
+  }
+  visit(layout.runtimeRoot);
   return {
     platform,
     arch: process.arch,
@@ -266,25 +271,52 @@ function refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platfor
   }
 }
 
-function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger, platform = process.platform }) {
-  const nextFingerprint = portableRuntimeFingerprint(layout, platform);
-  const previous = readJsonIfPresent(markerPath);
-  if (
-    previous &&
-    samePortableRuntimeFingerprint(previous.fingerprint, nextFingerprint) &&
-    isDirectory(runnerRootDir) &&
-    isFile(runnerExecutablePath)
-  ) {
-    refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
-    logLine(logger, `official Electron runtime cache hit: ${runnerRootDir}`);
-    return { copied: false };
-  }
+function executableSha256(filePath) {
+  // Electron 默认把 .asar 当成虚拟目录；摘要必须读取物理归档，并在结束后恢复开关。
+  return withPhysicalAsarAccess(() => {
+    const hash = crypto.createHash("sha256");
+    const fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    try {
+      let count;
+      while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, count));
+      return hash.digest("hex");
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+}
 
-  /**
-   * Windows/Linux 没有 macOS bundle 的 Frameworks 分层，Electron DLL/.pak/locales 等都在可执行文件同级目录。
-   * 这里复制“运行时文件”，但跳过官方 resources 目录；官方 bundle 只作为外部资源路径复用，不进入 OpenCodex dist/cache。
-   */
-  fs.rmSync(runnerRootDir, { recursive: true, force: true });
+function assertSeparateRuntime(layout, runnerRootDir) {
+  const source = realpathSafe(layout.runtimeRoot);
+  const target = realpathSafe(runnerRootDir);
+  const contains = (parent, child) => {
+    const relative = path.relative(parent, child);
+    return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+  };
+  if (contains(source, target) || contains(target, source)) throw new Error("runner 工作目录不能与官方运行时目录重叠");
+}
+
+function hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform }) {
+  if (!previous || previous.version !== 2 || !samePortableRuntimeFingerprint(previous.fingerprint, fingerprint)) return false;
+  try {
+    if (!isDirectory(runnerRootDir) || executableSha256(runnerExecutablePath) !== previous.executableSha256) return false;
+    for (const entry of fingerprint.entries) {
+      // 外部程序集清单沿用专门的普通读写修复路径，缺失也可在缓存命中时补回。
+      if (platform === "win32" && entry.kind === "file" && path.dirname(entry.name) === "." && entry.name.toLowerCase().endsWith(".manifest")) continue;
+      const target = path.join(runnerRootDir, entry.name);
+      if (entry.kind === "dir" && !isDirectory(target)) return false;
+      if (entry.kind === "file" && !isFile(target)) return false;
+      if (entry.kind === "file" && fs.statSync(target).size !== entry.stat?.size) return false;
+      if (entry.kind === "symlink" && !isFile(target) && !isDirectory(target)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyPortableRuntimeFiles({ layout, runnerRootDir, runnerExecutablePath, logger, platform }) {
   fs.mkdirSync(runnerRootDir, { recursive: true });
   for (const entry of fs.readdirSync(layout.runtimeRoot, { withFileTypes: true })) {
     const sourcePath = path.join(layout.runtimeRoot, entry.name);
@@ -294,10 +326,59 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
   copyPortableRuntimeExecutable({ sourcePath: layout.executablePath, targetPath: runnerExecutablePath, logger, platform });
   refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
   if (platform !== "win32") fs.chmodSync(runnerExecutablePath, 0o755);
-  writeJson(markerPath, {
-    fingerprint: nextFingerprint,
-    copiedAt: new Date().toISOString(),
-  });
+}
+
+function removePreparedDirectory(directory) {
+  // 这里只清理本次创建的 staging/backup；锁定文件留待后续人工检查，不掩盖原始失败。
+  try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+}
+
+function publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker }) {
+  const backupDir = `${runnerRootDir}.previous-${crypto.randomUUID()}`;
+  const markerTemp = `${markerPath}.${crypto.randomUUID()}.tmp`;
+  let movedPrevious = false;
+  let published = false;
+  try {
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerTemp, `${JSON.stringify(marker, null, 2)}\n`, { flag: "wx" });
+    // 旧目录只在完整准备成功后移动；Windows 文件锁导致 rename 失败时仍保留旧版。
+    if (fs.existsSync(runnerRootDir)) {
+      fs.renameSync(runnerRootDir, backupDir);
+      movedPrevious = true;
+    }
+    fs.renameSync(stagingDir, runnerRootDir);
+    published = true;
+    fs.renameSync(markerTemp, markerPath);
+  } catch (error) {
+    // marker 发布失败也回滚目录，防止上次成功的 marker 指向半成品。
+    if (published) fs.renameSync(runnerRootDir, stagingDir);
+    if (movedPrevious) fs.renameSync(backupDir, runnerRootDir);
+    throw error;
+  } finally {
+    try { fs.unlinkSync(markerTemp); } catch {}
+  }
+  removePreparedDirectory(backupDir);
+}
+
+function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger, platform = process.platform }) {
+  assertSeparateRuntime(layout, runnerRootDir);
+  const fingerprint = portableRuntimeFingerprint(layout, platform);
+  const previous = readJsonIfPresent(markerPath);
+  if (hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform })) {
+    refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
+    logLine(logger, `official Electron runtime cache hit: ${runnerRootDir}`);
+    return { copied: false };
+  }
+  const stagingDir = `${runnerRootDir}.staging-${crypto.randomUUID()}`;
+  const stagedExecutable = path.join(stagingDir, path.basename(runnerExecutablePath));
+  try {
+    copyPortableRuntimeFiles({ layout, runnerRootDir: stagingDir, runnerExecutablePath: stagedExecutable, logger, platform });
+    publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker: {
+      version: 2, fingerprint, executableSha256: executableSha256(stagedExecutable), copiedAt: new Date().toISOString(),
+    } });
+  } finally {
+    removePreparedDirectory(stagingDir);
+  }
   logLine(logger, `official Electron runtime copied: ${layout.runtimeRoot} -> ${runnerRootDir}`);
   return { copied: true };
 }
@@ -305,32 +386,55 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
 async function createPortableRunner({ layout, runtimeDir, logger, runCompatibility = (_point, operation) => operation() }) {
   const workDir = path.join(runtimeDir, "official-electron-runner");
   const runnerRootDir = path.join(workDir, `${process.platform}-${process.arch}`);
-  const runnerResourcesDir = path.join(runnerRootDir, "resources");
   const runnerExecutablePath = path.join(runnerRootDir, runnerExecutableNameForPlatform());
   const markerPath = path.join(workDir, `runtime-manifest-${process.platform}-${process.arch}.json`);
-
-  runCompatibility(
-    runnerPoints.portableLayout,
-    () => ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath, markerPath, logger })
-  );
-  // app.asar 是 OpenCodex gateway 壳，必须每次按当前代码路径重写；官方资源目录只通过 env/process.resourcesPath 指回原安装包。
-  fs.rmSync(runnerResourcesDir, { recursive: true, force: true });
-  fs.mkdirSync(runnerResourcesDir, { recursive: true });
-  const runnerAsarPath = await runCompatibility(
-    runnerPoints.gatewayAsar,
-    () => writeGatewayAsar({ runnerResourcesDir, workDir })
-  );
-  if (process.platform === "win32") {
-    runCompatibility(
-      runnerPoints.windowsAsarIntegrity,
-      () => patchWindowsRunnerAsarIntegrity({
-        runnerRootDir,
-        runnerExecutablePath,
-        sourceExecutablePath: layout.executablePath,
-        runnerAsarPath,
-        logger,
-      })
-    );
+  assertSeparateRuntime(layout, runnerRootDir);
+  fs.mkdirSync(workDir, { recursive: true });
+  const stagingDir = fs.mkdtempSync(`${runnerRootDir}.staging-`);
+  const generationDir = fs.mkdtempSync(path.join(workDir, "gateway-source-"));
+  try {
+    const runnerResourcesDir = path.join(stagingDir, "resources");
+    fs.mkdirSync(runnerResourcesDir);
+    // 先在隔离目录生成 gateway 壳；内容一致的缓存不再重写正在运行的 EXE/ASAR。
+    const runnerAsarPath = await runCompatibility(runnerPoints.gatewayAsar,
+      () => writeGatewayAsar({ runnerResourcesDir, workDir: generationDir }));
+    const gatewaySha256 = executableSha256(runnerAsarPath);
+    const fingerprint = portableRuntimeFingerprint(layout);
+    const previous = readJsonIfPresent(markerPath);
+    let cacheHit = hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform: process.platform });
+    try {
+      cacheHit = cacheHit && previous.prepared === true && previous.gatewaySha256 === gatewaySha256 &&
+        executableSha256(path.join(runnerRootDir, "resources", "app.asar")) === gatewaySha256;
+    } catch { cacheHit = false; }
+    if (cacheHit) {
+      runCompatibility(runnerPoints.portableLayout, () => refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger }));
+      // 摘要已验证该 EXE 对应当前 ASAR；记录适用点，但不再改写正在运行的副本。
+      if (process.platform === "win32") runCompatibility(runnerPoints.windowsAsarIntegrity, () => undefined);
+      logLine(logger, `official Electron runtime cache hit: ${runnerRootDir}`);
+    } else {
+      const stagedExecutable = path.join(stagingDir, path.basename(runnerExecutablePath));
+      // 缓存损坏只执行一次重建；源损坏或准备失败直接报告，保留上次可用目录与 marker。
+      runCompatibility(runnerPoints.portableLayout, () => copyPortableRuntimeFiles({
+        layout, runnerRootDir: stagingDir, runnerExecutablePath: stagedExecutable, logger, platform: process.platform,
+      }));
+      if (process.platform === "win32") {
+        runCompatibility(runnerPoints.windowsAsarIntegrity, () => patchWindowsRunnerAsarIntegrity({
+          runnerRootDir: stagingDir, runnerExecutablePath: stagedExecutable,
+          sourceExecutablePath: layout.executablePath, runnerAsarPath, logger,
+        }));
+      }
+      // 官方源在复制过程中更新时不能把混合内容标记为成功，下次启动重新准备。
+      if (!samePortableRuntimeFingerprint(fingerprint, portableRuntimeFingerprint(layout))) {
+        throw new Error("官方 Electron 运行时在准备期间发生变化，请重试启动");
+      }
+      publishPortableRuntime({ stagingDir, runnerRootDir, markerPath, marker: {
+        version: 2, prepared: true, fingerprint, gatewaySha256,
+        executableSha256: executableSha256(stagedExecutable), copiedAt: new Date().toISOString(),
+      } });
+    }
+  } finally {
+    removePreparedDirectory(stagingDir);
+    removePreparedDirectory(generationDir);
   }
 
   logLine(logger, `prepared official Electron runner: root=${runnerRootDir}`);

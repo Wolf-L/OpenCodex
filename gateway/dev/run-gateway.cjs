@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../runner/index.cjs");
+const { runtimeBindingEnvironment } = require("../runtime/runtime-source-binding.cjs");
 const { linuxRuntimeArgs } = require("../runner/linux-runtime.cjs");
 const {
   GATEWAY_RESTART_SUPPORTED_ENV,
@@ -46,6 +47,8 @@ function spawnGateway(officialRuntime, officialRuntimeArgs) {
     env: {
       ...process.env,
       OPENCODEX_GATEWAY_ENTRY: gatewayEntry,
+      // 重启子进程继续验证父进程选定的版本；来源变化时明确失败，不混用新旧组件。
+      ...runtimeBindingEnvironment(officialRuntime.runtimeBinding),
       // 命令行调试也保持和 launcher 一致：系统级隐藏 runner，不再触碰 Electron Dock API。
       OPENCODEX_GATEWAY_AGENT_MODE: "1",
       // 第 4 个 stdio fd 是生命周期 pipe；父进程退出后 gateway 会主动结束。

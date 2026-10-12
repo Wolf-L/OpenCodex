@@ -67,10 +67,10 @@ test("materializes root Windows assembly manifests through ordinary writes after
   assert.deepEqual(ensurePortableRuntimeCopy({ ...fixture, platform: "win32" }), { copied: true });
 
   assertManifestsRefreshed(fixture);
-  assert.deepEqual(
-    writes.filter((filePath) => filePath.toLowerCase().endsWith(".manifest")).sort(),
-    fixture.manifestNames.map((name) => path.join(fixture.runnerRootDir, name)).sort()
-  );
+  const manifestWrites = writes.filter((filePath) => filePath.toLowerCase().endsWith(".manifest"));
+  // 首次复制在隔离目录普通写入清单，验证完成后才整体发布到运行目录。
+  assert.deepEqual(manifestWrites.map((filePath) => path.basename(filePath)).sort(), [...fixture.manifestNames].sort());
+  assert.equal(manifestWrites.every((filePath) => path.dirname(filePath).startsWith(`${fixture.runnerRootDir}.staging-`)), true);
   assert.equal(fs.readFileSync(path.join(fixture.runnerRootDir, "nested", "nested.manifest"), "utf8"), "nested fixture");
   assert.equal(fs.existsSync(path.join(fixture.runnerRootDir, "resources")), false);
 });
@@ -83,8 +83,9 @@ test("repairs stale and missing Windows manifests on cache hits without recopyin
   fs.writeFileSync(stalePath, "stale cached manifest");
   fs.utimesSync(stalePath, new Date("1999-01-01T00:00:00Z"), new Date("1999-01-01T00:00:00Z"));
   fs.unlinkSync(path.join(fixture.runnerRootDir, fixture.manifestNames[1]));
-  const cachedDllPath = path.join(fixture.runnerRootDir, "chrome_elf.dll");
-  fs.writeFileSync(cachedDllPath, "keep unrelated cached files");
+  const unrelatedPath = path.join(fixture.runnerRootDir, "extra-fixture.txt");
+  // 缓存命中应保留无关文件；损坏 DLL 现在会正确触发重建，不再用它模拟无关内容。
+  fs.writeFileSync(unrelatedPath, "keep unrelated cached files");
   const writes = trackOrdinaryWrites(t);
 
   assert.deepEqual(ensurePortableRuntimeCopy({ ...fixture, platform: "win32" }), { copied: false });
@@ -92,7 +93,7 @@ test("repairs stale and missing Windows manifests on cache hits without recopyin
   assertManifestsRefreshed(fixture);
   assert.deepEqual(writes.sort(), fixture.manifestNames.map((name) => path.join(fixture.runnerRootDir, name)).sort());
   assert.deepEqual(fs.readFileSync(fixture.markerPath), markerBefore);
-  assert.equal(fs.readFileSync(cachedDllPath, "utf8"), "keep unrelated cached files");
+  assert.equal(fs.readFileSync(unrelatedPath, "utf8"), "keep unrelated cached files");
 });
 
 test("leaves non-Windows manifest copying and cache reuse unchanged", (t) => {
@@ -101,12 +102,12 @@ test("leaves non-Windows manifest copying and cache reuse unchanged", (t) => {
   assert.deepEqual(ensurePortableRuntimeCopy({ ...fixture, platform: "linux" }), { copied: true });
   assert.deepEqual(writes.filter((filePath) => filePath.toLowerCase().endsWith(".manifest")), []);
   const cachedPath = path.join(fixture.runnerRootDir, fixture.manifestNames[0]);
-  fs.writeFileSync(cachedPath, "unchanged non-Windows cache");
+  const cachedBytes = fs.readFileSync(cachedPath);
   writes.length = 0;
 
   assert.deepEqual(ensurePortableRuntimeCopy({ ...fixture, platform: "linux" }), { copied: false });
   assert.deepEqual(writes, []);
-  assert.equal(fs.readFileSync(cachedPath, "utf8"), "unchanged non-Windows cache");
+  assert.deepEqual(fs.readFileSync(cachedPath), cachedBytes);
   for (const [name, snapshot] of fixture.sourceSnapshots) {
     assert.deepEqual(fs.readFileSync(path.join(fixture.layout.runtimeRoot, name)), snapshot.bytes);
   }

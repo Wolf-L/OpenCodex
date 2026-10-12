@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { prepareOfficialElectronRuntime } = require("../gateway/runner/index.cjs");
+const { runtimeBindingEnvironment } = require("../gateway/runtime/runtime-source-binding.cjs");
 const { linuxRuntimeArgs } = require("../gateway/runner/linux-runtime.cjs");
 const { createCompatibilityService } = require("../gateway/runtime/compatibility/service.cjs");
 const { runner: runnerPoints } = require("../gateway/runtime/modification/point-refs.cjs");
@@ -864,6 +865,8 @@ async function startGatewayOnce() {
       runtimeDir: paths.runtimeDir,
       officialBundleDir: paths.officialBundleDir,
       logger: appendLog,
+      autoScanUpgrade: officialAutoScanUpgrade,
+      rollbackPinned: skipOfficialScan,
     });
     gatewayState.officialRuntime = officialRuntime;
     writeRunnerCompatibilityReportSafely(paths, officialRuntime);
@@ -894,6 +897,8 @@ async function startGatewayOnce() {
     OPENCODEX_GATEWAY_ENTRY: paths.gatewayScriptPath,
     // Runner 在 Gateway 启动前已经完成构建，把适用点和平台关闭点的完整 Kernel 快照交给 Gateway。
     OPENCODEX_RUNNER_MODIFICATION_POINTS: JSON.stringify(officialRuntime.modificationPoints || []),
+    ...runtimeBindingEnvironment(officialRuntime.runtimeBinding),
+    OPENCODEX_OFFICIAL_ROLLBACK_PIN: skipOfficialScan ? "1" : "0",
     [PREFERRED_LANGUAGES_ENV]: preferredLanguagesEnvValue(),
     // runner 的 Info.plist 已经用 LSBackgroundOnly 隐藏；该标记让业务入口不要再调用 Dock API。
     OPENCODEX_GATEWAY_AGENT_MODE: "1",
