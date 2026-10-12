@@ -97,6 +97,22 @@ test("settings keep native horizontally scrollable categories and readable wrapp
   assert.match(css, /\[class~="@container\/settings-row"\] > :first-child\s*\{[^}]*flex: 1 1 100%;[^}]*overflow-wrap: anywhere/s);
 });
 
+test("chat drawer account spacing and column transforms never compress settings categories", () => {
+  // 设置沿用 112px 双行导航；不能再被聊天账户的 56px 底部留白挤成一行。
+  const drawerRules = [...css.matchAll(/([^{}]+)\{([^{}]+)\}/g)]
+    .filter((match) => match[1].includes("#app-shell-sidebar > div:has(> [data-app-navigation-rail])"));
+  assert.equal(drawerRules.length, 2);
+  for (const rule of drawerRules) assert.match(rule[1], /:not\(:has\(#settings-search\)\)/);
+  const columnRules = [...css.matchAll(/([^{}]+)\{([^{}]*flex-direction:\s*column !important[^{}]*)\}/g)]
+    .filter((match) => match[1].includes(".app-shell-left-panel"));
+  for (const rule of columnRules) {
+    for (const selector of rule[1].replace(/\/\*[\s\S]*?\*\//g, "").split(",")) {
+      assert.match(selector, /:not\(:has\(#settings-search\)\)/);
+    }
+  }
+  assert.match(css, /:has\(#settings-search\) \.app-shell-left-panel :has\(\[data-app-navigation-rail\]\)\s*\{[^}]*overflow: visible !important/s);
+});
+
 test("compact chat retains the native new-tab or show-tabs control after exiting full view", () => {
   // 同一 main 标记有不同原生动作，不能再全局当成分屏开关隐藏。
   assert.doesNotMatch(css, /\[data-app-shell-workspace-layout-toggle="main"\]\s*\{[^}]*display:\s*none/s);

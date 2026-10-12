@@ -24,6 +24,7 @@ const { OPENCODEX_VERSION_LABEL } = require("../../../shared/app-version.cjs");
 const { runtimeCompatibilityMessagesForLocale } = require("../../../shared/i18n/index.cjs");
 const { createHostModificationRuntime } = require("../modification/production-runtime.cjs");
 const { CUE_SOUNDS_TOKEN, patchDictationCueSounds } = require("./dictation-cue-sounds.cjs");
+const { MOBILE_NAVIGATION_TOKEN, patchMobileNavigationDefaults } = require("./mobile-navigation-defaults.cjs");
 
 const configuredPatchedAssetCacheMaxBytes = Number(
   process.env.CODEX_WEB_PATCHED_ASSET_CACHE_MAX_BYTES || 96 * 1024 * 1024
@@ -34,7 +35,7 @@ const PATCHED_ASSET_CACHE_MAX_BYTES = Math.max(
     ? configuredPatchedAssetCacheMaxBytes
     : 96 * 1024 * 1024
 );
-const PATCHED_ASSET_PATCH_REVISION = "14";
+const PATCHED_ASSET_PATCH_REVISION = "16";
 const ASYNC_PATCH_MIN_BYTES = 512 * 1024;
 const OFFICIAL_ASSET_PATCH_WORKER_IDLE_MS = 30_000;
 const OFFICIAL_ASSET_PATCH_WORKER_PATH = path.join(__dirname, "official-asset-patch-worker.cjs");
@@ -1557,6 +1558,7 @@ ${pluginGatewayStateBootstrapScript()}
       data.includes(APPLICATION_MENU_TOKEN) ||
       data.includes(APP_SERVER_REQUEST_CLIENT_DISPATCH_ERROR) ||
       data.includes(CUE_SOUNDS_TOKEN) ||
+      data.includes(MOBILE_NAVIGATION_TOKEN) ||
       (!loopback &&
         (data.includes(OPEN_IN_FOLDER_LOCALE_TOKEN) ||
           (data.includes("composerIconPath") && data.includes("read-file-binary"))))
@@ -1577,6 +1579,8 @@ ${pluginGatewayStateBootstrapScript()}
     patched = patchApplicationMenuCompatible(patched);
     patched = patchRequestSchedulingCompatible(patched);
     patched = patchCueSoundsCompatible(patched);
+    // 手机固定入口转回原生 Explore/置顶流程；双锚点匹配失败时保留完整官方导航。
+    patched = patchMobileNavigationDefaults(patched);
     if (!loopback) {
       patched = patchPluginImageCompatible(patched);
       patched = patchOpenInFolderLocaleCompatible(patched, options.downloadMessage || downloadFileMessage());

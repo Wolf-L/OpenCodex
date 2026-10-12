@@ -40,29 +40,29 @@
   }
 
   /* 导航与会话列表在同一抽屉上下排列；保留 React 原节点和原生滚动区。 */
-  .app-shell-left-panel:has([data-app-navigation-rail]),
-  .app-shell-left-panel :has([data-app-navigation-rail]) {
+  [data-app-shell-frame]:not(:has(#settings-search)) .app-shell-left-panel:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:not(:has(#settings-search)) .app-shell-left-panel :has([data-app-navigation-rail]) {
     contain: none !important;
     min-height: 0 !important;
   }
 
-  .app-shell-left-panel > div:has([data-app-navigation-rail]),
-  .app-shell-left-panel > div > div:has([data-app-navigation-rail]),
-  .app-shell-left-panel > div > div > div:has([data-app-navigation-rail]) {
+  [data-app-shell-frame]:not(:has(#settings-search)) .app-shell-left-panel > div:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:not(:has(#settings-search)) .app-shell-left-panel > div > div:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:not(:has(#settings-search)) .app-shell-left-panel > div > div > div:has([data-app-navigation-rail]) {
     width: 100% !important;
     min-width: 0 !important;
     flex-direction: column !important;
   }
 
   /* 当前官方壳在 sidebar 内还有一层横向 flex，需在真实兄弟节点这一层改为纵向。 */
-  #app-shell-sidebar > div:has(> [data-app-navigation-rail]) {
+  [data-app-shell-frame]:not(:has(#settings-search)) #app-shell-sidebar > div:has(> [data-app-navigation-rail]) {
     flex-direction: column !important;
     width: 100% !important;
     min-height: 0 !important;
     padding-bottom: 56px;
   }
 
-  #app-shell-sidebar > div:has(> [data-app-navigation-rail]) > .sidebar-navigation {
+  [data-app-shell-frame]:not(:has(#settings-search)) #app-shell-sidebar > div:has(> [data-app-navigation-rail]) > .sidebar-navigation {
     flex: 1 1 0% !important;
     min-height: 0 !important;
     width: 100% !important;
@@ -103,9 +103,24 @@
   [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel {
     bottom: auto !important;
     visibility: visible !important;
+    pointer-events: auto !important;
     height: var(--opencodex-phone-page-navigation-height);
     width: 100% !important;
     box-shadow: none !important;
+  }
+
+  /* 设置保留原来的搜索/分类双行导航，不能占用聊天抽屉的账户留白或裁切分类行。 */
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel :has([data-app-navigation-rail]) {
+    contain: none !important;
+    overflow: visible !important;
+  }
+
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel > div:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel > div > div:has([data-app-navigation-rail]),
+  [data-app-shell-frame]:has(#settings-search) .app-shell-left-panel > div > div > div:has([data-app-navigation-rail]) {
+    width: 100% !important;
+    min-width: 0 !important;
   }
 
   [data-app-shell-frame]:has(#settings-search) [data-app-shell-main-surface] {
