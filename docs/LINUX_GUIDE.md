@@ -2,7 +2,7 @@
 
 本文适用于 Linux `arm64` / `x64`，重点覆盖 **Kali GNU/Linux Rolling 2026.1、Linux 6.1.138-android14、aarch64**。这是 GNU/Linux 部署方案，不是 Android APK。该目标机尚未实测，不能把预检通过等同于设备兼容认证。
 
-更新日期：**2026-10-12（Asia/Shanghai）**。预编译安装包已[公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，下载不需要登录 GitHub。
+更新日期：**2026-10-12（Asia/Shanghai）**。预编译安装包已[公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache)，下载不需要登录 GitHub。
 
 | 使用场景 | 推荐入口 | 本机编译 |
 | --- | --- | --- |
@@ -44,6 +44,23 @@ bash /tmp/install-opencodex.sh &&
 - 有 X11 / KeX 时复用 `DISPLAY`，否则用带 xauth 的 `xvfb-run` 自动分配显示号；不使用 `-ac`。
 - 不要求 systemd、FUSE 或 AppImage；默认监听 `0.0.0.0:3737`，允许局域网访问，本机和远程访问都必须输入密码。
 - Linux x64 / ARM64 的 DEB、tar.gz 打包与原生双架构 CI；安装包下载、架构差异和配置目录见第 8 节。
+
+## 安卓已安装但关 VPN 白屏：更新与预热
+
+之前的缓存代码已经发布，但旧 Linux 包未创建启用配置，而且只识别 Windows 官方主程序。`enabled:false`、`reason:disabled`、`settingsReason:missing` 表示尚未启用，不能据此判断源码是否受支持。新版补齐了原厂 Linux `26.1007.21434` 主请求与 preauth Statsig 两条精确指纹适配。
+
+1. 在运行旧服务的终端按 Ctrl-C 停止，保持 VPN/网络可用。
+2. 重新执行本页开头的快捷安装命令。安装脚本会使用已核验的原厂运行时，保留账号、访问密码与旧安装目录，补建缺失的私有缓存设置；已有 `enabled:false` 或无效文件不会被覆盖。
+3. 打开主界面和个人资料，正常完成自身账号认证。查看 `/api/health`：`officialStartupCache.enabled` 和 `supported` 为 true，Linux `coverage.desktop`、`coverage.preauth` 为 true，`cache` / `preauthCache` 中出现实际写入或命中后，再关闭 VPN 刷新验证。
+
+如果此前主动关闭过缓存，明确重新启用：
+
+```bash
+"$HOME/.local/bin/opencodex-linux" cache enable
+"$HOME/.local/bin/opencodex-linux" start
+```
+
+该设置需要重启。只查设置可运行 `opencodex-linux cache status`，关闭用 `cache disable`；均不会修改账号或删除已有响应。`supported:true` 只代表某条路径已适配，Linux 仍需同时检查两个 coverage 字段。个人快照必须在安卓本机正常联网取得，不从 Windows 复制、不包含在 GitHub 包中。模型请求和登录续期仍按正常流程联网。用户修改过的社区运行时如果指纹不同，会明确回退原生请求，不保证离线；快捷安装使用固定原厂包避免此差异。
 
 ## 1. 源码部署：在 Kali 内确认用户空间
 
@@ -228,10 +245,10 @@ ssh -N -L 3737:127.0.0.1:3737 user@kali-host
 
 ### 8.1 下载并选择架构
 
-优先从 [公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152) 下载，无需 GitHub 账号。ARM64 图形 DEB：
+优先从 [公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache) 下载，无需 GitHub 账号。ARM64 图形 DEB：
 
 ```bash
-curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-c710152/OpenCodex-2.1.0-linux-arm64.deb
+curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-mobile-cache/OpenCodex-2.1.0-linux-arm64.deb
 sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
 ```
 
@@ -286,7 +303,7 @@ x64 使用 `OpenCodex-2.1.0-linux-x64.tar.gz`。这里只是不需要安装到�
 - Launcher 使用 Electron 的 `userData` 目录（Linux 通常是 `${XDG_CONFIG_HOME:-$HOME/.config}/OpenCodex`，以实际运行目录为准）；访问配置为其下 `runtime/config.yaml`，启动器设置为 `launcher-settings.json`。
 - 源码入口默认使用 `${XDG_STATE_HOME:-$HOME/.local/state}/opencodex`，与 Launcher 不是同一套路径。两种入口不要同时占用 3737 或操作同一 Codex 会话，也不要覆盖式合并配置。
 - 升级 DEB 时安装新的明确文件名；便携包解压到新目录再启动，不覆盖正在运行的目录。保留已有配置、账号和回滚包，不复制 Windows 的 Electron/ASAR 或缓存来替代 Linux 运行时。
-- 新包包含[永久启动响应缓存代码](OFFICIAL_STARTUP_CACHE.zh-CN.md)，但新机器**默认未启用、没有已保存响应**。当前适配针对已经核验的官方主进程源码指纹；Windows 实机的 8 条缓存和免 VPN 验收不代表 Linux 构建匹配或已预热。先查看 `/api/health` 的 `officialStartupCache.supported`，未知构建会回到原网络请求，不能承诺 Linux 免 VPN。
+- 新包包含[永久启动响应缓存代码](OFFICIAL_STARTUP_CACHE.zh-CN.md)，但新机器**默认未启用、没有已保存响应**。当前适配针对已经核验的官方主进程源码指纹；Windows 实机的 8 条缓存和免 VPN 验收不代表 Linux 构建匹配或已预热。先确认启用配置，再查看 `/api/health` 的 `officialStartupCache.coverage` 与实际写入/命中数。新版支持已核验的 Linux 主程序和 preauth；未知构建仍回到原网络请求。
 - 确认适配受支持后，如需固定快照，按缓存文档在**当前入口的 runtime 目录**显式启用并重启，首次正常联网保存真实响应；不保存登录续期或模型请求。私有目录、`~/.codex`、密码配置和响应正文均不要上传 GitHub。
 
 ### 8.5 自行构建（可选）

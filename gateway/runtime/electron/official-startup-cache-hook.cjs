@@ -8,6 +8,16 @@ const SOURCE_HASH = "52fdac56c2983fcf8daec34fb6f522f8ea9b60963e6154c044786c35979
 const FETCH_ANCHOR = "e=await this.options.applicationNetwork.fetch(u,t)";
 const CONTEXT_ANCHOR = "let e;if(o==null){let t={method:a,headers:r,body:E(),redirect:S==null?s:`error`,signal:p,credentials:h?`include`:`same-origin`};e=await this.options.applicationNetwork.fetch(u,t)}else e=await this.performProgressRequest";
 const BINDING = "__opencodexOfficialStartupCacheAdapterV1";
+const PREAUTH_ANCHOR = "createPreauthStatsigTransport(){let e=new AbortController,t,n=()=>{e.signal.aborted||e.abort()};return{fetch:async(r,i)=>{e.signal.throwIfAborted(),i?.signal?.throwIfAborted();let a=new Headers(i?.headers);if(this.disposed||!this.allowsPreauthStatsigRequest(r,i?.method??`GET`)||a.has(`authorization`)||a.has(`proxy-authorization`)||a.has(`cookie`))throw Error(`Pre-auth Statsig request is not allowed`);return t??(t=f.session.fromPartition(`codex-preauth-statsig-${(0,C.randomUUID)()}`,{cache:!1}),$n(t),this.preauthStatsigSessions.set(t,{signal:e.signal,dispose:n}),this.applyToSession(t)),t.fetch(r,{...i,credentials:`omit`,redirect:`error`,cache:`no-store`,referrerPolicy:`no-referrer`,signal:i?.signal==null?e.signal:AbortSignal.any([e.signal,i.signal])})},dispose:n}}";
+const PREAUTH_FETCH = "t.fetch(r,{...i,credentials:`omit`,redirect:`error`,cache:`no-store`,referrerPolicy:`no-referrer`,signal:i?.signal==null?e.signal:AbortSignal.any([e.signal,i.signal])})";
+// 每个入口只接受逐字核验过的官方文件；平台或版本号本身不能代替源码指纹。
+const SOURCES = Object.freeze([
+  { file: MAIN_FILE, hash: SOURCE_HASH, surface: "desktop" },
+  { file: "main-39FdJ_vp.js", hash: "78ffc19681d7605d0b48c8cbfdc185211a58d218c4512647de567519dd5ca3bc",
+    // 同一原厂文件经当前项目优化器处理后的完整指纹；不是放宽为只匹配局部锚点。
+    optimizedHash: "3f4f022ecb9fd0ee2f6fa7aa48c1411b627e20c97f8e4509654f7fce1102bf33", surface: "desktop" },
+  { file: "bootstrap-Du6FqCuH.js", hash: "7c8665efb642d0683d42bb0c2b4ac6c80bfd3c19eecd0fa0ee5a8a9934fa17c4", surface: "preauth" },
+]);
 const SETTINGS_REASONS = new Set(["enabled", "disabled", "missing", "invalid", "unreadable", "symlink", "non-regular", "oversize", "changed"]);
 
 function sourceHash(source) {
@@ -39,13 +49,14 @@ function identityPart(value) {
 function createOfficialStartupCacheHook(options = {}) {
   const loader = options.moduleLoader || Module;
   const readSource = options.readSource || ((filename) => fs.readFileSync(filename));
-  const expectedHash = options.expectedHash || SOURCE_HASH;
+  const sources = options.sources || (options.expectedHash ? [{ file: MAIN_FILE, hash: options.expectedHash, surface: "desktop" }] : SOURCES);
   const readSettings = options.readSettings || ((runtimeDir) => require("./official-startup-cache-settings.cjs").readOfficialStartupCacheSettings(runtimeDir));
   const createCache = options.createCache || ((settings) => require("./official-startup-response-cache.cjs").createOfficialStartupResponseCache(settings));
   const classify = options.classifyStartupRequest || ((...args) => require("./official-startup-cache-policy.cjs").classifyStartupRequest(...args));
   const adapterPath = path.resolve(options.adapterPath || __filename);
-  let engine = null;
-  let target = null;
+  const engines = { desktop: null, preauth: null };
+  const coverage = { desktop: false, preauth: false };
+  let targets = [];
   let originalExtension = null;
   let extension = null;
   let onHit = null;
@@ -55,9 +66,10 @@ function createOfficialStartupCacheHook(options = {}) {
   function status() {
     return {
       ...state,
-      // 本版本只适配桌面 Ude 路径；不能声称覆盖独立 session 的 preauth 或全部官方流量。
-      coverage: { desktop: state.supported, preauth: false },
-      cache: engine ? engine.status() : null,
+      // 两条原生网络通道分别报告覆盖和统计，桌面 cache 字段保持旧接口。
+      coverage: { ...coverage },
+      cache: engines.desktop ? engines.desktop.status() : null,
+      preauthCache: engines.preauth ? engines.preauth.status() : null,
     };
   }
 
@@ -83,54 +95,66 @@ function createOfficialStartupCacheHook(options = {}) {
       state.reason = "unsupported-loader";
       return installationResult();
     }
-    target = path.resolve(bundle.bundleDir, ".vite", "build", MAIN_FILE);
-    if (loader._cache?.[target]) { state.reason = "already-loaded"; return installationResult(); }
-    const buildId = `native-startup-v1:${identityPart(bundle.version)}:${identityPart(bundle.build)}:${expectedHash}`;
+    targets = sources.map((source) => ({ ...source, target: path.resolve(bundle.bundleDir, ".vite", "build", source.file) }));
+    // 测试源由调用方提供；生产入口先检查候选文件，未知官方布局不再永久显示 awaiting-source。
+    if (!options.readSource) targets = targets.filter((source) => fs.existsSync(source.target));
+    if (!targets.length) { state.reason = "unsupported-source-file"; return installationResult(); }
+    if (targets.some((source) => loader._cache?.[source.target])) { state.reason = "already-loaded"; return installationResult(); }
     originalExtension = loader._extensions[".js"];
     const previousExtension = originalExtension;
-    const targetPath = target;
     onHit = typeof callback === "function" ? callback : null;
     const hook = function opencodexOfficialStartupCacheExtension(module, filename) {
-      if (!state.installed || extension !== hook || path.resolve(filename) !== targetPath) return previousExtension.apply(this, arguments);
+      const sourceInfo = targets.find((source) => path.resolve(filename) === source.target);
+      if (!state.installed || extension !== hook || !sourceInfo) return previousExtension.apply(this, arguments);
+      const surface = sourceInfo.surface;
       let patched;
       let candidateEngine;
-      state.supported = false;
+      coverage[surface] = false;
       try {
-        // 磁盘源文件保持原样；完整指纹与唯一上下文必须同时匹配，未知版本直接交回 Node。
         const bytes = readSource(filename);
         const source = Buffer.isBuffer(bytes) ? bytes.toString("utf8") : String(bytes);
-        if (sourceHash(bytes) !== expectedHash) {
-          state.reason = "unsupported-source-hash";
-        } else if (source.split(CONTEXT_ANCHOR).length !== 2 || source.includes(BINDING)) {
-          state.reason = "unsupported-source-anchor";
-        } else {
-          const call = `e=await ${BINDING}.fetchDesktop(this.options.applicationNetwork,u,t,k,()=>this.getAppServerConnection(l.h).getCachedAuthenticatedPrincipal(),!h)`;
-          // 局部词法绑定不会改变文件的严格模式/顶层初始化顺序，也不改全局 fetch 或 Electron 导出。
-          const replacement = `const ${BINDING}=require(${JSON.stringify(adapterPath)});${CONTEXT_ANCHOR.replace(FETCH_ANCHOR, call)}`;
-          patched = source.replace(CONTEXT_ANCHOR, replacement);
-          candidateEngine = engine || createCache({ directory: settings.directory, buildId, enabled: true });
+        const actualHash = sourceHash(bytes);
+        const anchor = surface === "preauth" ? PREAUTH_ANCHOR : CONTEXT_ANCHOR;
+        // 磁盘源码不变；完整指纹与唯一词法上下文必须同时通过。
+        if (actualHash !== sourceInfo.hash && actualHash !== sourceInfo.optimizedHash) state.reason = "unsupported-source-hash";
+        else if (source.split(anchor).length !== 2 || source.includes(BINDING)) state.reason = "unsupported-source-anchor";
+        else {
+          const binding = `const ${BINDING}=require(${JSON.stringify(adapterPath)});`;
+          let replacement;
+          if (surface === "preauth") {
+            // 原生授权检查、临时 session 和组合取消信号保持原顺序，只替换最终 fetch。
+            replacement = anchor.replace("createPreauthStatsigTransport(){", `createPreauthStatsigTransport(){${binding}`)
+              .replace(PREAUTH_FETCH, `${BINDING}.fetchPreauth(this,t,r,${PREAUTH_FETCH.slice("t.fetch(r,".length, -1)})`);
+          } else {
+            const call = `e=await ${BINDING}.fetchDesktop(this.options.applicationNetwork,u,t,k,()=>this.getAppServerConnection(l.h).getCachedAuthenticatedPrincipal(),!h)`;
+            replacement = binding + anchor.replace(FETCH_ANCHOR, call);
+          }
+          patched = source.replace(anchor, replacement);
+          // Windows 原有 buildId 完全保留；preauth 使用独立指纹命名空间，绝不读取桌面账号快照。
+          const prefix = surface === "preauth" ? "native-preauth-startup-v1" : "native-startup-v1";
+          const buildId = `${prefix}:${identityPart(bundle.version)}:${identityPart(bundle.build)}:${actualHash}`;
+          const directory = surface === "preauth" ? path.join(settings.directory, "preauth") : settings.directory;
+          candidateEngine = engines[surface] || createCache({ directory, buildId, enabled: true });
           if (!candidateEngine || typeof candidateEngine.fetch !== "function" || typeof candidateEngine.status !== "function") throw new Error("Unsupported cache engine");
         }
-      } catch {
-        state.reason = "source-unavailable";
-        patched = null;
-      }
-      // 委托必须在捕获区外：原扩展抛错时不能被误判为适配失败后再次执行。
+      } catch { state.reason = "source-unavailable"; patched = null; }
       if (!patched) {
+        state.supported = coverage.desktop || coverage.preauth;
         emitState();
         return previousExtension.apply(this, arguments);
       }
-      engine = candidateEngine;
+      engines[surface] = candidateEngine;
+      coverage[surface] = true;
       state.supported = true;
       state.reason = "patched";
       state.patchCount += 1;
-      // 编译或官方初始化报错必须原样传播，不能再执行一次原模块造成重复副作用。
       try {
         const result = module._compile(patched, filename);
         emitState();
         return result;
       } catch (error) {
-        state.supported = false;
+        coverage[surface] = false;
+        state.supported = coverage.desktop || coverage.preauth;
         state.reason = "compile-failed";
         emitState();
         throw error;
@@ -150,7 +174,8 @@ function createOfficialStartupCacheHook(options = {}) {
 
   async function fetchDesktop(network, input, init, principal, getCurrentPrincipal, allowCache) {
     const upstream = (originalInput, originalInit) => network.fetch(originalInput, originalInit);
-    if (!state.installed || !state.supported || !state.enabled || !engine || !allowCache) return upstream(input, init);
+    const engine = engines.desktop;
+    if (!state.installed || !coverage.desktop || !state.enabled || !engine || !allowCache) return upstream(input, init);
     const expected = principalSnapshot(principal);
     let descriptor;
     try { descriptor = await classify(input, init, { namespace: "desktop", principal: expected }); } catch { return upstream(input, init); }
@@ -185,15 +210,49 @@ function createOfficialStartupCacheHook(options = {}) {
     return response;
   }
 
+  async function fetchPreauth(network, session, input, init) {
+    const upstream = (originalInput, originalInit) => session.fetch(originalInput, originalInit);
+    const engine = engines.preauth;
+    if (!state.installed || !coverage.preauth || !state.enabled || !engine) return upstream(input, init);
+    let descriptor;
+    try { descriptor = await classify(input, init, { namespace: "preauth", principal: null }); } catch { return upstream(input, init); }
+    if (!descriptor || descriptor.kind !== "statsig-initialize" || typeof network.allowsPreauthStatsigRequest !== "function") return upstream(input, init);
+    const validateContext = () => {
+      // init.signal 是原生 scope 与调用者信号的组合；销毁 session 后缓存也必须停止。
+      checkAbort(init?.signal);
+      const headers = new Headers(init?.headers);
+      if (network.disposed || !network.allowsPreauthStatsigRequest(input, init?.method ?? "GET") ||
+          headers.has("authorization") || headers.has("proxy-authorization") || headers.has("cookie")) {
+        throw new Error("Pre-auth Statsig request is not allowed");
+      }
+      descriptor.validateContext?.();
+    };
+    validateContext();
+    let calledUpstream = false;
+    const response = await engine.fetch({ ...descriptor, validateContext }, input, init, (originalInput, originalInit) => {
+      calledUpstream = true;
+      return upstream(originalInput, originalInit);
+    });
+    validateContext();
+    if (!calledUpstream && response?.headers?.get("x-opencodex-startup-cache") === "hit") {
+      state.hitCount += 1;
+      state.lastHitAt = new Date().toISOString();
+      try { onHit?.({ kind: descriptor.kind }); } catch { /* 诊断不干预原生 transport。 */ }
+    }
+    return response;
+  }
+
   function dispose() {
     state.installed = false;
     state.supported = false;
+    coverage.desktop = false;
+    coverage.preauth = false;
     state.reason = "disposed";
     if (extension && loader._extensions[".js"] === extension) loader._extensions[".js"] = originalExtension;
     return installationResult();
   }
 
-  return { install, status, fetchDesktop, dispose };
+  return { install, status, fetchDesktop, fetchPreauth, dispose };
 }
 
 const officialStartupCacheHook = createOfficialStartupCacheHook();
@@ -202,5 +261,6 @@ module.exports = {
   installOfficialStartupCacheHook: (options) => officialStartupCacheHook.install(options),
   officialStartupCacheStatus: () => officialStartupCacheHook.status(),
   fetchDesktop: (...args) => officialStartupCacheHook.fetchDesktop(...args),
-  __test: { createOfficialStartupCacheHook, CONTEXT_ANCHOR, FETCH_ANCHOR, BINDING, MAIN_FILE, SOURCE_HASH },
+  fetchPreauth: (...args) => officialStartupCacheHook.fetchPreauth(...args),
+  __test: { SOURCES, PREAUTH_ANCHOR, PREAUTH_FETCH, createOfficialStartupCacheHook, CONTEXT_ANCHOR, FETCH_ANCHOR, BINDING, MAIN_FILE, SOURCE_HASH },
 };

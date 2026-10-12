@@ -18,12 +18,10 @@ case "$(dpkg --print-architecture)" in
   arm64)
     arch=arm64
     runtime_sha=55fae1e3fb1d6069a90620e9e70737dcf8bf2255604d157e282cc6748a1baf49
-    app_sha=67e83027d5b1857da93e41cc6238898403c4e89b3d56421acc9e4cc040569671
     ;;
   amd64)
     arch=x64
     runtime_sha=276b5341c3d74b261d3ad52106f7fa7edde06841e4767fe2a40cb54099b1f3ed
-    app_sha=77062e0183b7edeae90b00369a6643afb6f6698d7f61111708656c145aa83103
     ;;
   *) printf '%s\n' '仅支持 arm64 / amd64 用户空间。' >&2; exit 1 ;;
 esac
@@ -48,9 +46,13 @@ mkdir -p "$HOME/.local/share/opencodex" "$HOME/.local/bin"
 install_dir="$(mktemp -d "$HOME/.local/share/opencodex/install-2.1.0.XXXXXX")"
 app_file="OpenCodex-2.1.0-linux-headless-$arch.tar.gz"
 runtime_file="chatgpt_26.1007.21434_$deb_arch.deb"
-release_base=https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-c710152
+release_base=https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-mobile-cache
 runtime_base=https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt
 curl --fail --location --retry 3 --proto '=https' "$release_base/$app_file" -o "$install_dir/$app_file"
+curl --fail --location --retry 3 --proto '=https' "$release_base/SHA256SUMS" -o "$install_dir/SHA256SUMS"
+# 精确选取当前架构的单个摘要，拒绝缺失、重复或非标准记录。
+app_sha="$(awk -v file="$app_file" '$2 == file {print $1}' "$install_dir/SHA256SUMS")"
+[[ "$app_sha" =~ ^[a-f0-9]{64}$ ]] || { printf '%s\n' 'Release 校验文件缺失或无效。' >&2; exit 1; }
 curl --fail --location --retry 3 --proto '=https' "$runtime_base/$runtime_file" -o "$install_dir/$runtime_file"
 (
   cd "$install_dir"
@@ -85,5 +87,7 @@ mv -f -- "$launcher_tmp" "$launcher"
 
 config_path="${CODEX_WEB_CONFIG_PATH:-${OPENCODEX_LINUX_DATA_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/opencodex}/config.yaml}"
 if [[ ! -e "$config_path" ]]; then "$launcher" init; fi
+# 部署入口按本分支的离线启动需求创建显式配置；不覆盖用户已关闭或无效的设置。
+"$launcher" cache enable --if-missing
 "$launcher" doctor
-printf '\n安装完成。启动：\n  %q start\n浏览器访问 http://127.0.0.1:3737\n' "$launcher"
+printf '\n安装完成。先保持 VPN/网络可用并启动：\n  %q start\n打开主界面和个人资料，确认 /api/health 中 desktop/preauth 覆盖及缓存写入后，再关闭 VPN 刷新验证。\n浏览器访问 http://127.0.0.1:3737\n' "$launcher"

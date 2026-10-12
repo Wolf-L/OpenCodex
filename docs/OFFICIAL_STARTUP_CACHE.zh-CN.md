@@ -1,6 +1,6 @@
 # 官方启动响应的本机永久快照
 
-这是显式启用的本机功能，默认关闭。首次正常联网取得成功响应后保存；相同账号、用户、设备和构建的请求后续优先读本地，不因时间过期、不后台刷新、不自动清理。VPN 开关不参与缓存选择。
+这是显式启用的本机功能，通用运行时默认关闭。Linux 快捷安装按本分支的部署需求补建缺失的启用设置；已有明确关闭或无效设置不覆盖。首次正常联网取得成功响应后保存；相同账号、用户、设备和构建的请求后续优先读本地，不因时间过期、不后台刷新、不自动清理。VPN 开关不参与缓存选择。
 
 ## 启用与存放位置
 
@@ -45,11 +45,11 @@
 
 ## 原生适配与诊断
 
-当前仅适配已核验的官方 `26.1007.2314.0` main 源码指纹，在内存中修改一个请求调用点。官方安装和抽取的源码文件保持原样；未知指纹/上下文放弃适配，使用原网络 transport。没有全局 fetch、代理、DNS、TLS 或认证绕过。
+当前适配已核验的 Windows 官方 `26.1007.2314.0` main，以及 Linux `26.1007.21434` main 与 bootstrap 精确源码指纹，在内存中修改有限请求调用点。Linux 同时识别原厂 main 和本项目优化器生成的已核验完整指纹。Windows 既有缓存构建键保持不变。官方安装和抽取的源码文件保持原样；未知指纹/上下文放弃适配，使用原网络 transport。没有全局 fetch、代理、DNS、TLS 或认证绕过。
 
-独立 preauth Statsig session 未适配；该版本 Windows 不运行这个初始化分支。原生配置要求读取、首次登录/续期及其它服务仍可能需要网络，所以不能把本功能描述为“全部官方网络请求永远离线”。
+Linux 独立 preauth Statsig session 已单独适配，仅允许公开 Statsig 初始化，其设备/targeting 和源码指纹构成独立缓存键，保留原生网络、销毁和组合取消检查；该版本 Windows 不运行这个初始化分支。原生配置要求读取、首次登录/续期及其它服务仍可能需要网络，所以不能把本功能描述为“全部官方网络请求永远离线”。
 
-`/api/health` 的 `officialStartupCache` 显示启用、源码匹配、固定接口家族命中/写入数等汇总，不含请求头、URL、账号标识或正文。兼容性修改点为 `gateway.runtime.network.startup-response-cache`；安装成功和真正缓存命中分开记录。
+`/api/health` 的 `officialStartupCache` 显示启用、源码匹配、desktop/preauth 分别覆盖和固定接口家族命中/写入数等汇总；`cache` 为桌面请求，`preauthCache` 为 Linux 启动前初始化，不含请求头、URL、账号标识或正文。兼容性修改点为 `gateway.runtime.network.startup-response-cache`；安装成功和真正缓存命中分开记录。
 
 ## 验证
 
@@ -66,3 +66,10 @@
 Statsig 初始化正文可能超过 7 MB。不能直接把完整字符串作为一个响应流块发送：旧消息编解码器的重复分组 Base64 正则可被这种大块触发 `RangeError: Maximum call stack size exceeded`，断开 AppHost 通道，使启动请求超时、账号订阅一直等待而呈现白屏。
 
 缓存命中现在按需输出至多 64 KiB 的独立缓冲区，遵守流背压与取消。消息解码器使用线性字符/padding 校验，保持原有严格 Base64 语法而不消耗递归匹配栈。不修改保存的响应正文、实验值或账号身份。
+
+
+### Linux 部署修复（2026-10-12）
+
+用户实机 health 确认旧部署 `enabled:false/settingsReason:missing`。同时核验原厂 Linux ASAR，发现文件名/指纹与 Windows 不同，且 Linux 执行单独 preauth Statsig 路径。新版同时补启用入口、两条精确适配和独立统计；没有修改原生账号存储选择或伪造实验结果。
+
+Linux 先保持正常联网打开主界面、个人资料；检查 enabled=true，coverage.desktop=true，coverage.preauth=true 及实际写入/命中，再关 VPN 刷新。Windows 的 8 条已保存响应不是 Linux 部署的预置数据。目标 Android 设备的最终离线验收仍需在更新后完成。

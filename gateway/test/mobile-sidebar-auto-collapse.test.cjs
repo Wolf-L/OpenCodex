@@ -17,6 +17,7 @@ function createElement(tagName, initialAttributes = {}) {
     nodeType: 1,
     parentElement: null,
     disabled: false,
+    isConnected: true,
     style: {},
     appendChild(child) {
       child.parentElement = element;
@@ -34,6 +35,12 @@ function createElement(tagName, initialAttributes = {}) {
     },
     getAttribute(name) {
       return attributes.has(name) ? attributes.get(name) : null;
+    },
+    hasAttribute(name) {
+      return attributes.has(name);
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
     },
     getBoundingClientRect() {
       return { width: 240, height: 40 };
@@ -68,13 +75,14 @@ function createElement(tagName, initialAttributes = {}) {
   return element;
 }
 
-function createHarness(iconPath) {
+function createHarness(iconPath, promotions = []) {
   const listeners = new Map();
   const timers = new Map();
   let nextTimerId = 1;
   let toggleClickCount = 0;
   let fallbackMessageCount = 0;
   let registeredPlugin = null;
+  let promotionObserver = null;
 
   const panel = createElement("div");
   const scroll = createElement("div", { "data-app-action-sidebar-scroll": "" });
@@ -100,6 +108,7 @@ function createHarness(iconPath) {
       return null;
     },
     querySelectorAll(selector) {
+      if (selector.startsWith("header[data-app-shell-titlebar]")) return promotions;
       return selector === "button" ? [newTaskButton, toggleButton] : [];
     },
     removeEventListener(type, handler) {
@@ -129,6 +138,12 @@ function createHarness(iconPath) {
     },
   };
   window.__OpenCodexAdapterHost = {
+    dom: {
+      observe({ callback }) {
+        promotionObserver = callback;
+        return () => { promotionObserver = null; };
+      },
+    },
     events: {
       observe({ type, capture = false, callback }) {
         listeners.set(type, { capture, handler: callback });
@@ -149,6 +164,12 @@ function createHarness(iconPath) {
   });
 
   return {
+    notifyMutation() {
+      promotionObserver?.();
+    },
+    clickDestination(target) {
+      listeners.get("click").handler({ button: 0, target });
+    },
     appendSidebarChild(element) {
       scroll.appendChild(element);
     },
@@ -231,4 +252,44 @@ test("mobile sidebar keeps touch scrolling out of the official thread drag senso
   assert.equal(harness.pointerDown(threadRow, "mouse"), 0);
   assert.equal(harness.pointerDown(unrelated, "touch"), 0);
   harness.dispose();
+});
+
+test("mobile promotion markers target only Plus and quota cards and recover when the card becomes an error", () => {
+  const plus = createElement("button");
+  plus.textContent = "获取 Plus";
+  const ordinary = createElement("button");
+  ordinary.textContent = "重新登录";
+  const quota = createElement("aside");
+  const title = createElement("h3");
+  title.textContent = "Codex 和工作使用额度已用完";
+  quota.appendChild(title);
+  const error = createElement("aside");
+  const errorTitle = createElement("h3");
+  errorTitle.textContent = "无法连接服务";
+  error.appendChild(errorTitle);
+  const harness = createHarness("M0 unrelated", [plus, ordinary, quota, error]);
+  const marker = "data-opencodex-mobile-promotion";
+  assert.equal(plus.getAttribute(marker), "true");
+  assert.equal(quota.getAttribute(marker), "true");
+  assert.equal(ordinary.getAttribute(marker), null);
+  assert.equal(error.getAttribute(marker), null);
+  // React 可能复用同一 aside：文案变为实际故障后必须立即解除隐藏。
+  title.textContent = "认证已过期";
+  harness.notifyMutation();
+  harness.flushTimers();
+  assert.equal(quota.getAttribute(marker), null);
+  harness.dispose();
+  assert.equal(plus.getAttribute(marker), null);
+});
+
+test("mobile destination selection collapses drawer but leaves account and Explore menus open", () => {
+  for (const menu of [false, true]) {
+    const harness = createHarness("M0 unrelated");
+    const button = createElement("button", menu ? { "aria-haspopup": "menu" } : {});
+    const target = { closest: (selector) => selector === "[data-app-navigation-rail] button" ? button : null };
+    harness.clickDestination(target);
+    harness.flushTimers();
+    assert.equal(harness.toggleClickCount(), menu ? 0 : 1);
+    harness.dispose();
+  }
 });

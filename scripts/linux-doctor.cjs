@@ -69,6 +69,11 @@ function collectDiagnostics({
   if (!["127.0.0.1", "::1", "localhost"].includes(env.HOST)) add("remote-listen", "warn", "已允许网络访问；0.0.0.0 会监听所有 IPv4 网卡，不只局域网。必须保留访问密码，并用防火墙限制可信网段；不要直接暴露公网，需要时使用 HTTPS/VPN 或 SSH 隧道");
   const auth = inspectAuthConfig(env.CODEX_WEB_CONFIG_PATH, { checkMode: platform === "linux" });
   add("auth", auth.ok ? "ok" : "error", auth.message);
+  // 配置缺失与官方指纹不支持是不同原因；先明确提示是否启用，避免把无缓存当作离线能力。
+  const startupCache = require("../gateway/runtime/electron/official-startup-cache-settings.cjs").readOfficialStartupCacheSettings(env.CODEX_WEB_RUNTIME_DIR);
+  add("startup-cache", startupCache.enabled ? "info" : "warn", startupCache.enabled
+    ? "启动缓存已启用；请在联网预热后通过 /api/health 确认 supported、coverage 和实际命中"
+    : `启动缓存未启用（${startupCache.reason}）；需要时运行 opencodex cache enable，重启并联网预热`);
   for (const key of ["CODEX_WEB_RUNTIME_DIR", "CODEX_WEB_REPORTS_DIR", "CODEX_WEB_OFFICIAL_BUNDLE_DIR", "CODEX_WEB_OFFICIAL_USER_DATA_DIR"]) {
     add(key, writableAncestor(env[key]) ? "ok" : "error", `${key}：${env[key]}`);
     if (/^\/(sdcard|storage|mnt\/media_rw)(\/|$)/.test(env[key])) add(`${key}-storage`, "warn", "不要使用 Android 共享存储：可能 noexec、不支持所需权限或符号链接");

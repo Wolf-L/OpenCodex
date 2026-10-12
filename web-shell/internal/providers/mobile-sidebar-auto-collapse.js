@@ -18,6 +18,16 @@
   // 官方不同版本使用过两套“新建任务”图标，需同时兼容，避免上游换图标后点击失效。
   const SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIXES = ["M2.6687 11.333", "M6.33325 1.88379"];
   const NEW_CONVERSATION_MESSAGE_TYPES = new Set(["new-chat", "new-quick-chat"]);
+  const PROMOTION_ATTRIBUTE = "data-opencodex-mobile-promotion";
+  const PROMOTION_SELECTOR = "header[data-app-shell-titlebar] button, [class~='group/home-composer-layout'] aside[role='status']";
+
+  function isMobilePromotion(element) {
+    // 只检查官方顶栏与首页额度卡片，避免把聊天正文或其他故障提示误当作推广。
+    const text = String(element.textContent || "").replace(/\s+/g, " ").trim();
+    if (element.matches("button")) return /^(?:获取\s*Plus|Get Plus)$/i.test(text);
+    const title = String(element.querySelector("h3")?.textContent || "").replace(/\s+/g, " ").trim();
+    return /^(?:Codex\s*和工作使用额度已用完|You've (?:hit|reached) (?:your )?Codex and Work (?:usage )?limit|You're out of Codex and Work usage)[.!。]?$/i.test(title);
+  }
 
   function visibleElement(element) {
     if (!element || typeof element.getBoundingClientRect !== "function") return false;
@@ -174,8 +184,38 @@
       document.__opencodexMobileSidebarPluginInstalled = true;
 
       let collapseTimer = null;
+      let promotionTimer = null;
+      const markedPromotions = new Set();
       const isEnabled = () => context.plugin.isEnabled();
       const isMobile = () => !!context.platform.isMobile();
+
+      const updatePromotions = () => {
+        promotionTimer = null;
+        for (const element of markedPromotions) {
+          if (!isEnabled() || !element.isConnected || !isMobilePromotion(element)) {
+            element.removeAttribute(PROMOTION_ATTRIBUTE);
+            markedPromotions.delete(element);
+          }
+        }
+        if (!isEnabled()) return;
+        for (const element of document.querySelectorAll(PROMOTION_SELECTOR)) {
+          if (!isMobilePromotion(element) || markedPromotions.has(element)) continue;
+          element.setAttribute(PROMOTION_ATTRIBUTE, "true");
+          markedPromotions.add(element);
+        }
+      };
+      const schedulePromotions = () => {
+        // DOM 更新合并为一轮检查；不读取账户数据，也不拦截请求或更改额度限制。
+        if (promotionTimer !== null) return;
+        promotionTimer = scheduler.setTimeout(updatePromotions, 80);
+      };
+      const disposePromotionObservation = adapterHost.dom?.observe?.({
+        key: {},
+        root: document.documentElement,
+        options: { childList: true, subtree: true, characterData: true },
+        callback: schedulePromotions,
+      });
+      updatePromotions();
 
       const collapseAfterSelection = () => {
         if (collapseTimer) scheduler.clearTimeout(collapseTimer);
@@ -198,7 +238,10 @@
         if (!isEnabled() || !isMobile()) return;
         if (event.defaultPrevented || event.button > 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        if (!sidebarConversationRowFromTarget(event.target) && !sidebarNewConversationButtonFromTarget(event.target)) {
+        const destination = event.target?.closest?.("[data-app-navigation-rail] button");
+        // 功能入口选中后回到正文；账户和“更多”原生菜单保持展开供用户继续操作。
+        const selectedDestination = destination && !destination.disabled && !destination.hasAttribute("aria-haspopup");
+        if (!selectedDestination && !sidebarConversationRowFromTarget(event.target) && !sidebarNewConversationButtonFromTarget(event.target)) {
           return;
         }
         collapseAfterSelection();
@@ -232,6 +275,10 @@
 
       return () => {
         if (collapseTimer) scheduler.clearTimeout(collapseTimer);
+        if (promotionTimer !== null) scheduler.clearTimeout(promotionTimer);
+        disposePromotionObservation?.();
+        for (const element of markedPromotions) element.removeAttribute(PROMOTION_ATTRIBUTE);
+        markedPromotions.clear();
         disposeViewMessage();
         disposeClick();
         disposePointerDown();

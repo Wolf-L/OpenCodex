@@ -2,7 +2,7 @@
 
 This guide covers Linux `arm64` and `x64`, with particular attention to **Kali GNU/Linux Rolling 2026.1, Linux 6.1.138-android14, aarch64**. This is a GNU/Linux deployment, not an Android APK. The target device has **not** been tested; a successful preflight is not device compatibility certification.
 
-Updated **2026-10-12 (Asia/Shanghai)**. [Public prebuilt release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152); no GitHub login is needed to download it.
+Updated **2026-10-12 (Asia/Shanghai)**. [Public prebuilt release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache); no GitHub login is needed to download it.
 
 | Environment | Recommended path | Local compilation |
 | --- | --- | --- |
@@ -44,6 +44,14 @@ For local access only, use `HOST=127.0.0.1 "$HOME/.local/bin/opencodex-linux" st
 - Reuse of an existing X11/KeX `DISPLAY`, or automatic display allocation through `xvfb-run` with xauth. No `-ac` access-control bypass.
 - No systemd, FUSE, or AppImage requirement. Default listen address: `0.0.0.0:3737`, allowing LAN access; both local and remote access require a password.
 - x64/ARM64 DEB and tar.gz packaging with native CI for both architectures; see section 8 for downloads, architecture naming, and configuration paths.
+
+## Updating Android installations that go blank without VPN
+
+The earlier package contained the cache code, but did not create its opt-in setting and recognized only the Windows main source. `enabled:false`, `reason:disabled`, `settingsReason:missing` means caching is not enabled; it is not a source-compatibility determination. This release adds exact source support for Linux `26.1007.21434` desktop requests and preauth Statsig initialization.
+
+Stop the old foreground service with Ctrl-C, keep working network access, and rerun quick install above. The installer preserves accounts, Web passwords and old installation directories, uses the verified vendor runtime, and creates missing cache settings. Existing disabled or invalid settings are preserved. Open the main page and profile and complete normal authentication. Before testing with VPN off, check `/api/health`: enabled/supported and both Linux coverage.desktop/coverage.preauth must be true, with actual writes or hits in cache/preauthCache.
+
+To explicitly re-enable a previously disabled cache, run `"$HOME/.local/bin/opencodex-linux" cache enable` and restart the service. `cache status` only reads settings; `cache disable` preserves saved responses. `supported:true` alone means at least one path is supported, so check both coverage flags on Linux. Personal responses must be warmed on this device and are never shipped with releases. Model calls and authentication renewal still use their normal network paths. Modified community runtimes with unknown fingerprints retain native transport; quick install uses a fixed vendor package to avoid that difference.
 
 ## 1. Source Deployment: Check the Kali Userspace
 
@@ -222,10 +230,10 @@ Then open `http://127.0.0.1:3737` on the accessing device. The scripts do not in
 
 ### 8.1 Download and select the architecture
 
-Prefer the [public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152), which requires no GitHub account. For the ARM64 graphical DEB:
+Prefer the [public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache), which requires no GitHub account. For the ARM64 graphical DEB:
 
 ```bash
-curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-c710152/OpenCodex-2.1.0-linux-arm64.deb
+curl -fLO https://github.com/Wolf-L/OpenCodex/releases/download/linux-2.1.0-mobile-cache/OpenCodex-2.1.0-linux-arm64.deb
 sudo apt install ./OpenCodex-2.1.0-linux-arm64.deb
 ```
 

@@ -50,7 +50,7 @@ OpenCodex 是一个 Codex 桌面运行时中间层，同时兼容旧版 Codex De
 
 下载安装：
 
-Linux 使用[本分支公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，无需登录 GitHub。Windows/macOS 上游下载渠道：
+Linux 使用[本分支公开 Release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache)，无需登录 GitHub。Windows/macOS 上游下载渠道：
 - [Release](https://github.com/RyensX/OpenCodex/releases): 正式版本，较为稳定，推荐使用
 - [Artifacts](https://github.com/RyensX/OpenCodex/actions): 测试版本，push 时 CI 自动打包，可用于尝鲜新功能。注意下载Artifacts需要登录Github
 
@@ -120,7 +120,7 @@ http://127.0.0.1:3737
 
 ### Linux使用
 
-[Linux ARM64 / x64 预编译包已公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152)，下载无需登录 GitHub。Android 内核上的 Kali 无桌面部署，直接安装现成无头包和完整桌面运行时，**不需要 pnpm 或源码编译**：
+[Linux ARM64 / x64 预编译包已公开发布](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache)，下载无需登录 GitHub。Android 内核上的 Kali 无桌面部署，直接安装现成无头包和完整桌面运行时，**不需要 pnpm 或源码编译**：
 
 ```bash
 curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&

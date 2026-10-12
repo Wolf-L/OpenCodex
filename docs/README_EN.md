@@ -51,7 +51,7 @@ Compared with the official option, OpenCodex still has advantages in several usa
 
 Download and install:
 
-Linux packages are available from [this fork’s public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152). Windows/macOS upstream downloads remain available below:
+Linux packages are available from [this fork’s public release](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache). Windows/macOS upstream downloads remain available below:
 
 - [Releases](https://github.com/RyensX/OpenCodex/releases): Stable official versions; recommended.
 - [Artifacts](https://github.com/RyensX/OpenCodex/actions): Test builds automatically packaged by CI on each push for trying new features. Downloading Artifacts requires signing in to GitHub.
@@ -125,7 +125,7 @@ http://127.0.0.1:3737
 
 ### Linux Usage
 
-[Download prebuilt Linux ARM64 / x64 packages](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-c710152) without a GitHub login. For Android-kernel Kali without KeX, this installer downloads the compiled headless package and the complete desktop runtime, with no pnpm or source compilation:
+[Download prebuilt Linux ARM64 / x64 packages](https://github.com/Wolf-L/OpenCodex/releases/tag/linux-2.1.0-mobile-cache) without a GitHub login. For Android-kernel Kali without KeX, this installer downloads the compiled headless package and the complete desktop runtime, with no pnpm or source compilation:
 
 ```bash
 curl -fL https://raw.githubusercontent.com/Wolf-L/OpenCodex/main/docs/install-linux.sh -o /tmp/install-opencodex.sh &&

@@ -17,6 +17,43 @@ const post = (body) => ({ method: "POST", body: JSON.stringify(body) });
 const classify = (url, init = {}, ctx = context) => classifyStartupRequest(url, init, ctx);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 
+test("preauth initializes only public SDK and partitions device, platform, targeting and desktop", () => {
+  const preauth = { namespace: "preauth", principal: null };
+  const body = { user: { customIDs: { stableID: "device-one" }, appVersion: "26.1007", custom: { platform: "linux" } }, hash: "djb2" };
+  const candidate = classify(sdkUrl, post(body), preauth);
+  assert.equal(candidate.kind, "statsig-initialize");
+  assert.equal(candidate.keyParts.namespace, "preauth");
+  assert.notDeepEqual(candidate.keyParts, classify(sdkUrl, post(body), { namespace: "desktop", principal: null }).keyParts);
+  for (const changed of [
+    { ...body, user: { ...body.user, customIDs: { stableID: "another-device" } } },
+    { ...body, user: { ...body.user, appVersion: "next-version" } },
+    { ...body, user: { ...body.user, custom: { platform: "darwin" } } },
+    { ...body, unknownTargeting: "retained" },
+  ]) assert.notDeepEqual(candidate.keyParts, classify(sdkUrl, post(changed), preauth).keyParts);
+  for (const url of ["https://chatgpt.com/backend-api/me", "https://chatgpt.com/backend-api/wham/accounts/check", bootstrapUrl]) {
+    assert.equal(classify(url, {}, { namespace: "preauth", principal }), null);
+    assert.equal(classify(url, post(bootstrap), { namespace: "preauth", principal }), null);
+  }
+  for (const key of ["authorization", "proxy-authorization", "cookie"]) {
+    assert.equal(classify(sdkUrl, { ...post(body), headers: { [key]: "synthetic" } }, preauth), null);
+  }
+});
+
+test("preauth genuine snapshot survives restart and cannot satisfy a desktop lookup", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "startup-preauth-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const init = post(sdk);
+  const descriptor = classify(sdkUrl, init, { namespace: "preauth", principal: null });
+  const saved = JSON.stringify(evaluation);
+  const first = createOfficialStartupResponseCache({ directory, enabled: true, buildId: "synthetic-preauth" });
+  await first.fetch(descriptor, sdkUrl, init, async () => new Response(saved, { headers: { "content-type": "application/json" } }));
+  const restarted = createOfficialStartupResponseCache({ directory, enabled: true, buildId: "synthetic-preauth" });
+  const response = await restarted.fetch(descriptor, sdkUrl, init, async () => { throw new Error("offline"); });
+  assert.equal(await response.text(), saved);
+  assert.equal(response.headers.get("x-opencodex-startup-cache"), "hit");
+  await assert.rejects(restarted.fetch(classify(sdkUrl, init, { namespace: "desktop", principal: null }), sdkUrl, init, async () => { throw new Error("desktop must use its own source"); }), /desktop must/);
+});
+
 test("only reviewed startup GETs and read-only bootstrap POSTs are candidates", () => {
   for (const [pathname, kind] of [
     ["/wham/accounts/check", "accounts"], ["/accounts/check/v4-2023-04-27", "accounts"],

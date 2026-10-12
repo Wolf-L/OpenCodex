@@ -81,13 +81,14 @@ function classifyStartupRequest(input, init = {}, context = {}) {
     const method = String(init.method ?? input?.method ?? "GET").toUpperCase();
     const headers = new Headers(init.headers ?? input?.headers);
     const principal = stablePrincipal(context.principal);
-    const namespace = context.namespace === "desktop" ? "desktop" : null;
+    const namespace = ["desktop", "preauth"].includes(context.namespace) ? context.namespace : null;
     if (!namespace) return null;
     const base = { namespace, principal, method, url: url.href, variants: variantHeaders(headers) };
 
     if (ACCOUNT_ORIGINS.has(url.origin)) {
       // 只有原生层确认了账户和用户两个维度，才允许复用账户/工作区响应；不从 bearer 自行推导身份。
-      if (!principal) return null;
+      // preauth 只允许公开设备初始化，不得读取任何账号或用户资料。
+      if (namespace !== "desktop" || !principal) return null;
       let kind = null;
       if (method === "GET" && ["/backend-api/wham/accounts/check", "/backend-api/accounts/check/v4-2023-04-27"].includes(url.pathname)) kind = "accounts";
       if (method === "GET" && ["/backend-api/me", "/backend-api/profiles/me"].includes(url.pathname)) kind = "account-profile";

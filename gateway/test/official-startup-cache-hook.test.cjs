@@ -3,7 +3,8 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const { __test: { createOfficialStartupCacheHook, CONTEXT_ANCHOR, FETCH_ANCHOR, BINDING, MAIN_FILE } } = require("../runtime/electron/official-startup-cache-hook.cjs");
+const fs = require("node:fs");
+const { __test: { createOfficialStartupCacheHook, CONTEXT_ANCHOR, FETCH_ANCHOR, BINDING, MAIN_FILE, SOURCES, PREAUTH_ANCHOR } } = require("../runtime/electron/official-startup-cache-hook.cjs");
 
 const principal = { accountId: "synthetic-account", userId: "synthetic-user" };
 const fixture = `"use strict";exports.fetch=async function(context){const {o,a,r,E,S,s,p,h,u,k,l}=context;${CONTEXT_ANCHOR}(u);return e;};`;
@@ -12,7 +13,7 @@ const hit = () => new Response('{"saved":true}', { headers: { "content-type": "a
 
 function harness(options = {}) {
   const bundle = { bundleDir: path.resolve("synthetic-official-bundle"), version: "test-version", build: "test-build" };
-  const target = path.join(bundle.bundleDir, ".vite", "build", MAIN_FILE);
+  const target = path.join(bundle.bundleDir, ".vite", "build", options.sourceFile || MAIN_FILE);
   const delegated = [];
   const compiled = [];
   const source = options.source ?? fixture;
@@ -24,6 +25,7 @@ function harness(options = {}) {
   const engine = options.engine || { async fetch(descriptor) { descriptor.validateContext(); return hit(); }, status: () => ({ hits: 0 }) };
   const hook = createOfficialStartupCacheHook({
     moduleLoader: loader,
+    sources: options.sources,
     readSource: options.readSource || (() => { sourceReads += 1; return Buffer.from(source); }),
     expectedHash: options.expectedHash || digest(source),
     adapterPath: path.resolve('synthetic " quoted adapter.cjs'),
@@ -310,4 +312,180 @@ test("state observers report delayed acceptance and rejections without affecting
   assert.equal(states.at(-1).reason, "disabled");
   assert.equal(JSON.stringify(states).includes("synthetic compile error"), false);
   assert.equal(JSON.stringify(states).includes(supported.target), false);
+});
+
+const preauthFixture = `"use strict";exports.Network=class {${PREAUTH_ANCHOR}};`;
+function preauthHarness(options = {}) {
+  const source = options.source || preauthFixture;
+  const sourceFile = "synthetic-preauth.js";
+  return harness({ ...options, source, sourceFile,
+    sources: [{ file: sourceFile, hash: options.expectedHash || digest(source), surface: "preauth" }],
+    classify: options.classify || (() => ({ kind: "statsig-initialize", keyParts: { namespace: "preauth" } })),
+  });
+}
+
+function preauthTransport() {
+  const calls = [];
+  const network = { disposed: false, allowsPreauthStatsigRequest: () => true };
+  const session = { fetch(input, init) { calls.push({ receiver: this, input, init }); return Promise.resolve(new Response("upstream")); } };
+  return { network, session, calls };
+}
+
+test("preauth synthetic patch preserves native session, request options and combined cancellation", async () => {
+  const { session, calls } = preauthTransport();
+  const h = preauthHarness({ engine: { status: () => ({}), fetch: (descriptor, input, init, upstream) => upstream(input, init) } });
+  h.install();
+  const exports = {};
+  const partitions = [];
+  h.load(h.target, { _compile(code) {
+    // 只执行合成类及假 session；真实官方源码只在下方做语法检查。
+    vm.runInNewContext(code, { exports, require: () => h.hook, Headers, AbortController, AbortSignal,
+      f: { session: { fromPartition(...args) { partitions.push(args); return session; } } },
+      C: { randomUUID: () => "synthetic-session" }, $n() {},
+    });
+  } });
+  const network = new exports.Network();
+  network.disposed = false;
+  network.preauthStatsigSessions = new Map();
+  network.allowsPreauthStatsigRequest = () => true;
+  network.applyToSession = (value) => assert.equal(value, session);
+  const native = network.createPreauthStatsigTransport();
+  const caller = new AbortController();
+  const init = { method: "POST", signal: caller.signal, body: "synthetic body", credentials: "include" };
+  await native.fetch("https://ab.chatgpt.com/v1/initialize", init);
+  assert.equal(partitions.length, 1);
+  assert.equal(calls[0].receiver, session);
+  assert.equal(calls[0].init.body, init.body);
+  assert.equal(calls[0].init.credentials, "omit");
+  assert.equal(calls[0].init.redirect, "error");
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.referrerPolicy, "no-referrer");
+  assert.notEqual(calls[0].init.signal, caller.signal);
+  native.dispose();
+  assert.equal(calls[0].init.signal.aborted, true);
+  await assert.rejects(native.fetch("https://ab.chatgpt.com/v1/initialize", init), { name: "AbortError" });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(h.hook.status().coverage, { desktop: false, preauth: true });
+  assert.equal(h.hook.status().cache, null);
+  assert.notEqual(h.hook.status().preauthCache, null);
+});
+
+test("preauth revalidates disposal, native policy, secrets and combined abort during cache lookup", async () => {
+  for (const change of ["disposed", "policy", "authorization", "proxy-authorization", "cookie", "caller-abort", "scope-abort"]) {
+    const { network, session, calls } = preauthTransport();
+    const caller = new AbortController();
+    const scope = new AbortController();
+    const init = { method: "POST", headers: new Headers(), signal: AbortSignal.any([caller.signal, scope.signal]) };
+    const h = preauthHarness({ engine: { status: () => ({}), async fetch(descriptor) {
+      descriptor.validateContext();
+      await Promise.resolve();
+      if (change === "disposed") network.disposed = true;
+      else if (change === "policy") network.allowsPreauthStatsigRequest = () => false;
+      else if (change === "caller-abort") caller.abort();
+      else if (change === "scope-abort") scope.abort();
+      else init.headers.set(change, "synthetic");
+      descriptor.validateContext();
+      return hit();
+    } } });
+    h.activate();
+    await assert.rejects(h.hook.fetchPreauth(network, session, "https://ab.chatgpt.com/v1/initialize", init));
+    assert.equal(calls.length, 0);
+    assert.equal(h.hook.status().hitCount, 0);
+  }
+});
+
+test("preauth cache hits use an isolated source namespace and report only aggregate events", async () => {
+  let settings;
+  const events = [];
+  const h = preauthHarness({ onCreateCache: (value) => { settings = value; } });
+  h.activate({ onHit: (value) => events.push(value) });
+  const { network, session, calls } = preauthTransport();
+  await h.hook.fetchPreauth(network, session, "https://ab.chatgpt.com/v1/initialize", { method: "POST" });
+  assert.equal(settings.buildId, `native-preauth-startup-v1:test-version:test-build:${digest(preauthFixture)}`);
+  assert.equal(settings.directory, path.resolve("synthetic-private-cache", "preauth"));
+  assert.equal(calls.length, 0);
+  assert.equal(h.hook.status().hitCount, 1);
+  assert.deepEqual(events, [{ kind: "statsig-initialize" }]);
+  h.hook.dispose();
+  assert.deepEqual(h.hook.status().coverage, { desktop: false, preauth: false });
+});
+
+test("a rejected second surface cannot disable an already verified desktop adapter", async () => {
+  const bundle = { bundleDir: path.resolve("synthetic-multi-bundle"), version: "test", build: "test" };
+  const loader = { _extensions: { ".js"() { return "native"; } }, _cache: {} };
+  const desktopFile = path.join(bundle.bundleDir, ".vite", "build", MAIN_FILE);
+  const preauthFile = path.join(bundle.bundleDir, ".vite", "build", "synthetic-preauth.js");
+  const hook = createOfficialStartupCacheHook({
+    moduleLoader: loader,
+    sources: [{ file: MAIN_FILE, hash: digest(fixture), surface: "desktop" }, { file: "synthetic-preauth.js", hash: "0".repeat(64), surface: "preauth" }],
+    readSource: (file) => file === desktopFile ? fixture : preauthFixture,
+    readSettings: () => ({ enabled: true, reason: "enabled", directory: "synthetic" }),
+    createCache: () => ({ status: () => ({}), fetch: async () => hit() }),
+    classifyStartupRequest: () => ({ kind: "accounts" }),
+  });
+  hook.install({ bundle });
+  loader._extensions[".js"]({ _compile() {} }, desktopFile);
+  assert.equal(loader._extensions[".js"]({ _compile() { assert.fail("unknown source compiled"); } }, preauthFile), "native");
+  assert.deepEqual(hook.status().coverage, { desktop: true, preauth: false });
+  assert.equal(hook.status().reason, "unsupported-source-hash");
+  const { network, calls } = transport();
+  await hook.fetchDesktop(network, "https://example.invalid/account", {}, principal, () => principal, true);
+  assert.equal(calls.length, 0);
+});
+
+test("preauth unknown source and noncandidate requests retain untouched native fetch", async () => {
+  for (const variant of ["hash", "anchor", "account", "unknown", "disabled"]) {
+    const h = preauthHarness({
+      expectedHash: variant === "hash" ? "0".repeat(64) : undefined,
+      source: variant === "anchor" ? "exports.value=1" : undefined,
+      settings: variant === "disabled" ? { enabled: false, reason: "disabled" } : undefined,
+      classify: () => variant === "unknown" ? null : { kind: "accounts" },
+    });
+    h.activate();
+    const { network, session, calls } = preauthTransport();
+    const init = { method: "POST", body: "unchanged" };
+    const response = await h.hook.fetchPreauth(network, session, "https://example.invalid", init);
+    assert.equal(await response.text(), "upstream");
+    assert.equal(calls[0].receiver, session);
+    assert.equal(calls[0].init, init);
+    assert.equal(h.hook.status().hitCount, 0);
+  }
+});
+
+test("missing production source reports unsupported immediately", () => {
+  const hook = createOfficialStartupCacheHook({
+    readSettings: () => ({ enabled: true, reason: "enabled" }),
+    moduleLoader: { _extensions: { ".js"() {} }, _cache: {} },
+  });
+  assert.equal(hook.install({ bundle: { bundleDir: path.resolve("nonexistent-synthetic-runtime") } }).reason, "unsupported-source-file");
+});
+
+test("verified Linux official files transform and compile without executing vendor code", {
+  skip: !process.env.OPENCODEX_LINUX_CACHE_FIXTURE_DIR,
+}, () => {
+  for (const descriptor of SOURCES.filter((source) => source.file !== MAIN_FILE)) {
+    const source = fs.readFileSync(path.join(process.env.OPENCODEX_LINUX_CACHE_FIXTURE_DIR, descriptor.file));
+    assert.equal(digest(source), descriptor.hash);
+    const variants = [source];
+    if (descriptor.optimizedHash) {
+      const { OfficialRuntimeOptimizer } = require("../dist/official/OfficialRuntimeOptimizer.js");
+      let optimized = source.toString("utf8");
+      // 使用项目自己的静态变换，不运行官方模块，也不修改原始样本。
+      const optimizer = new OfficialRuntimeOptimizer({ fileSystem: {
+        readDir: () => [{ name: descriptor.file, isFile: () => true }],
+        readText: () => optimized,
+        writeFile: (_, value) => { optimized = value; },
+      } });
+      optimizer.optimize("synthetic-official-bundle");
+      assert.equal(digest(optimized), descriptor.optimizedHash);
+      variants.push(optimized);
+    }
+    for (const variant of variants) {
+      const h = harness({ source: variant, sourceFile: descriptor.file, sources: [descriptor] });
+      h.install();
+      h.load(h.target, { _compile(code) { new vm.Script(code, { filename: descriptor.file }); } });
+      assert.equal(h.hook.status().coverage[descriptor.surface], true);
+      assert.equal(h.hook.status().patchCount, 1);
+    }
+  }
 });

@@ -31,7 +31,7 @@ test("phone stylesheet parses for Chromium and Safari and has no unconditional l
     }
   }
   assert.equal(depth, 0);
-  assert.equal(heads.length, 3);
+  assert.equal(heads.length, 2);
   for (const head of heads) {
     assert.match(head, /^@media(?:\s|\()/);
     assert.match(head, /max-width:(767|960)px/);
@@ -56,11 +56,10 @@ test("phone controls keep touch targets, native localized labels and readable ed
   assert.match(css, /\.codex-dialog\[aria-modal="true"\] button\s*\{[^}]*min-height: 44px/s);
 });
 
-test("phone keyboard layout reuses shared viewport metrics and distinguishes coarse-pointer focus", () => {
+test("phone keyboard layout keeps viewport metrics and does not hide drawer navigation", () => {
   assert.match(css, /height: var\(--opencodex-ios-visual-viewport-height, var\(--codex-visual-viewport-height, 100dvh\)\)/);
   assert.match(css, /html\[data-opencodex-ios-keyboard-visible="true"\]\s*\{[^}]*--opencodex-phone-nav-space: 0px/s);
-  assert.match(css, /@media[^\{]*\(pointer: coarse\)/);
-  assert.match(css, /html\[data-opencodex-mobile-keyboard-visible="true"\] \[data-app-navigation-rail\]/);
+  assert.doesNotMatch(css, /html\[data-opencodex-mobile-keyboard-visible="true"\] \[data-app-navigation-rail\]/);
   assert.doesNotMatch(css, /:has\([^\n]*:focus\) \[data-app-navigation-rail\]/);
   assert.match(css, /env\(safe-area-inset-bottom, 0px\)/);
   assert.doesNotMatch(css, /touch-action:\s*none|user-scalable|maximum-scale/);
@@ -109,4 +108,16 @@ test("phone split view uses a full-width native content pane without changing wo
   assert.match(css, /\[data-app-shell-pane-frame\]\s*\{[^}]*width: 100% !important;[^}]*min-width: 0 !important/s);
   assert.match(css, /\[data-app-shell-titlebar-slot="content"\]\s*\{[^}]*inset-inline: 64px 108px !important/s);
   assert.match(css, /calc\(100vw - 244px\)/);
+});
+
+// 导航必须留在原生侧栏内，关闭侧栏后不再占用手机底部的聊天空间。
+test("phone destinations use vertical drawer rows instead of a fixed bottom bar", () => {
+  assert.match(css, /#app-shell-sidebar > div:has\(> \[data-app-navigation-rail\]\)\s*\{[^}]*flex-direction: column !important/s);
+  assert.match(css, /button\[aria-haspopup="menu"\]:not\(:has\(\.sr-only\)\) > span:first-child::after/);
+  assert.match(css, /\[data-app-navigation-rail\]\s*\{[^}]*position: relative !important;[^}]*flex-direction: column !important/s);
+  assert.match(css, /\[data-app-shell-sidebar-open="false"\] \[data-app-navigation-rail\]\s*\{[^}]*display: none !important/s);
+  assert.match(css, /--opencodex-phone-nav-space: 0px/);
+  assert.doesNotMatch(css, /\[data-app-navigation-rail\]\s*\{[^}]*position: fixed/s);
+  assert.match(css, /\[data-opencodex-mobile-promotion="true"\]\s*\{[^}]*display: none !important/s);
+  assert.doesNotMatch(css, /aside\[role="status"\]\s*\{[^}]*display: none/s);
 });
