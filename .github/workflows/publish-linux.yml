@@ -1,0 +1,154 @@
+name: Publish verified Linux packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-linux.yml]
+
+# 仅提升已经通过测试的固定构建，不重新编译，也不接收任意外部产物。
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: publish-linux-c710152
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN: '38182788309'
+  SOURCE_SHA: c7101525282bd3c785b2bcaca0f372eaf161c0f1
+  RELEASE_TAG: linux-2.1.0-c710152
+
+jobs:
+  package:
+    name: Prepare verified packages (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            deb_arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: x64
+            deb_arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_ARCH: ${{ matrix.arch }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: c7101525282bd3c785b2bcaca0f372eaf161c0f1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify provenance and download existing build
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          node <<'NODE'
+          const r = require(process.env.RUNNER_TEMP + '/source-run.json');
+          if (r.head_sha !== process.env.SOURCE_SHA || r.conclusion !== 'success' ||
+              r.event !== 'push' || r.path !== '.github/workflows/build-release.yml' ||
+              r.repository.full_name !== process.env.GH_REPO) throw Error('Unexpected source build');
+          if (process.arch !== process.env.BUILD_ARCH) throw Error('Native architecture mismatch');
+          NODE
+          gh run download "$SOURCE_RUN" --name "opencodex-linux-$BUILD_ARCH-$SOURCE_SHA" --dir assets
+          test "$(dpkg-deb --field "assets/OpenCodex-2.1.0-linux-$DEB_ARCH.deb" Architecture)" = "$DEB_ARCH"
+
+      - name: Add the existing headless entrypoints without recompiling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir unpacked headless
+          tar -xzf "assets/OpenCodex-2.1.0-linux-$BUILD_ARCH.tar.gz" --strip-components=1 -C unpacked
+          # 复用原产物的编译结果与生产依赖，仅补入相同提交已有的命令行入口。
+          cp -a unpacked/resources/app/. headless/
+          mkdir -p headless/scripts headless/gateway/dev
+          cp scripts/linux-{common,init,doctor,start}.cjs headless/scripts/
+          cp gateway/dev/run-gateway.cjs headless/gateway/dev/
+          test -s headless/gateway/dist/official/CodexAsarScanner.js
+          node --check headless/gateway/dev/run-gateway.cjs
+          node -e "require('./headless/node_modules/ws'); require('./headless/scripts/linux-common.cjs')"
+          # 使用隔离的临时状态目录验证密码初始化，测试配置不进入发布包。
+          export OPENCODEX_LINUX_DATA_DIR="$RUNNER_TEMP/headless-smoke-$BUILD_ARCH"
+          printf '%s\n' 'ci-only-package-smoke-password' | node headless/scripts/linux-init.cjs --password-stdin
+          test "$(stat -c '%a' "$OPENCODEX_LINUX_DATA_DIR/config.yaml")" = 600
+          cat > headless/opencodex <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # 使用系统 Node 调用已经打包的脚本，不安装依赖、不编译源码。
+          root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+          action="${1:-start}"
+          if (( $# )); then shift; fi
+          case "$action" in
+            init|doctor|start) exec node "$root/scripts/linux-$action.cjs" "$@" ;;
+            *) printf 'Usage: %s {init|doctor|start} [options]\n' "$0" >&2; exit 2 ;;
+          esac
+          SH
+          chmod 755 headless/opencodex
+          bash -n headless/opencodex
+          printf '%s\n' "$SOURCE_SHA" > headless/BUILD_COMMIT
+          tar -czf "assets/OpenCodex-2.1.0-linux-headless-$BUILD_ARCH.tar.gz" -C headless .
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: public-linux-${{ matrix.arch }}
+          path: assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish public Linux release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: public-linux-*
+          path: assets
+          merge-multiple: true
+
+      - name: Validate files, generate checksums and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in arm64.deb amd64.deb arm64.tar.gz x64.tar.gz headless-arm64.tar.gz headless-x64.tar.gz; do
+            test -s "assets/OpenCodex-2.1.0-linux-$name"
+          done
+          (cd assets && sha256sum OpenCodex-* > SHA256SUMS)
+          cat > "$RUNNER_TEMP/release-notes.md" <<'MD'
+          Linux ARM64 / x64 packages, from verified build [38182788309](https://github.com/Wolf-L/OpenCodex/actions/runs/38182788309), commit `c7101525282bd3c785b2bcaca0f372eaf161c0f1`.
+
+          - `headless-arm64.tar.gz`: Android-kernel Kali ARM64 without KeX; precompiled gateway, production dependencies and `./opencodex init|doctor|start`. Requires system Node >=22.12.0 and Xvfb. No pnpm or source compilation.
+          - `headless-x64.tar.gz`: equivalent package for x64 Linux.
+          - `arm64.deb` / `amd64.deb`: graphical Launcher for Debian/Ubuntu/Kali with a desktop session.
+          - `arm64.tar.gz` / `x64.tar.gz`: portable graphical Launcher.
+          - `SHA256SUMS`: SHA-256 checksums for all six packages.
+
+          All packages require a separate, complete matching-architecture Codex/ChatGPT Linux desktop runtime. They do not include accounts, passwords or personal caches. Native Linux packaging and headless initialization are checked; execution on the user's Android kernel is not yet verified. Rootless/PRoot sandbox restrictions still apply.
+
+          [中文下载安装命令](https://github.com/Wolf-L/OpenCodex/blob/main/docs/LINUX_GUIDE.md) · [English guide](https://github.com/Wolf-L/OpenCodex/blob/main/docs/LINUX_GUIDE_EN.md)
+          MD
+          # 先上传完整草稿再公开，已公开版本绝不覆盖。
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
+            test "$(node -p "require(process.env.RUNNER_TEMP + '/existing-release.json').isDraft")" = true
+            gh release upload "$RELEASE_TAG" assets/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$RELEASE_TAG" assets/* --draft --target "$SOURCE_SHA" \
+              --title 'OpenCodex 2.1.0 Linux ARM64 / x64' --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest
