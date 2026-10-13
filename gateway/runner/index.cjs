@@ -128,22 +128,24 @@ async function prepareOfficialElectronRuntime({ runtimeDir, officialBundleDir, l
         asarPath: legacy.sourceAsarPath, codexBinaryPath: legacy.codexBinaryPath, layoutKind: legacy.manifest.sourceLayoutKind,
         platformHint: legacy.manifest.sourcePlatformHint }));
     } else {
-      let scanned;
-      try { scanned = withPhysicalAsarAccess(() => provider.scanner.find({ cachedAsarPath: current?.origin?.asarPath })); }
+      try {
+        const scanned = withPhysicalAsarAccess(() => provider.scanner.find({ cachedAsarPath: current?.origin?.asarPath }));
+        // 扫描成功后安装仍可能被升级程序替换；元信息与布局读取须共用来源失败回退。
+        // 此路径在 Electron Launcher 内执行，stat 必须针对物理 ASAR 而非虚拟目录。
+        sourceInfo = withPhysicalAsarAccess(() => provider.sourceInfoReader.read(scanned));
+        layout = findOfficialRuntimeLayout({ officialBundleDir, logger, bundle: {
+          sourceAppPath: sourceInfo.installRoot, sourceResourcesPath: sourceInfo.resourcesDir,
+          sourceAsarPath: sourceInfo.asarPath, codexBinaryPath: sourceInfo.codexBinaryPath,
+          manifest: { sourceLayoutKind: sourceInfo.layoutKind, sourcePlatformHint: sourceInfo.platformHint },
+        }, rollbackPinned });
+      }
       catch (error) {
         const override = env.CODEX_DESKTOP_APP_PATH;
         if (!current || (override && ![current.origin.asarPath, current.origin.installRoot, current.origin.resourcesDir].includes(override))) throw error;
         // 只在没有新的显式路径要求时回用完整快照；官方安装被卸载不应破坏已固定版本。
-        logger?.("[official-bundle] 更新扫描不可用，校验并复用完整离线快照\n");
-        return useCurrent();
+        logger?.(`[official-bundle] 更新来源不可用，校验并复用完整离线快照：${error.message}\n`);
+        return { ...await useCurrent(), recovery: { reason: error.message } };
       }
-      // 此路径在 Electron Launcher 内执行，stat 必须针对物理 ASAR 而非虚拟目录。
-      sourceInfo = withPhysicalAsarAccess(() => provider.sourceInfoReader.read(scanned));
-      layout = findOfficialRuntimeLayout({ officialBundleDir, logger, bundle: {
-        sourceAppPath: sourceInfo.installRoot, sourceResourcesPath: sourceInfo.resourcesDir,
-        sourceAsarPath: sourceInfo.asarPath, codexBinaryPath: sourceInfo.codexBinaryPath,
-        manifest: { sourceLayoutKind: sourceInfo.layoutKind, sourcePlatformHint: sourceInfo.platformHint },
-      }, rollbackPinned });
     }
     let plan;
     try { assertLinuxRuntimeLayout(layout); plan = store.sourcePlan(layout, sourceInfo); }

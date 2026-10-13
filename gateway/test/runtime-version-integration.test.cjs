@@ -34,7 +34,7 @@ test('parent prepares a complete version before switching; offline restart and r
   const modulePath = path.join(__dirname, '../runner/index.cjs');
   const realRequire = createRequire(modulePath);
   const { LocalCodexBundleProvider: RealProvider } = realRequire('../dist/official/LocalCodexBundleProvider.js');
-  let scans = 0, failRunner = false, runnerCalls = 0, damageWorkingCopy = false;
+  let scans = 0, failRunner = false, runnerCalls = 0, damageWorkingCopy = false, failLayout = false;
   const forcedRebuilds = [];
   class Provider extends RealProvider {
     constructor(options) {
@@ -56,7 +56,10 @@ test('parent prepares a complete version before switching; offline restart and r
   }
   const fakeRequire = id => {
     if (id === '../dist/official/LocalCodexBundleProvider.js') return { LocalCodexBundleProvider: Provider };
-    if (id === './official-layout.cjs' || id === '../runner/official-layout.cjs') return { findOfficialRuntimeLayout: ({ bundle }) => ({ platform: process.platform, appRoot: bundle.sourceAppPath, runtimeRoot: bundle.sourceAppPath, resourcesDir: bundle.sourceResourcesPath, asarPath: bundle.sourceAsarPath, executablePath: exe }) };
+    if (id === './official-layout.cjs' || id === '../runner/official-layout.cjs') return { findOfficialRuntimeLayout: ({ bundle }) => {
+      if (failLayout) throw new Error('injected source layout failure');
+      return { platform: process.platform, appRoot: bundle.sourceAppPath, runtimeRoot: bundle.sourceAppPath, resourcesDir: bundle.sourceResourcesPath, asarPath: bundle.sourceAsarPath, executablePath: exe };
+    } };
     if (id === './linux-runtime.cjs' || id === '../runner/linux-runtime.cjs') return { assertLinuxRuntimeLayout() {} };
     if (id === './platform/portable.cjs' || id === './platform/macos.cjs') return { createPortableRunner: createRunner, createMacRunner: createRunner };
     return realRequire(id);
@@ -160,4 +163,67 @@ test('parent prepares a complete version before switching; offline restart and r
   assert.equal(manifest.version, '1.0.0');
   assert.equal(fs.readFileSync(restored.runtimeBinding.codexBinaryPath, 'utf8'), 'cli-v1');
   assert.equal(scans, beforeScans);
+
+  // 扫描器保留刚发现的路径，随后安装源被删除：真实元信息读取必须走已验证快照回退。
+  await t.test('source metadata race falls back once and requires startup confirmation', async () => {
+    const starts = [];
+    const recovered = await prepare({ ...opts, startRuntime: async (runtime, confirm) => {
+      const manifest = JSON.parse(fs.readFileSync(path.join(runtime.runtimeBinding.bundleDir, 'manifest.json')));
+      assertRuntimeBinding(runtime.runtimeBinding, runtime.runtimeBinding.bundleDir, manifest);
+      starts.push(manifest.version); await confirm(() => {});
+    } });
+    assert.deepEqual(starts, ['1.0.0']);
+    assert.match(recovered.recovery.reason, /ENOENT/);
+    assert.equal(store.pointer().current, firstId);
+    await assert.rejects(prepare({ ...opts, startRuntime: async () => {} }), /启动未执行确认/);
+  });
+  await t.test('source metadata race without a current snapshot remains an error', async () => {
+    let starts = 0;
+    await assert.rejects(prepare({ ...opts, officialBundleDir: path.join(root, 'empty-cache/bundle'),
+      startRuntime: async () => { starts++; } }), /ENOENT/);
+    assert.equal(starts, 0);
+  });
+  await t.test('explicit new source path does not silently fall back on metadata failure', async () => {
+    sandbox.process.env.CODEX_DESKTOP_APP_PATH = path.join(root, 'new-install');
+    try {
+      let starts = 0;
+      await assert.rejects(prepare({ ...opts, startRuntime: async () => { starts++; } }), /ENOENT/);
+      assert.equal(starts, 0);
+    } finally { delete sandbox.process.env.CODEX_DESKTOP_APP_PATH; }
+  });
+  await t.test('source recovery rejects a damaged snapshot before starting', async () => {
+    const record = store.read(firstId);
+    const saved = fs.readFileSync(record.layout.asarPath);
+    try {
+      fs.writeFileSync(record.layout.asarPath, 'damaged snapshot');
+      let starts = 0;
+      await assert.rejects(prepare({ ...opts, startRuntime: async () => { starts++; } }), /source 内容校验失败/);
+      assert.equal(starts, 0);
+    } finally { fs.writeFileSync(record.layout.asarPath, saved); asar.uncacheAll(); }
+  });
+  await t.test('source recovery never retries a failed fallback start', async () => {
+    let starts = 0;
+    await assert.rejects(prepare({ ...opts, startRuntime: async () => { starts++; throw new Error('fallback start failure'); } }), /fallback start failure/);
+    assert.equal(starts, 1);
+    assert.equal(store.pointer().current, firstId);
+  });
+
+  // 恢复最小安装源后只注入布局解析失败，区分它与元信息读取和候选启动失败。
+  write(exe, 'electron-v1'); write(cli, 'cli-v1'); await archive('1.0.0');
+  failLayout = true;
+  await t.test('source layout failure recovers the verified current version', async () => {
+    let starts = 0;
+    const recovered = await prepare({ ...opts, startRuntime: async (_runtime, confirm) => { starts++; await confirm(() => {}); } });
+    assert.equal(starts, 1);
+    assert.equal(recovered.recovery.reason, 'injected source layout failure');
+    assert.equal(store.pointer().current, firstId);
+  });
+  await t.test('explicit new source path does not silently fall back on layout failure', async () => {
+    sandbox.process.env.CODEX_DESKTOP_APP_PATH = path.join(root, 'new-install');
+    try {
+      let starts = 0;
+      await assert.rejects(prepare({ ...opts, startRuntime: async () => { starts++; } }), /injected source layout failure/);
+      assert.equal(starts, 0);
+    } finally { delete sandbox.process.env.CODEX_DESKTOP_APP_PATH; }
+  });
 });

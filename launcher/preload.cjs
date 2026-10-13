@@ -14,7 +14,8 @@ contextBridge.exposeInMainWorld("openCodexLauncher", {
   openLogs: () => ipcRenderer.invoke("launcher:open-logs"),
   openGitHub: () => ipcRenderer.invoke("launcher:open-github"),
   openAuthor: () => ipcRenderer.invoke("launcher:open-author"),
-  // 更新入口不接收渲染进程传参，由主进程打开已校验的 latest release 链接。
+  // 更新入口不接收地址或平台参数，由主进程匹配本机版本并校验发布链接。
+  checkLatestRelease: () => ipcRenderer.invoke("launcher:check-latest-release"),
   openLatestRelease: () => ipcRenderer.invoke("launcher:open-latest-release"),
   revealPath: (targetPath) => ipcRenderer.invoke("launcher:reveal-path", targetPath),
   copy: (value) => ipcRenderer.invoke("launcher:copy", value),

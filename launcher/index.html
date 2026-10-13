@@ -20,7 +20,7 @@
             <div class="brand-title">
               <h1>OpenCodex</h1>
               <span class="brand-version" id="openCodexVersion" data-i18n="common.unknown">未知</span>
-              <!-- 仅当 GitHub latest release 与本地版本不同，渲染进程才会显示此更新入口。 -->
+              <!-- 仅当存在更高且适合本机的稳定发布时显示更新入口。 -->
               <button class="update-badge" id="latestReleaseButton" type="button" hidden data-i18n="launcher.update.available">有新版本</button>
             </div>
           </div>
@@ -147,6 +147,17 @@
               </div>
             </div>
           </div>
+        </section>
+
+        <!-- 本体发布与本机官方运行时使用独立入口，避免混淆更新对象。 -->
+        <section class="setting-section">
+          <div class="section-head">
+            <h2 data-i18n="launcher.update.title">OpenCodex 本体更新</h2>
+            <button id="checkLatestRelease" class="secondary-btn" data-i18n="launcher.update.check">检查更新</button>
+            <button id="openLatestRelease" class="secondary-btn" hidden disabled data-i18n="launcher.update.open">打开发布页</button>
+          </div>
+          <p class="setting-desc" data-i18n="launcher.update.description">检查适用于本机的公开稳定版本，打开发布页下载安装。</p>
+          <p id="latestReleaseStatus" class="setting-desc" role="status"></p>
         </section>
 
         <!-- Codex 运行时 -->

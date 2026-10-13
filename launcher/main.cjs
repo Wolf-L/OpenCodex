@@ -55,6 +55,7 @@ let statusRefreshPromise = null;
 let statusRefreshController = null;
 let preventSleepBlockerId = null;
 let latestReleaseCheckedForForeground = false;
+let latestReleaseCheckPromise = null;
 let isQuitting = false;
 let gatewayStartPromise = null;
 let gatewayRestartPromise = null;
@@ -65,6 +66,7 @@ let retryFailedRuntime = false;
 let expectedRuntimeIdentity = null;
 let runtimePreflightPromise = null;
 let runtimePreflight = null;
+let runtimeUpdatePhase = "";
 const gatewayLogWriter = createBoundedLogWriter();
 
 const gatewayState = {
@@ -634,6 +636,9 @@ function buildState() {
       githubUrl: OPENCODEX_GITHUB_URL,
     },
     latestRelease: {
+      status: latestRelease.status || "idle",
+      platform: latestRelease.platform || process.platform,
+      arch: latestRelease.arch || process.arch,
       checking: !!latestRelease.checking,
       tagName: latestRelease.tagName || "",
       available: !!latestRelease.available,
@@ -650,6 +655,8 @@ function buildState() {
     runtimeStartup: new RuntimeVersionStore(runtimePaths().officialBundleDir).startupState(),
     runtimePreflight,
     runtimePreflightChecking: !!runtimePreflightPromise,
+    runtimeUpdatePhase,
+    runtimeUpdateBusy: !!gatewayRestartPromise || !!gatewayStartPromise,
     locale: i18n.locale,
     messages: i18n.messages,
     i18nSource: i18n.source,
@@ -675,15 +682,23 @@ function launcherText(key, values) {
 }
 
 async function checkLatestRelease() {
-  if (gatewayState.latestRelease.checking) return gatewayState.latestRelease;
+  if (latestReleaseCheckPromise) return latestReleaseCheckPromise;
   gatewayState.latestRelease = markLatestReleaseChecking(gatewayState.latestRelease);
-  broadcastState();
-  gatewayState.latestRelease = await fetchLatestReleaseState({
-    currentVersionLabel: OPENCODEX_VERSION_LABEL,
-    previousState: gatewayState.latestRelease,
+  // 前台自动检查与手动检查共享同一次请求，完成前不提供旧发布页入口。
+  latestReleaseCheckPromise = Promise.resolve().then(async () => {
+    try {
+      gatewayState.latestRelease = await fetchLatestReleaseState({
+        currentVersionLabel: OPENCODEX_VERSION_LABEL,
+        previousState: gatewayState.latestRelease,
+      });
+      return gatewayState.latestRelease;
+    } finally {
+      latestReleaseCheckPromise = null;
+      broadcastState();
+    }
   });
   broadcastState();
-  return gatewayState.latestRelease;
+  return latestReleaseCheckPromise;
 }
 
 function checkLatestReleaseForForeground() {
@@ -1104,30 +1119,53 @@ async function restartGateway() {
 
 async function checkRuntimeUpdate() {
   if (runtimePreflightPromise) return runtimePreflightPromise;
-  runtimePreflightPromise = (async () => {
+  if (gatewayRestartPromise || gatewayStartPromise || isQuitting) throw new Error("服务启动、重启或退出进行中，请稍后预检");
+  // 新检查立即废弃旧计划；失败后不能继续应用上一次成功结果。
+  runtimePreflight = null;
+  runtimePreflightPromise = Promise.resolve().then(async () => {
     try {
       runtimePreflight = await require("../gateway/runtime/runtime-preflight.cjs").preflightRuntimeUpdate({ officialBundleDir: runtimePaths().officialBundleDir });
     } catch (error) { runtimePreflight = { ok: false, error: error.message }; }
     finally { runtimePreflightPromise = null; broadcastState(); }
     return buildState();
-  })();
+  });
   broadcastState();
   return runtimePreflightPromise;
 }
 
 async function applyRuntimeUpdate() {
   if (gatewayRestartPromise) return gatewayRestartPromise;
-  // 界面只能应用刚完成的主进程预检，不能指定任意下载来源或版本目录。
-  if (!runtimePreflight?.ok || Date.now() - Date.parse(runtimePreflight.checkedAt) > 15 * 60 * 1000) {
+  if (gatewayStartPromise || isQuitting) throw new Error("服务启动或退出进行中，请稍后应用");
+  // 只接受主进程最近生成的完整身份；无效日期和未来时间也必须拒绝。
+  const age = Date.now() - Date.parse(runtimePreflight?.checkedAt);
+  if (runtimePreflightPromise || runtimePreflight?.ok !== true || !Number.isFinite(age) || age < 0 || age > 15 * 60 * 1000 ||
+      !/^[a-f0-9]{64}$/.test(runtimePreflight.originIdentity || "")) {
     throw new Error("请先完成运行时更新预检");
   }
+  if (!runtimePreflight.changed && !runtimePreflight.retryRequired) return buildState();
   const identity = runtimePreflight.originIdentity;
-  gatewayRestartPromise = restartGatewayOnce(() => {
-    expectedRuntimeIdentity = identity; retryFailedRuntime = true;
-    runtimePreflight = null;
+  runtimeUpdatePhase = "validating";
+  gatewayRestartPromise = Promise.resolve().then(async () => {
+    try {
+      // 停服前重新读取来源、权限与空间；来源变化要求重新预检，不沿用旧批准。
+      const fresh = await require("../gateway/runtime/runtime-preflight.cjs").preflightRuntimeUpdate({ officialBundleDir: runtimePaths().officialBundleDir });
+      if (!fresh?.ok) throw new Error(fresh?.error || "应用前复核未通过，请重新预检并检查目录权限与磁盘空间");
+      if (fresh.originIdentity !== identity) throw new Error("官方安装在预检后发生变化，请重新预检");
+      if (isQuitting) throw new Error("应用正在退出，已取消运行时更新");
+      runtimeUpdatePhase = "restarting";
+      broadcastState();
+      return await restartGatewayOnce(() => {
+        expectedRuntimeIdentity = identity; retryFailedRuntime = true;
+        runtimePreflight = null;
+      });
+    } catch (error) {
+      runtimePreflight = { ok: false, error: error.message };
+      throw error;
+    }
   });
+  broadcastState();
   try { return await gatewayRestartPromise; }
-  finally { gatewayRestartPromise = null; }
+  finally { gatewayRestartPromise = null; runtimeUpdatePhase = ""; broadcastState(); }
 }
 
 async function restoreBundleBackup() {
@@ -1354,6 +1392,7 @@ function revealPath(targetPath) {
 }
 
 ipcMain.handle("launcher:get-state", () => buildState());
+  ipcMain.handle("launcher:check-latest-release", async () => { await checkLatestRelease(); return buildState(); });
 ipcMain.handle("launcher:check-runtime-update", () => checkRuntimeUpdate());
 ipcMain.handle("launcher:apply-runtime-update", () => applyRuntimeUpdate());
 ipcMain.handle("launcher:start", () => gatewayRestartPromise || startGateway());

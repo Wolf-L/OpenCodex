@@ -24,6 +24,11 @@
   box-sizing: border-box;
 }
 
+/* 通用 button 的 flex 布局不能覆盖原生 hidden，否则不可用的更新入口仍会显示。 */
+button[hidden] {
+  display: none;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -296,6 +301,9 @@ button.primary:hover {
 
 .section-head {
   display: flex;
+  /* 更新操作在窄窗口允许换行，长英文标签也不挤压标题。 */
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 24px;

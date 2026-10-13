@@ -89,6 +89,16 @@ function renderLatestRelease(latestRelease) {
   const button = $("latestReleaseButton");
   if (!button) return;
   const available = !!(latestRelease && latestRelease.available && latestRelease.tagName);
+  const status = latestRelease?.status || "idle";
+  $("checkLatestRelease").disabled = !!latestRelease?.checking;
+  $("openLatestRelease").hidden = !available;
+  $("openLatestRelease").disabled = !available;
+  // 状态常驻展示，检查失败和没有兼容发布不能显示成“已是最新”。
+  const statusKeys = { idle: "idle", checking: "checking", available: "found", "up-to-date": "upToDate", "no-compatible-release": "none", error: "error" };
+  text("latestReleaseStatus", t(`launcher.update.${statusKeys[status] || "idle"}`, {
+    version: latestRelease?.tagName || "", platform: `${latestRelease?.platform || ""}/${latestRelease?.arch || ""}`,
+    error: latestRelease?.error || "",
+  }));
 
   // 更新按钮只在 GitHub 稳定版本高于本地版本且链接已由主进程校验后显示。
   button.hidden = !available;
@@ -108,12 +118,15 @@ function renderLatestRelease(latestRelease) {
 function renderRuntimeUpdate(state) {
   const report = state.runtimePreflight;
   const checking = state.runtimePreflightChecking;
-  $("checkRuntimeUpdate").disabled = checking;
+  const phase = state.runtimeUpdatePhase;
+  const busy = checking || state.runtimeUpdateBusy || !!phase;
+  $("checkRuntimeUpdate").disabled = busy;
   $("applyRuntimeUpdate").hidden = !report?.ok || (!report.changed && !report.retryRequired);
-  $("applyRuntimeUpdate").disabled = checking || !report?.ok;
+  $("applyRuntimeUpdate").disabled = busy || !report?.ok;
   const node = $("runtimePreflightStatus");
-  node.hidden = !checking && !report;
-  if (checking) node.textContent = t("launcher.runtime.checking");
+  node.hidden = !checking && !phase && !report;
+  if (phase) node.textContent = t(phase === "validating" ? "launcher.runtime.validating" : "launcher.runtime.restarting");
+  else if (checking) node.textContent = t("launcher.runtime.checking");
   else if (report?.error) node.textContent = report.error;
   else if (report) node.textContent = t(report.ok ? "launcher.runtime.plan" : "launcher.runtime.blocked", {
     version: report.version, platform: `${report.platform}/${report.arch}`,
@@ -251,7 +264,7 @@ function render(state) {
   linkButton("githubLink", appInfo.githubUrl, "common.notFound");
   const backup = state.bundleBackup || {};
   // 无可用备份时隐藏入口，还原期间保留禁用状态以防重复操作。
-  $("restoreBundleBackup").disabled = !backup.available || backup.restoring;
+  $("restoreBundleBackup").disabled = !backup.available || backup.restoring || state.runtimeUpdateBusy || state.runtimePreflightChecking;
   $("restoreBundleBackup").hidden = !backup.available;
   text("codexVersion", official.version || t("common.unknown"));
   text("codexBuild", official.build || t("common.unknown"));
@@ -306,9 +319,18 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "checkRuntimeUpdate" || target.id === "applyRuntimeUpdate") {
     target.disabled = true;
+    let failure;
     try { render(await (target.id === "checkRuntimeUpdate" ? launcher.checkRuntimeUpdate() : launcher.applyRuntimeUpdate())); }
-    catch (error) { $("runtimePreflightStatus").hidden = false; text("runtimePreflightStatus", error.message); }
-    finally { target.disabled = false; }
+    catch (error) { failure = error; }
+    // IPC 返回的快照可能仍处于重启尾声，按钮最终状态以主进程最新状态为准。
+    finally { await refresh(); }
+    if (failure) { $("runtimePreflightStatus").hidden = false; text("runtimePreflightStatus", failure.message); }
+    return;
+  }
+  if (target.id === "checkLatestRelease") {
+    target.disabled = true;
+    try { render(await launcher.checkLatestRelease()); }
+    finally { await refresh(); }
     return;
   }
   if (target.id === "restoreBundleBackup") {
@@ -368,7 +390,7 @@ document.addEventListener("click", async (event) => {
     await launcher.openAuthor();
     return;
   }
-  if (target.id === "latestReleaseButton") {
+  if (target.id === "latestReleaseButton" || target.id === "openLatestRelease") {
     await launcher.openLatestRelease();
     return;
   }

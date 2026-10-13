@@ -72,18 +72,86 @@ test("real supervised process exits before startup failure is returned", async t
   assert.ok(child.exitCode != null || child.signalCode != null);
 });
 
-test("apply requires recent main-process preflight and passes identity without changing settings", async () => {
+function updateFixture() {
   const vm = require("node:vm"), fs = require("node:fs");
   const source = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
-  const code = source.slice(source.indexOf("async function applyRuntimeUpdate()"), source.indexOf("async function restoreBundleBackup()"));
-  const context = vm.createContext({ gatewayRestartPromise: null, runtimePreflight: null, expectedRuntimeIdentity: null, retryFailedRuntime: false,
-    restartGatewayOnce: async callback => { callback(); return "restarted"; } });
+  const code = source.slice(source.indexOf("async function checkRuntimeUpdate()"), source.indexOf("async function restoreBundleBackup()"));
+  const report = { ok: true, changed: true, checkedAt: new Date().toISOString(), originIdentity: "a".repeat(64) };
+  const events = [];
+  // 执行真实主进程函数，以可控 worker 和重启边界验证停服顺序，不启动用户应用。
+  const context = vm.createContext({ gatewayRestartPromise: null, gatewayStartPromise: null, runtimePreflightPromise: null,
+    runtimePreflight: { ...report }, runtimeUpdatePhase: "", isQuitting: false, expectedRuntimeIdentity: null, retryFailedRuntime: false,
+    require: () => ({ preflightRuntimeUpdate: async () => { events.push("checked"); return { ...report }; } }),
+    runtimePaths: () => ({ officialBundleDir: "fixture" }), broadcastState() {}, buildState: () => "state",
+    restartGatewayOnce: async callback => { events.push("stopped"); callback(); return "restarted"; } });
   vm.runInContext(code, context);
-  await assert.rejects(context.applyRuntimeUpdate(), /预检/);
-  context.runtimePreflight = { ok: true, checkedAt: new Date(0).toISOString(), originIdentity: "stale" };
-  await assert.rejects(context.applyRuntimeUpdate(), /预检/);
-  context.runtimePreflight = { ok: true, checkedAt: new Date().toISOString(), originIdentity: "checked-source" };
+  return { context, report, events };
+}
+
+test("apply rejects missing, stale, invalid and future approvals before stopping", async () => {
+  const { context, report, events } = updateFixture();
+  for (const value of [null, { ...report, checkedAt: new Date(0).toISOString() }, { ...report, checkedAt: "invalid" },
+    { ...report, checkedAt: new Date(Date.now() + 60000).toISOString() }, { ...report, originIdentity: "invalid" }]) {
+    context.runtimePreflight = value;
+    await assert.rejects(context.applyRuntimeUpdate(), /预检/);
+  }
+  assert.deepEqual(events, []);
+});
+
+test("apply rechecks source before stop and forwards only the approved identity", async () => {
+  const { context, report, events } = updateFixture();
   assert.equal(await context.applyRuntimeUpdate(), "restarted");
-  assert.equal(context.expectedRuntimeIdentity, "checked-source");
+  assert.deepEqual(events, ["checked", "stopped"]);
+  assert.equal(context.expectedRuntimeIdentity, report.originIdentity);
   assert.equal(context.retryFailedRuntime, true); assert.equal(context.runtimePreflight, null);
+  assert.equal(context.runtimeUpdatePhase, "");
+});
+
+test("failed or changed fresh preflight keeps the running service untouched", async () => {
+  for (const failure of [new Error("source unavailable"), { ok: false }, { originIdentity: "b".repeat(64) }]) {
+    const { context, report, events } = updateFixture();
+    context.require = () => ({ preflightRuntimeUpdate: async () => {
+      if (failure instanceof Error) throw failure;
+      return { ...report, ...failure };
+    } });
+    await assert.rejects(context.applyRuntimeUpdate());
+    assert.deepEqual(events, []);
+    assert.equal(context.runtimePreflight.ok, false);
+    assert.equal(context.gatewayRestartPromise, null);
+  }
+});
+
+test("new check invalidates old approval and prevents apply until it finishes", async () => {
+  const { context, report, events } = updateFixture(); let finish;
+  context.require = () => ({ preflightRuntimeUpdate: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = context.checkRuntimeUpdate();
+  await Promise.resolve();
+  assert.equal(context.runtimePreflight, null);
+  await assert.rejects(context.applyRuntimeUpdate(), /预检/);
+  finish(report); await pending;
+  assert.deepEqual(events, []);
+});
+
+test("concurrent applies share one recheck and stop; check cannot replace an applying plan", async () => {
+  const { context, report, events } = updateFixture(); let finish; let checks = 0;
+  context.require = () => ({ preflightRuntimeUpdate: () => { checks++; return new Promise(resolve => { finish = resolve; }); } });
+  const first = context.applyRuntimeUpdate(), second = context.applyRuntimeUpdate();
+  await Promise.resolve();
+  assert.equal(context.runtimeUpdatePhase, "validating");
+  await assert.rejects(context.checkRuntimeUpdate(), /进行中/);
+  finish(report); await Promise.all([first, second]);
+  assert.equal(checks, 1); assert.deepEqual(events, ["stopped"]);
+});
+
+test("startup, shutdown and unchanged plans cannot start an update restart", async () => {
+  for (const busy of ["gatewayStartPromise", "isQuitting"]) {
+    const { context, events } = updateFixture(); context[busy] = true;
+    await assert.rejects(context.applyRuntimeUpdate()); assert.deepEqual(events, []);
+  }
+  const { context, report, events } = updateFixture();
+  context.runtimePreflight = { ...report, changed: false };
+  assert.equal(await context.applyRuntimeUpdate(), "state"); assert.deepEqual(events, []);
+  context.runtimePreflight = report;
+  context.require = () => ({ preflightRuntimeUpdate: async () => { context.isQuitting = true; return report; } });
+  await assert.rejects(context.applyRuntimeUpdate()); assert.deepEqual(events, []);
 });
