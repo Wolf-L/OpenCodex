@@ -37,15 +37,25 @@ $start.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'
 $process = [Diagnostics.Process]::new()
 $process.StartInfo = $start
 if (-not $process.Start()) { throw 'Could not start isolated acceptance runner.' }
-$stdout = $process.StandardOutput.ReadToEndAsync()
+$stdoutFile = Join-Path $evidence 'stdout.log'
+$lineTask = $process.StandardOutput.ReadLineAsync()
 $stderr = $process.StandardError.ReadToEndAsync()
-$remaining = [Math]::Max(1, 1200000 - [int]([DateTime]::UtcNow - $started).TotalMilliseconds)
-if (-not $process.WaitForExit($remaining)) {
-    # 不按名称或未核验 PID 强杀；让一次性 VM 销毁现场，保留已导出的证据。
-    'Acceptance exceeded the 20-minute overall limit; process ownership is not assumed for cleanup.' | Set-Content -LiteralPath (Join-Path $evidence 'timeout.txt')
-    throw 'Native acceptance timed out.'
+while ($true) {
+    if ($lineTask.Wait(1000)) {
+        $line = $lineTask.GetAwaiter().GetResult()
+        if ($null -eq $line) { break }
+        $line | Add-Content -LiteralPath $stdoutFile
+        Write-Output $line
+        $lineTask = $process.StandardOutput.ReadLineAsync()
+    }
+    if (([DateTime]::UtcNow - $started).TotalMinutes -ge 20) {
+        # 不按名称或未核验 PID 强杀；让一次性 VM 销毁现场，保留已导出的证据。
+        'Acceptance exceeded the 20-minute overall limit; process ownership is not assumed for cleanup.' | Set-Content -LiteralPath (Join-Path $evidence 'timeout.txt')
+        throw 'Native acceptance timed out.'
+    }
 }
-$stdout.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $evidence 'stdout.log')
+$remaining = [Math]::Max(1, 1200000 - [int]([DateTime]::UtcNow - $started).TotalMilliseconds)
+if (-not $process.WaitForExit($remaining)) { throw 'Acceptance did not exit within its total time limit.' }
 $stderr.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $evidence 'stderr.log')
 if ($process.ExitCode -ne 0) { throw ('Native acceptance exited ' + $process.ExitCode + '; inspect AcceptanceOutput artifacts.') }
 $result = Get-Content -LiteralPath (Join-Path $evidence 'result.json') -Raw | ConvertFrom-Json

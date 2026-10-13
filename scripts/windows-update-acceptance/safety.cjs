@@ -15,7 +15,8 @@ function assertChild(target, root = ROOT) {
   return normalized;
 }
 function assertScenario(result, expected) {
-  if (result.status !== expected.status || result.version !== expected.version || !result.originalExited || !result.runningVersionMatches || !result.sentinelsUnchanged || !result.registryMatches || !result.lockReleased || (expected.restored && (!result.applicationMatches || !result.failedInstallPreserved)))
+  const causeMatches = expected.cause === "startup" ? result.error === "新版启动后退出" && result.targetStarted && result.intentionalExit && result.hasCandidate : expected.cause === "installer" ? result.error === "安装器退出失败：13" && !result.hasCandidate : result.status !== "completed" || result.targetStarted;
+  if (!causeMatches || !result.gatewayAlive || !result.gatewayResponsive || result.status !== expected.status || result.version !== expected.version || !result.originalExited || !result.runningVersionMatches || !result.sentinelsUnchanged || !result.registryMatches || !result.lockReleased || (expected.restored && (!result.applicationMatches || !result.failedInstallPreserved)))
     throw new Error(`Acceptance result failed: ${JSON.stringify(result)}`);
   return result;
 }

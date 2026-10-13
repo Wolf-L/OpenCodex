@@ -46,10 +46,25 @@ app.whenReady().then(async () => {
   log({ type: "ready", transaction: process.env.OPENCODEX_UPDATE_TRANSACTION || null });
   if (process.env.OPENCODEX_UPDATE_TRANSACTION && version === "1.0.2") {
     // 留出原生进程身份采集时间，再真实退出，让助手执行启动失败恢复。
-    setTimeout(async () => { await stopGateway(); app.exit(42); }, 8000);
+    setTimeout(async () => { await stopGateway(); log({ type: "intentional-exit", code: 42 }); app.exit(42); }, 8000);
   } else api.confirmWindowsUpdate({ ...identity, gatewayPid: gateway.pid });
   let processing = false;
   setInterval(async () => {
+    // 回退验收需重新收到子进程的随机探测响应，不能只看历史 ready 日志。
+    const probeFile = path.join(data, `probe-${process.pid}.json`);
+    if (fs.existsSync(probeFile)) {
+      const probe = helper.readJson(probeFile);
+      fs.renameSync(probeFile, `${probeFile}.${probe.nonce}.consumed`);
+      if (/^[a-f0-9]{32}$/.test(probe.nonce) && gateway?.connected) {
+        const listener = message => {
+          if (message?.type !== "probe-response" || message.nonce !== probe.nonce) return;
+          gateway.off("message", listener);
+          helper.atomicJson(path.join(data, `probe-response-${probe.nonce}.json`), { nonce: probe.nonce, pid: process.pid, gatewayPid: gateway.pid, version });
+        };
+        gateway.on("message", listener);
+        gateway.send({ type: "probe", nonce: probe.nonce });
+      }
+    }
     const commandFile = path.join(data, `command-${process.pid}.json`);
     if (processing || !fs.existsSync(commandFile)) return;
     processing = true;

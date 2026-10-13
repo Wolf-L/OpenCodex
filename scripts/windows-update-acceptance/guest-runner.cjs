@@ -14,7 +14,11 @@ const exe = path.join(install, "OpenCodex.exe");
 const resultDir = path.join(ROOT, "results");
 const results = { startedAt: new Date().toISOString(), scenarios: [], limitations: ["Network downloader is bypassed", "Gateway is a real lightweight fixture child; official Gateway, CLI and accounts are not exercised", "Unsigned local packages, not a public release"] };
 let active;
-const event = value => { fs.appendFileSync(path.join(resultDir, "runner.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...value }) + "\n"); };
+const event = value => {
+  const line = JSON.stringify({ at: new Date().toISOString(), ...value });
+  fs.appendFileSync(path.join(resultDir, "runner.jsonl"), line + "\n");
+  console.log(line);
+};
 async function waitFor(check, timeout = 900000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { const value = await check(); if (value) return value; await delay(400); }
@@ -57,17 +61,31 @@ async function silentInstall(installer) {
 function writeCommand(identity, prepared) {
   helper.atomicJson(path.join(data, `command-${identity.pid}.json`), { prepared });
 }
+async function probeGateway(identity, version) {
+  const nonce = crypto.randomBytes(16).toString("hex");
+  helper.atomicJson(path.join(data, `probe-${identity.pid}.json`), { nonce });
+  const response = await waitFor(() => {
+    const file = path.join(data, `probe-response-${nonce}.json`);
+    return fs.existsSync(file) ? helper.readJson(file) : false;
+  }, 15000);
+  const gateway = await helper.processInfo(response.gatewayPid);
+  if (response.nonce !== nonce || response.pid !== identity.pid || response.version !== version || !gateway || gateway.parentPid !== identity.pid || !helper.samePath(gateway.exePath, exe) || Date.parse(gateway.born) < Date.parse(identity.born) || !await helper.alive(gateway) || !await helper.alive(identity)) throw new Error("Recovered Gateway did not confirm a live owned IPC response");
+  return { gatewayAlive: true, gatewayResponsive: true, gatewayIdentity: gateway };
+}
 async function scenario(name, pkg, expected, sentinels) {
   const original = active;
   const beforeRegistry = await registry();
   const beforeInventory = await helper.inventory(install);
   const previousLatest = fs.existsSync(path.join(data, "self-update/transactions/latest.json")) ? helper.readJson(path.join(data, "self-update/transactions/latest.json")).transactionId : null;
+  event({ type: "scenario-start", name });
   writeCommand(original, { installerPath: pkg.path, size: pkg.size, sha256: pkg.sha256, targetVersion: pkg.version });
+  let lastStatus;
   const terminal = await waitFor(() => {
     try {
       const pointer = helper.readJson(path.join(data, "self-update/transactions/latest.json"));
       if (pointer.transactionId === previousLatest) return false;
       const journal = helper.readJson(path.join(data, "self-update/transactions", pointer.transactionId, "journal.json"));
+      if (lastStatus !== journal.status) { lastStatus = journal.status; event({ type: "transaction-state", name, status: journal.status, error: journal.error }); }
       return ["completed", "rolled-back", "cancelled", "recovery-needed"].includes(journal.status) ? journal : false;
     } catch (error) { if (error.code === "ENOENT") return false; throw error; }
   });
@@ -77,7 +95,11 @@ async function scenario(name, pkg, expected, sentinels) {
   active = await ready(expected.version, original.pid);
   const afterRegistry = await registry();
   const version = helper.readJson(path.join(install, "resources/app/package.json")).version;
+  const transaction = path.join(data, "self-update/transactions", terminal.transactionId);
+  const targetStarted = !!terminal.candidate && events().some(entry => entry.type === "ready" && entry.pid === terminal.candidate.pid && entry.version === pkg.version && entry.transaction && helper.samePath(entry.transaction, transaction));
+  const intentionalExit = !!terminal.candidate && events().some(entry => entry.type === "intentional-exit" && entry.pid === terminal.candidate.pid && entry.version === pkg.version && entry.code === 42);
   const record = { name, status: terminal.status, version, error: terminal.error, transactionId: terminal.transactionId,
+    targetStarted, intentionalExit, hasCandidate: !!terminal.candidate, ...await probeGateway(active, expected.version),
     originalExited: !await helper.alive(original), runningVersionMatches: events().some(entry => entry.type === "ready" && entry.pid === active.pid && entry.version === version),
     sentinelsUnchanged: equal(sentinels, sentinelDigests()), registryMatches: expected.restored ? equal(beforeRegistry, afterRegistry) : afterRegistry[1].DisplayVersion.value === version,
     applicationMatches: expected.restored ? equal(beforeInventory, await helper.inventory(install)) : true,
@@ -113,10 +135,10 @@ async function run() {
   const rejection = await waitFor(() => events().find(entry => entry.type === "install-rejected" && entry.pid === active.pid), 60000);
   const corrupt = { name: "corrupt-pre-stop", rejected: true, error: rejection.error, originalAlive: await helper.alive(active), gatewayAlive: await helper.alive(gatewayIdentity), sentinelsUnchanged: equal(sentinels, sentinelDigests()) };
   results.scenarios.push(corrupt);
-  if (!corrupt.originalAlive || !corrupt.gatewayAlive || !corrupt.sentinelsUnchanged) throw new Error("Corruption stopped the original service");
+  if (corrupt.error !== "安装包完整性校验失败" || !corrupt.originalAlive || !corrupt.gatewayAlive || !corrupt.sentinelsUnchanged) throw new Error("Corruption did not reject intact original service for expected reason");
   await scenario("healthy-upgrade", packages[1], { status: "completed", version: "1.0.1" }, sentinels);
-  await scenario("startup-failure", packages[2], { status: "rolled-back", version: "1.0.1", restored: true }, sentinels);
-  await scenario("installer-failure", packages[3], { status: "rolled-back", version: "1.0.1", restored: true }, sentinels);
+  await scenario("startup-failure", packages[2], { status: "rolled-back", version: "1.0.1", restored: true, cause: "startup" }, sentinels);
+  await scenario("installer-failure", packages[3], { status: "rolled-back", version: "1.0.1", restored: true, cause: "installer" }, sentinels);
   results.passed = true;
 }
 run().catch(error => { results.passed = false; results.error = error.stack; }).finally(async () => {
