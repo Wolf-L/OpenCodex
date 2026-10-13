@@ -264,7 +264,10 @@ async function runTransaction(transactionDir, adapter = nativeAdapter(transactio
     const deadline = Date.now() + (options.commitTimeoutMs || 10 * 60 * 1000);
     while (!fs.existsSync(path.join(transactionDir, "commit.json"))) {
       if (fs.existsSync(path.join(transactionDir, "cancel.json"))) { update("cancelled"); releaseLock(); return; }
-      if (!await adapter.alive(journal.parent)) throw new Error("原 Launcher 在确认安装前退出");
+      const parentAlive = await adapter.alive(journal.parent);
+      // CIM 查询期间父进程可能已写入许可并正常退出；重新检查落盘许可后再判定提前退出。
+      if (fs.existsSync(path.join(transactionDir, "commit.json"))) break;
+      if (!parentAlive) throw new Error("原 Launcher 在确认安装前退出");
       if (Date.now() > deadline) throw new Error("安装确认超时");
       await delay(options.pollMs || 200);
     }

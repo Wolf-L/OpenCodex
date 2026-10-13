@@ -126,6 +126,33 @@ test("Windows update commits only after parent exits and matching Gateway ACK", 
   assert.equal(fs.existsSync(path.join(f.journal.backupDir, "old.txt")), true);
 });
 
+for (const validToken of [true, false]) {
+  test(`commit arriving during parent liveness check is rechecked and token validated: ${validToken}`, async t => {
+    const f = await fixture(t);
+    const commitFile = path.join(f.dir, "commit.json");
+    fs.unlinkSync(commitFile);
+    let parentChecks = 0;
+    f.adapter.alive = async identity => {
+      if (identity.pid !== f.journal.parent.pid) return true;
+      // 模拟耗时 CIM 查询期间父进程先落盘许可、随后正常退出。
+      parentChecks++;
+      helper.atomicJson(commitFile, { token: validToken ? f.journal.token : "invalid" });
+      return false;
+    };
+    f.adapter.relaunchOriginal = async () => f.events.push("relaunched-original");
+    await f.run();
+    assert.ok(parentChecks > 0);
+    if (validToken) {
+      assert.equal(f.state().status, "completed");
+      assert.deepEqual(f.events, ["parent-exited", "installed", "started"]);
+    } else {
+      assert.equal(f.state().status, "cancelled");
+      assert.match(f.state().error, /许可无效/);
+      assert.equal(f.events.includes("installed"), false);
+    }
+  });
+}
+
 test("corrupted installer never starts installer or replaces app", async t => {
   const f = await fixture(t);
   await fsp.writeFile(f.journal.installerPath, "corrupt");
