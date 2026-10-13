@@ -32,4 +32,4 @@ $env:ELECTRON_RUN_AS_NODE = '1'
 
 三个产品模块 `self-update-controller.cjs`、`self-update-install.cjs`、`self-update-helper.cjs` 原样打包，manifest 留存其 SHA-256。更新助手、进程检查、NSIS、文件恢复与注册表恢复均使用原生实现。仅网络下载器被夹具替换，真实安装 API 仍重新核验安装包摘要；Gateway 为真实轻量子进程，通过真实 IPC 就绪。结果不代表公开发布下载、实际官方 Gateway／CLI、真实用户账号、断电恢复或签名验证。立即退出到无法捕获身份的场景应单独验收，不能由延迟退出结果推断。
 
-备份文件系统另有 Windows 真实 Electron 普通模式回归：`node --test launcher/test/self-update-asar.test.cjs`。它使用有效的 `default_app.asar`，调用产品清单和复制原语，确认归档保持物理文件、原始字节和摘要不变。主进程使用 Electron 内置 `original-fs`，目录外 Node 助手使用原生 `node:fs`；不能通过删去 ASAR 或改用 Node 模式夹具掩盖差异。
+备份文件系统另有 Windows 真实 Electron 普通模式回归：`node --test launcher/test/self-update-asar.test.cjs`。它使用有效的 `default_app.asar`，调用产品清单和复制原语，确认归档保持物理文件、原始字节和摘要不变。主进程和目录外 Electron Node 模式助手均使用内置 `original-fs`，仅普通 Node 宿主使用 `node:fs`；不能通过删去 ASAR 或改用 Node 模式夹具掩盖差异。

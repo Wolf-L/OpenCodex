@@ -1,7 +1,7 @@
 "use strict";
 
-// 与目录外 Node 模式助手使用相同的物理文件语义，不让 Electron 展开 ASAR。
-const fs = process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE ? require("original-fs") : require("node:fs");
+// 与目录外 Electron Node 模式助手使用相同的物理文件语义，不让 ASAR 被展开。
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const crypto = require("node:crypto");

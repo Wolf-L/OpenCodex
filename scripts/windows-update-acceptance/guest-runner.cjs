@@ -95,7 +95,14 @@ async function scenario(name, pkg, expected, sentinels) {
   });
   // 先保存原始终态；即使后续验证失败，也保留安装器和助手的原生结果。
   fs.writeFileSync(path.join(resultDir, `${name}-journal.json`), JSON.stringify(terminal, null, 2));
-  if (terminal.status !== expected.status) throw new Error(`${name}: expected ${expected.status}, got ${terminal.status}: ${terminal.error}`);
+  if (terminal.status !== expected.status) {
+    // 失败时保留两侧清单，便于区分字节损坏与进程模式差异；不导出应用或用户数据。
+    try {
+      fs.copyFileSync(assertChild(terminal.inventoryFile), path.join(resultDir, `${name}-inventory-expected.json`));
+      fs.writeFileSync(path.join(resultDir, `${name}-inventory-actual.json`), JSON.stringify(await helper.inventory(assertChild(terminal.backupDir))));
+    } catch (error) { event({ type: "diagnostic-error", name, error: error.message }); }
+    throw new Error(`${name}: expected ${expected.status}, got ${terminal.status}: ${terminal.error}`);
+  }
   active = await ready(expected.version, original.pid);
   const afterRegistry = await registry();
   const version = helper.readJson(path.join(install, "resources/app/package.json")).version;
