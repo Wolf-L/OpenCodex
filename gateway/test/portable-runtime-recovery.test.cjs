@@ -86,6 +86,40 @@ test("rejects source/runtime overlap before any removal", (t) => {
 });
 
 const windows = { skip: process.platform !== "win32" };
+test("Linux seals the startup extensions directory and still rejects new extension content", { skip: process.platform !== "linux" }, async (t) => {
+  const f = fixture(t);
+  const { RuntimeVersionStore, inventory } = require("../runtime/runtime-version-store.cjs");
+  const store = new RuntimeVersionStore(path.join(f.root, "bundle"));
+  const id = "a".repeat(32), dir = store.directory(id);
+  for (const component of ["source", "bundle"]) fs.mkdirSync(path.join(dir, component), { recursive: true });
+  const options = { ...f, runtimeDir: path.join(dir, "runner") };
+  const runtime = await createPortableRunner(options);
+  const extensions = path.join(runtime.runnerAppPath, "extensions");
+  assert.deepEqual(fs.readdirSync(extensions), []);
+  assert.equal(fs.existsSync(path.join(f.layout.runtimeRoot, "extensions")), false, "official source remains untouched");
+  const before = inventory(options.runtimeDir);
+  store.seal({ id, dir, layout: {}, origin: {}, originIdentity: "fixture" }, { version: "1", build: "fixture" }, runtime);
+  // 模拟真实 Linux 运行时的首次 mkdir，不执行 fixture 二进制；封存及发布使用生产代码。
+  fs.mkdirSync(extensions, { recursive: true });
+  store.activate(id, null);
+  assert.equal(store.pointer().current, id);
+  assert.deepEqual(inventory(options.runtimeDir), before);
+  fs.writeFileSync(path.join(extensions, "unexpected.js"), "changed runtime");
+  assert.throws(() => store.read(id), /runner 内容校验失败/, "directory contents are not excluded from verification");
+  fs.unlinkSync(path.join(extensions, "unexpected.js"));
+  // 旧缓存缺少该空目录时只补目录，不替换正在使用的执行文件。
+  fs.rmdirSync(extensions);
+  const inode = fs.statSync(runtime.executablePath).ino;
+  await createPortableRunner(options);
+  assert.equal(fs.statSync(runtime.executablePath).ino, inode);
+  assert.deepEqual(inventory(options.runtimeDir), before);
+  assert.doesNotThrow(() => store.read(id));
+  fs.rmdirSync(extensions);
+  fs.writeFileSync(extensions, "occupied path");
+  await assert.rejects(createPortableRunner(options), /EEXIST|ENOTDIR/);
+  assert.equal(fs.readFileSync(extensions, "utf8"), "occupied path", "do not erase a conflicting file");
+});
+
 test("startup transaction retains the original working directory until commit or rollback", (t) => {
   const f = fixture(t); ensurePortableRuntimeCopy(f);
   const original = fs.readFileSync(f.runnerExecutablePath), originalMarker = fs.readFileSync(f.markerPath);

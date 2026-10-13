@@ -327,6 +327,13 @@ function copyPortableRuntimeFiles({ layout, runnerRootDir, runnerExecutablePath,
   copyPortableRuntimeExecutable({ sourcePath: layout.executablePath, targetPath: runnerExecutablePath, logger, platform });
   refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
   if (platform !== "win32") fs.chmodSync(runnerExecutablePath, 0o755);
+  preparePortableRuntimeDirectories(runnerRootDir, platform);
+}
+
+function preparePortableRuntimeDirectories(runnerRootDir, platform = process.platform) {
+  // Linux OWL 首次启动会创建此空目录；封存前纳入完整清单，避免启动确认误判内容变化。
+  // 只预建目录，不忽略其中的文件，也不在启动后重新封存，后续任何内容变化仍须校验失败。
+  if (platform === "linux") fs.mkdirSync(path.join(runnerRootDir, "extensions"), { recursive: true });
 }
 
 function removePreparedDirectory(directory) {
@@ -382,6 +389,7 @@ function ensurePortableRuntimeCopy({ layout, runnerRootDir, runnerExecutablePath
   const fingerprint = portableRuntimeFingerprint(layout, platform);
   const previous = readJsonIfPresent(markerPath);
   if (hasCompletePortableCopy({ previous, fingerprint, runnerRootDir, runnerExecutablePath, platform })) {
+    preparePortableRuntimeDirectories(runnerRootDir, platform);
     refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger, platform });
     logLine(logger, `official Electron runtime cache hit: ${runnerRootDir}`);
     return { copied: false };
@@ -425,6 +433,8 @@ async function createPortableRunner({ layout, runtimeDir, logger, forceRebuild =
         executableSha256(path.join(runnerRootDir, "resources", "app.asar")) === gatewaySha256;
     } catch { cacheHit = false; }
     if (cacheHit) {
+      // 已缓存的旧 runner 也在本轮封存前补齐布局，不重写可执行文件或 ASAR。
+      preparePortableRuntimeDirectories(runnerRootDir);
       runCompatibility(runnerPoints.portableLayout, () => refreshWindowsRuntimeManifests({ layout, runnerRootDir, logger }));
       // 摘要已验证该 EXE 对应当前 ASAR；记录适用点，但不再改写正在运行的副本。
       if (process.platform === "win32") runCompatibility(runnerPoints.windowsAsarIntegrity, () => undefined);
