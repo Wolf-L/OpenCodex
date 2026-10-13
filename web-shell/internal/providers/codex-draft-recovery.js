@@ -112,22 +112,28 @@
   function render() {
     if (!panel || disposed) return;
     const state = w.__OpenCodexConnectionState?.state || "connecting";
+    const needsLogin = state === "auth-required";
     const needsReload = w.__OpenCodexConnectionState?.appHostState === "reload-required";
     const connected = state === "connected" && !needsReload;
-    summary.textContent = `${needsReload ? label("○ 应用需重载 ·", "○ App reload needed ·") : connected ? "●" : label("○ 未连接 ·", "○ Disconnected ·")} ${label("文字草稿", "Text drafts")} (${entries.length})`;
-    panel.dataset.connection = needsReload ? "reload-required" : state;
+    summary.textContent = `${needsLogin ? label("○ 登录已失效 ·", "○ Login expired ·") : needsReload ? label("○ 应用需重载 ·", "○ App reload needed ·") : connected ? "●" : label("○ 未连接 ·", "○ Disconnected ·")} ${label("文字草稿", "Text drafts")} (${entries.length})`;
+    panel.dataset.connection = needsLogin ? "auth-required" : needsReload ? "reload-required" : state;
     const messages = {
       connected: label("Gateway 已连接", "Gateway connected"),
       connecting: label("正在连接 Gateway…", "Connecting to Gateway…"),
       reconnecting: label("连接中断，正在退避重试。请勿重复发送。", "Disconnected; retrying with backoff. Do not resend blindly."),
       offline: label("浏览器报告离线，自动重试已暂停；局域网可手动重试。", "Browser reports offline; auto-retry paused. LAN may still work."),
       paused: label("后台重试已暂停，回到页面后恢复。", "Retries paused in background; resume on return."),
+      "auth-required": label("访问登录已失效，请保存草稿后重新登录。自动重试已暂停，消息不会自动重发。", "Access login expired. Save your draft before signing in again. Auto-retry is paused; messages will not be resent."),
     };
     status.textContent = needsReload && state === "connected"
       ? label("Gateway 已连接，应用通道无法安全恢复。消息未自动重发；请核对发送状态。", "Gateway connected; the app channel could not safely recover. Messages were not replayed; verify send status.")
       : messages[state] || messages.connecting;
     retry.hidden = state === "connected";
-    reload.hidden = !needsReload;
+    reload.hidden = !needsReload && !needsLogin;
+    // 登录失效也只提供显式刷新入口，先保留文字副本并提醒附件不在草稿备份范围内。
+    reload.textContent = needsLogin
+      ? label("重新登录（先保存草稿和附件）", "Sign in again (save drafts and attachments first)")
+      : label("重新加载页面（先保存附件）", "Reload page (save attachments first)");
     // 重载会丢失编辑器附件/格式；只提供明确的用户操作入口，不替用户刷新或自动粘贴。
     reload.title = label("请先复制所需文字并检查附件；文字副本不包含附件、格式和项目设置。", "Copy needed text and check attachments first; copies exclude attachments, formatting and project settings.");
     notice.textContent = captureWarning || saveState || label("本标签页文字副本，最多 8 份 / 24 小时；不含附件、格式和项目设置。可能已发送，请核对后手动粘贴，不会自动恢复或重发。共用设备请清空副本。", "This tab only: up to 8 text copies / 24 hours. No attachments, formatting or project settings. Copies may already be sent; verify and paste manually. Never restored or resent automatically. Clear on shared devices.");

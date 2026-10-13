@@ -160,3 +160,26 @@ test("lost RPC continuity is not presented as recovered and reload requires an e
   h.emit(reload, "click"); assert.equal(reloads, 1);
   assert.equal(h.records()[0].text, "unsent draft");
 });
+
+test("expired gateway login preserves the draft and requires an explicit warned login reload", () => {
+  const h = harness(); let reloads = 0, retries = 0;
+  h.w.location.reload = () => { reloads++; };
+  const dispatch = h.w.dispatchEvent;
+  h.w.dispatchEvent = event => { if (event.type === "opencodex:retry-connection") retries++; dispatch(event); };
+  h.input(h.editor("登录过期前未发送的草稿"));
+  // 登录提示优先于 RPC 重载提示，不能仍显示正在退避重试或自动刷新编辑器。
+  h.w.__OpenCodexConnectionState = { state: "auth-required", appHostState: "reload-required" };
+  h.emit(h.w, "opencodex:connection-state"); h.open();
+  assert.equal(reloads, 0); assert.match(h.node("summary").textContent, /登录已失效/);
+  assert.equal(h.node("aside").dataset.connection, "auth-required");
+  assert.ok(h.nodes.some(n => n.textContent?.includes("访问登录已失效，请保存草稿后重新登录")));
+  const login = h.nodes.find(n => n.textContent === "重新登录（先保存草稿和附件）");
+  assert.equal(login.hidden, false); assert.match(login.title, /不包含附件/);
+  assert.equal(h.node("textarea").value, "登录过期前未发送的草稿");
+  const retry = h.nodes.find(n => n.textContent === "立即重试");
+  h.emit(retry, "click"); assert.equal(retries, 1); assert.equal(reloads, 0);
+  h.emit(login, "click"); assert.equal(reloads, 1); assert.equal(h.records()[0].text, "登录过期前未发送的草稿");
+  const reloaded = harness({ storage: h.storage }); reloaded.open();
+  assert.equal(reloaded.node("textarea").value, "登录过期前未发送的草稿");
+  assert.equal(reloaded.hits, 0);
+});

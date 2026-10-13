@@ -3622,6 +3622,9 @@
   let resumeSocketMonitoring = () => {};
   let retireCurrentSocket = () => {};
   let connectionPageSuspended = false;
+  let connectionGeneration = 0;
+  let gatewayAuthRequired = false;
+  let gatewayAuthProbe = null;
   function connectionPageHidden() {
     return connectionPageSuspended || document.visibilityState === "hidden";
   }
@@ -3631,11 +3634,60 @@
     w.dispatchEvent(new CustomEvent("opencodex:connection-state", { detail: w.__OpenCodexConnectionState }));
   }
 
+  function cancelGatewayAuthProbe() {
+    const probe = gatewayAuthProbe;
+    gatewayAuthProbe = null;
+    if (!probe) return;
+    scheduler.clearTimeout(probe.timer);
+    probe.controller?.abort();
+  }
+
+  function probeGatewayAuth(generation, retryAfterProbe = false) {
+    if (gatewayAuthProbe || generation !== connectionGeneration || ws || modificationScope?.active?.() === false) return;
+    if (typeof w.fetch !== "function") {
+      if (retryAfterProbe) { gatewayAuthRequired = false; connect(); }
+      return;
+    }
+    // WebSocket 不暴露拒绝原因；仅由同源状态接口的明确结果区分登录失效与普通断网。
+    const probe = { controller: typeof w.AbortController === "function" ? new w.AbortController() : null, timer: null };
+    gatewayAuthProbe = probe;
+    const finish = (expired) => {
+      if (gatewayAuthProbe !== probe || generation !== connectionGeneration || ws || modificationScope?.active?.() === false) return;
+      cancelGatewayAuthProbe();
+      if (expired) {
+        gatewayAuthRequired = true;
+        if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        reconnectDeferredUntilVisible = false;
+        publishConnectionState("auth-required");
+      } else if (retryAfterProbe) {
+        // 手动重试重新检查现有认证；异常响应仍按连接故障处理，不推断密码错误。
+        gatewayAuthRequired = false;
+        connect();
+      }
+    };
+    // 包括读取响应体在内都受截止时间约束；更换连接或销毁页面会撤销探测及迟到回调。
+    probe.timer = scheduler.setTimeout(() => finish(false), 5_000);
+    (async () => {
+      try {
+        const response = await w.fetch("/api/auth/status", {
+          method: "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
+          headers: gatewayAuthHeaders({ accept: "application/json" }), signal: probe.controller?.signal,
+        });
+        const result = response.ok ? await response.json() : null;
+        finish(result?.ok === true && result.authRequired === true && result.authenticated === false);
+      } catch { finish(false); }
+    })();
+  }
+
   function connect() {
     if (modificationScope?.active?.() === false) return;
+    if (gatewayAuthRequired) return;
     if (!cfg.gatewayWsUrl || !("WebSocket" in w)) return;
     if (ws && (ws.readyState === w.WebSocket.CONNECTING || ws.readyState === w.WebSocket.OPEN)) return;
     if (ws) retireCurrentSocket();
+    const generation = ++connectionGeneration;
+    cancelGatewayAuthProbe();
     if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
     reconnectTimer = null;
     reconnectDeferredUntilVisible = false;
@@ -3657,6 +3709,7 @@
         wsState: websocketStateName(socket),
       });
       scheduleReconnect();
+      probeGatewayAuth(generation);
       return;
     }
     let handshakeTimer = null;
@@ -3700,6 +3753,7 @@
       for (const state of appHostPortRelays.values()) state.connected = false;
       releaseSocket();
       scheduleReconnect();
+      probeGatewayAuth(generation);
     }
     function armHandshakeDeadline() {
       // 重试/唤醒事件可能连续到达；不能重置同一次握手的截止时间，让坏连接一直存活。
@@ -3959,6 +4013,7 @@
   /** WebSocket 断开后的指数退避重连。 */
   function scheduleReconnect() {
     if (modificationScope?.active?.() === false) return;
+    if (gatewayAuthRequired) return;
     if (ws && (ws.readyState === w.WebSocket.CONNECTING || ws.readyState === w.WebSocket.OPEN)) return;
     if (reconnectTimer) return;
     if (navigator.onLine === false) {
@@ -3988,6 +4043,7 @@
 
   function handleReconnectVisibilityChange() {
     if (modificationScope?.active?.() === false) return;
+    if (gatewayAuthRequired) return;
     if (connectionPageHidden()) {
       stopSocketMonitoring();
       if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
@@ -4006,6 +4062,7 @@
 
   function retryConnection() {
     if (modificationScope?.active?.() === false) return;
+    if (gatewayAuthRequired) { probeGatewayAuth(connectionGeneration, true); return; }
     if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
     reconnectTimer = null;
     // onLine 只是系统提示，手动重试仍允许访问局域网/回环地址；不禁用编辑或发送入口。
@@ -4013,12 +4070,14 @@
     connect();
   }
   function handleOffline() {
+    if (gatewayAuthRequired) return;
     if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
     reconnectTimer = null;
     if (!ws) publishConnectionState("offline");
   }
 
   modificationScope?.own?.(() => {
+    cancelGatewayAuthProbe();
     if (reconnectTimer) scheduler.clearTimeout(reconnectTimer);
     reconnectTimer = null;
     stopSocketMonitoring();
@@ -4054,7 +4113,7 @@
   adapterHost.events.observe({ key: {}, target: document, type: "resume", callback: handleReconnectVisibilityChange });
   adapterHost.events.observe({ key: {}, target: w, type: "focus", callback: handleReconnectVisibilityChange });
   adapterHost.events.observe({ key: {}, target: w, type: "online", callback: () => {
-    if (!connectionPageHidden()) retryConnection();
+    if (!connectionPageHidden() && !gatewayAuthRequired) retryConnection();
   } });
   adapterHost.events.observe({ key: {}, target: w, type: "offline", callback: handleOffline });
   adapterHost.events.observe({ key: {}, target: w, type: "opencodex:retry-connection", callback: retryConnection });

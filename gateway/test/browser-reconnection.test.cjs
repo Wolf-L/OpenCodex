@@ -5,8 +5,8 @@ const vm = require("node:vm");
 const test = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "../../web-shell/internal/providers/codex-bridge-polyfill.js"), "utf8");
 
-function harness({ online = true, hidden = false, realAppHost = false } = {}) {
-  const timers = new Map(), events = new Map(), disposers = new Set(), sockets = [], rejected = [];
+function harness({ online = true, hidden = false, realAppHost = false, authFetch = false } = {}) {
+  const timers = new Map(), events = new Map(), disposers = new Set(), sockets = [], rejected = [], authRequests = [];
   let now = 0, timerId = 0, active = true;
   const scheduler = {
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, at: now + delay }); return id; },
@@ -22,7 +22,9 @@ function harness({ online = true, hidden = false, realAppHost = false } = {}) {
     emit(type, event = {}) { if (type === "open") this.readyState = 1; this.listeners.get(type)?.(event); }
     ack(heartbeat = true, appHostRecovery) { this.emit("message", { data: JSON.stringify({ type: "hello-ack", clientId: "test", heartbeat, appHostRecovery }) }); }
   }
-  const w = { WebSocket: Socket, dispatchEvent() {} };
+  const w = { WebSocket: Socket, AbortController, dispatchEvent() {} };
+  // 让测试按需控制 HTTP 与响应体的完成顺序，覆盖真实浏览器会出现的迟到和挂起响应。
+  if (authFetch) w.fetch = (url, options) => new Promise((resolve, reject) => authRequests.push({ url, options, resolve, reject }));
   const context = {
     w, WebSocket: Socket, ws: null, wsReady: false, scheduler,
     appHostRecovery: { enabled: true, failed: false }, appHostRecoveryHello: () => ({ version: 1 }),
@@ -44,9 +46,10 @@ function harness({ online = true, hidden = false, realAppHost = false } = {}) {
     listeners: new Map(), authStatusCallbacks: new Set(), terminalMessageQueues: new Map(),
     terminalMessageQueueDepths: new Map(), terminalMessagePendingCount: 0,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } }, console,
+    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } }, console, Headers,
   };
   vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("  function gatewayAuthToken()"), source.indexOf("  function gatewayWebSocketUrl()")), context);
   let port = null;
   if (realAppHost) {
     // 组合生产恢复逻辑与连接状态机，避免预设 enabled=true 掩盖首次握手失败。
@@ -70,7 +73,7 @@ function harness({ online = true, hidden = false, realAppHost = false } = {}) {
   // 执行完整的生产连接/事件注册段，而不是另写一个测试用状态机。
   vm.runInContext(source.slice(source.indexOf("  let stopSocketMonitoring"), source.lastIndexOf("})();")), context);
   return {
-    context, sockets, rejected, timers, events, port,
+    context, sockets, rejected, timers, events, port, authRequests,
     get recovery() { return realAppHost ? vm.runInContext("appHostRecovery", context) : context.appHostRecovery; },
     get state() { return w.__OpenCodexConnectionState.state; },
     advance(ms) {
@@ -323,4 +326,107 @@ test("a later successful WebSocket handshake cannot clear an explicit applicatio
   assert.equal(h.context.w.__OpenCodexConnectionState.appHostState, "reload-required");
   assert.deepEqual(next.sent.map(frame => frame.type), ["hello"]);
   h.dispose(); assert.equal(h.timers.size, 0);
+});
+
+const expiredAuth = { ok: true, authRequired: true, authenticated: false };
+const loggedInAuth = { ok: true, authRequired: true, authenticated: true };
+// VM 与宿主 Promise 的跨上下文接续全部完成后再断言，不推进虚拟连接时钟。
+const flushAuth = () => new Promise(resolve => setImmediate(resolve));
+function answerAuth(request, body, ok = true) { request.resolve({ ok, json: async () => body }); }
+
+test("confirmed expired login stops blind retries without replaying business messages", async () => {
+  const h = harness({ authFetch: true }), socket = h.sockets[0];
+  h.context.w.__OPEN_CODEX_RUNTIME_AUTH_TOKEN__ = "fixture-token";
+  socket.emit("open"); socket.ack(); socket.emit("error"); socket.emit("close"); socket.emit("error");
+  assert.equal(h.authRequests.length, 1);
+  const request = h.authRequests[0];
+  assert.equal(request.url, "/api/auth/status"); assert.equal(request.options.method, "GET");
+  assert.equal(request.options.credentials, "same-origin"); assert.equal(request.options.cache, "no-store");
+  assert.equal(request.options.redirect, "error");
+  assert.equal(request.options.headers.get("authorization"), "Bearer fixture-token");
+  assert.equal(request.options.headers.get("x-codex-web-token"), "fixture-token");
+  answerAuth(request, expiredAuth); await flushAuth();
+  assert.equal(h.state, "auth-required"); assert.equal(h.timers.size, 0);
+  for (const type of ["online", "offline", "focus", "pageshow", "resume", "visibilitychange"]) h.event(type);
+  h.advance(120_000);
+  assert.equal(h.state, "auth-required"); assert.equal(h.sockets.length, 1); assert.equal(h.authRequests.length, 1);
+  assert.deepEqual(socket.sent.map(frame => frame.type), ["hello"]);
+  h.dispose();
+});
+
+test("unexpected HTTP, body and network errors remain ordinary backoff failures", async () => {
+  // 必须三个布尔字段都严格匹配；不能把 401、代理 HTML 或超时本身当作登录失效证据。
+  const cases = [
+    request => answerAuth(request, expiredAuth, false),
+    request => answerAuth(request, null),
+    request => answerAuth(request, "unauthorized"),
+    request => answerAuth(request, { ...expiredAuth, ok: "true" }),
+    request => answerAuth(request, { ...expiredAuth, authRequired: "true" }),
+    request => answerAuth(request, { ok: true, authRequired: true }),
+    request => answerAuth(request, loggedInAuth),
+    request => answerAuth(request, { ...expiredAuth, authRequired: false }),
+    request => request.resolve({ ok: true, json: async () => { throw Error("not JSON"); } }),
+    request => request.reject(Error("network down")),
+  ];
+  for (const complete of cases) {
+    const h = harness({ authFetch: true }); h.sockets[0].emit("close");
+    complete(h.authRequests[0]); await flushAuth();
+    assert.equal(h.state, "reconnecting"); assert.equal(h.context.w.__OpenCodexConnectionState.retryInMs, 375);
+    h.advance(375); assert.equal(h.sockets.length, 2); h.dispose();
+  }
+});
+
+test("stale auth success and failure cannot override a new connecting or ready socket", async () => {
+  for (const ready of [false, true]) for (const reject of [false, true]) {
+    const h = harness({ authFetch: true }), old = h.sockets[0]; old.emit("close");
+    const request = h.authRequests[0];
+    h.advance(375); const current = h.sockets[1];
+    assert.equal(request.options.signal.aborted, true);
+    if (ready) { current.emit("open"); current.ack(); }
+    if (reject) request.reject(Error("late failure")); else answerAuth(request, expiredAuth);
+    await flushAuth(); old.emit("close"); old.emit("error");
+    assert.equal(h.context.ws, current); assert.equal(h.state, ready ? "connected" : "connecting");
+    assert.equal(h.authRequests.length, 1); h.dispose();
+  }
+});
+
+test("auth probe disposal aborts its deadline and ignores late response body completion", async () => {
+  const h = harness({ authFetch: true }); h.sockets[0].emit("close");
+  let resolveBody;
+  h.authRequests[0].resolve({ ok: true, json: () => new Promise(resolve => { resolveBody = resolve; }) });
+  await flushAuth(); h.dispose();
+  assert.equal(h.timers.size, 0); assert.equal(h.authRequests[0].options.signal.aborted, true);
+  resolveBody(expiredAuth); await flushAuth();
+  assert.equal(h.state, "reconnecting"); assert.equal(h.sockets.length, 1); assert.equal(h.timers.size, 0);
+});
+
+test("auth probe deadline includes a stalled response body and never infers expiry from timeout", async () => {
+  const h = harness({ online: false, authFetch: true }); h.sockets[0].emit("close");
+  let resolveBody;
+  h.authRequests[0].resolve({ ok: true, json: () => new Promise(resolve => { resolveBody = resolve; }) });
+  await flushAuth(); h.advance(4_999); assert.equal(h.authRequests[0].options.signal.aborted, false);
+  h.advance(1); assert.equal(h.authRequests[0].options.signal.aborted, true); assert.equal(h.timers.size, 0);
+  resolveBody(expiredAuth); await flushAuth(); assert.equal(h.state, "offline");
+  h.dispose();
+});
+
+test("manual retry deduplicates auth rechecks and accepts a newly logged-in status without replay", async () => {
+  const h = harness({ authFetch: true }); h.sockets[0].emit("close");
+  answerAuth(h.authRequests[0], expiredAuth); await flushAuth();
+  for (let i = 0; i < 4; i++) h.event("opencodex:retry-connection");
+  assert.equal(h.authRequests.length, 2); assert.equal(h.sockets.length, 1);
+  answerAuth(h.authRequests[1], expiredAuth); await flushAuth();
+  assert.equal(h.state, "auth-required"); assert.equal(h.timers.size, 0);
+  h.event("opencodex:retry-connection"); answerAuth(h.authRequests[2], loggedInAuth); await flushAuth();
+  assert.equal(h.sockets.length, 2); const current = h.sockets[1]; current.emit("open"); current.ack();
+  assert.equal(h.state, "connected"); assert.deepEqual(current.sent.map(frame => frame.type), ["hello"]);
+  h.dispose();
+});
+
+test("manual auth recheck timeout allows a LAN attempt but late expiry cannot replace it", async () => {
+  const h = harness({ online: false, authFetch: true }); h.sockets[0].emit("close");
+  answerAuth(h.authRequests[0], expiredAuth); await flushAuth(); h.event("opencodex:retry-connection");
+  const request = h.authRequests[1]; h.advance(5_000);
+  assert.equal(request.options.signal.aborted, true); assert.equal(h.sockets.length, 2);
+  request.reject(Error("late abort")); await flushAuth(); assert.equal(h.state, "connecting"); h.dispose();
 });
