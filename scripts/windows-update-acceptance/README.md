@@ -31,3 +31,5 @@ $env:ELECTRON_RUN_AS_NODE = '1'
 失败场景须精确匹配预期错误；启动失败另核对本事务候选版本的真实启动和退出 42 事件，安装器失败必须为原生退出 13，不能以任意异常冒充。每次升级/回退后通过随机 nonce 向轻量 Gateway 发出真实 IPC 探测，收到对应响应后再核对父子进程完整身份与当前存活。CI 实时打印阶段，上传记录不含用户凭据。
 
 三个产品模块 `self-update-controller.cjs`、`self-update-install.cjs`、`self-update-helper.cjs` 原样打包，manifest 留存其 SHA-256。更新助手、进程检查、NSIS、文件恢复与注册表恢复均使用原生实现。仅网络下载器被夹具替换，真实安装 API 仍重新核验安装包摘要；Gateway 为真实轻量子进程，通过真实 IPC 就绪。结果不代表公开发布下载、实际官方 Gateway／CLI、真实用户账号、断电恢复或签名验证。立即退出到无法捕获身份的场景应单独验收，不能由延迟退出结果推断。
+
+备份文件系统另有 Windows 真实 Electron 普通模式回归：`node --test launcher/test/self-update-asar.test.cjs`。它使用有效的 `default_app.asar`，调用产品清单和复制原语，确认归档保持物理文件、原始字节和摘要不变。主进程使用 Electron 内置 `original-fs`，目录外 Node 助手使用原生 `node:fs`；不能通过删去 ASAR 或改用 Node 模式夹具掩盖差异。

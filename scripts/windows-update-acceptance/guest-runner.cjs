@@ -78,9 +78,13 @@ async function scenario(name, pkg, expected, sentinels) {
   const beforeInventory = await helper.inventory(install);
   const previousLatest = fs.existsSync(path.join(data, "self-update/transactions/latest.json")) ? helper.readJson(path.join(data, "self-update/transactions/latest.json")).transactionId : null;
   event({ type: "scenario-start", name });
+  const eventOffset = events().length;
   writeCommand(original, { installerPath: pkg.path, size: pkg.size, sha256: pkg.sha256, targetVersion: pkg.version });
   let lastStatus;
   const terminal = await waitFor(() => {
+    // 准备失败不会生成新事务指针，直接报告实际拒绝原因，避免空等整个超时窗口。
+    const rejection = events().slice(eventOffset).find(entry => entry.pid === original.pid && ["install-rejected", "fixture-error"].includes(entry.type));
+    if (rejection) throw new Error(`${name}: ${rejection.type}: ${rejection.error}`);
     try {
       const pointer = helper.readJson(path.join(data, "self-update/transactions/latest.json"));
       if (pointer.transactionId === previousLatest) return false;

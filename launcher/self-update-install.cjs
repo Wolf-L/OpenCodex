@@ -1,6 +1,7 @@
 "use strict";
 
-const fs = require("node:fs");
+// 与目录外 Node 模式助手使用相同的物理文件语义，不让 Electron 展开 ASAR。
+const fs = process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE ? require("original-fs") : require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -9,6 +10,11 @@ const { promisify } = require("node:util");
 const exec = promisify(execFile);
 const helper = require("./self-update-helper.cjs");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function copyApplicationTree(source, destination) {
+  // 与内容清单使用同一原始文件系统，真实 ASAR 文件不得展开或重写。
+  await fsp.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+}
 
 function updateRoot(userDataDir) {
   return path.join(helper.assertPlainPath(userDataDir), "self-update", "transactions");
@@ -100,7 +106,7 @@ async function prepareWindowsUpdate(options) {
     const inventory = await helper.inventory(identity.installDir);
     const inventoryFile = path.join(dir, "inventory.json");
     helper.atomicJson(inventoryFile, inventory);
-    await fsp.cp(identity.installDir, backupDir, { recursive: true, force: false, errorOnExist: true });
+    await copyApplicationTree(identity.installDir, backupDir);
     const registry = [];
     for (const [index, key] of helper.REGISTRY_KEYS.entries()) {
       const file = path.join(dir, `registry-${index}.reg`);
@@ -202,4 +208,4 @@ async function recoverWindowsUpdate(options) {
   return { ...state, status: "recovery-needed", canRecover: false, error: state.error || "更新事务未完成，请保留备份并检查恢复；不会自动再次运行安装器" };
 }
 
-module.exports = { prepareWindowsUpdate, readWindowsUpdateState, recordUpdateStartup, confirmWindowsUpdate, recoverWindowsUpdate, __test: { activeJournal, startupContext, installationIdentity, acquireTransactionLock, validatePackagedMetadata } };
+module.exports = { prepareWindowsUpdate, readWindowsUpdateState, recordUpdateStartup, confirmWindowsUpdate, recoverWindowsUpdate, __test: { activeJournal, startupContext, installationIdentity, acquireTransactionLock, validatePackagedMetadata, copyApplicationTree } };

@@ -1,7 +1,8 @@
 "use strict";
 
-// 此文件会被复制到安装目录外运行，因此只依赖 Node 内置模块。
-const fs = require("node:fs");
+// 目录外助手以 Node 模式运行，只依赖内置模块；主进程分支使用 Electron 内置原始 fs。
+// Electron 主进程的 fs 会把 .asar 当虚拟目录；备份必须读写真实文件字节。
+const fs = process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE ? require("original-fs") : require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const crypto = require("node:crypto");
