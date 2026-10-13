@@ -10,6 +10,15 @@ const helper = require("../self-update-helper.cjs");
 const installer = require("../self-update-install.cjs");
 const { EventEmitter } = require("node:events");
 
+test("missing or reused parent never adopts an unrelated orphan from parentPid", () => {
+  const parent = { pid: 100, exePath: path.resolve("OpenCodex.exe"), born: "2026-01-01T00:00:00Z" };
+  const child = { pid: 200, parentPid: 100, exePath: path.resolve("gateway.exe"), born: "2026-01-01T00:00:01Z" };
+  const grandchild = { pid: 300, parentPid: 200, exePath: path.resolve("cli.exe"), born: "2026-01-01T00:00:02Z" };
+  assert.deepEqual(helper.ownedFromSnapshot(parent, [child, grandchild]), []);
+  assert.throws(() => helper.ownedFromSnapshot(parent, [{ ...parent, born: child.born }, child]), /复用/);
+  assert.deepEqual(helper.ownedFromSnapshot(parent, [parent, child, grandchild]), [parent, child, grandchild]);
+});
+
 test("launch never adopts a mismatched or recycled process identity", async () => {
   const now = Date.now();
   const exe = path.resolve("OpenCodex.exe");
@@ -199,6 +208,27 @@ test("foreign Gateway is not killed and prevents unsafe rollback", async t => {
   await f.run();
   assert.equal(f.state().status, "recovery-needed");
   assert.equal(f.events.some(event => event.startsWith("stopped-")), false);
+});
+
+test("uncaptured orphan Gateway is not adopted after candidate exit", async t => {
+  const f = await fixture(t);
+  f.adapter.alive = async identity => identity.pid !== f.candidate.pid;
+  await f.run();
+  assert.equal(f.state().status, "recovery-needed");
+  assert.match(f.state().error, /未捕获 Gateway/);
+  assert.equal(f.events.some(event => event.startsWith("stopped-")), false);
+  assert.equal(f.events.includes("restored"), false);
+});
+
+test("Gateway captured while parent is alive retains identity for rollback", async t => {
+  const f = await fixture(t);
+  const start = f.adapter.candidate;
+  f.adapter.candidate = async () => { const candidate = await start(); fs.unlinkSync(path.join(f.dir, "ack.json")); return candidate; };
+  let observations = 0;
+  f.adapter.alive = async identity => identity.pid !== f.candidate.pid || ++observations <= 2;
+  await f.run();
+  assert.equal(f.state().status, "rolled-back");
+  assert.deepEqual(f.events.slice(-3), ["stopped-200", "stopped-300", "restored"]);
 });
 
 test("plain path validation rejects shared roots, malformed paths and symlinks", async t => {

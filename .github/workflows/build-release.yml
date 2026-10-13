@@ -187,6 +187,22 @@ jobs:
         # 从真实安装包流式计算摘要；清单用于完整性校验，不代表发布者代码签名。
         run: node scripts/create-windows-update-manifest.cjs --directory release --commit "$env:GITHUB_SHA"
 
+      - name: Verify native Windows update and rollback
+        # 仅在一次性托管 VM 使用合成数据；真实 NSIS 与未替换的产品助手完成升级和回退。
+        timeout-minutes: 25
+        run: ./scripts/windows-update-acceptance/launch-ci.ps1
+
+      - name: Upload Windows update acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-update-acceptance-${{ github.sha }}
+          path: |
+            C:/AcceptanceOutput/**
+            C:/OpenCodexAcceptance/results/**
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v6
         with:
@@ -295,6 +311,8 @@ jobs:
       - name: Download installers
         uses: actions/download-artifact@v8
         with:
+          # 隔离验收日志不是发布附件，只下载安装包类产物。
+          pattern: opencodex-*
           path: release-assets
           merge-multiple: true
 

@@ -67,11 +67,14 @@ test('rejects truncated, excessive, changed and non-PE installer bytes', async t
 
 test('cancel aborts pending request, retry starts a clean request, and concurrent call shares one operation', async t => {
   const f = await fixture(t); let block = true, calls = 0;
+  let requestStarted;
+  const started = new Promise(resolve => { requestStarted = resolve; });
   const updater = createSelfUpdateDownloader({ root: path.join(f.root, 'retry'), currentVersion: '2.1.0', fetchImpl: async url => {
-    calls++; if (block) return new Promise(() => {}); return new Response(url.endsWith('.json') ? f.manifestBytes : f.installer);
+    calls++; requestStarted(); if (block) return new Promise(() => {}); return new Response(url.endsWith('.json') ? f.manifestBytes : f.installer);
   } });
   const first = updater.download(f.candidate), concurrent = updater.download(f.candidate);
-  await new Promise(resolve => setTimeout(resolve, 20)); updater.cancel();
+  // 等待真实请求进入夹具再取消，避免磁盘调度较慢时固定睡眠先于请求结束。
+  await started; updater.cancel();
   assert.equal((await first).status, 'cancelled'); await concurrent; assert.equal(calls, 1);
   block = false; await updater.download(f.candidate); assert.equal(updater.state().status, 'ready'); assert.equal(calls, 3);
 });

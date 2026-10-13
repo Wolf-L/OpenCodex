@@ -113,16 +113,18 @@ async function processList() {
   const result = await powershell("@(Get-CimInstance Win32_Process | ForEach-Object { @{ pid = [int]$_.ProcessId; parentPid = [int]$_.ParentProcessId; exePath = $_.ExecutablePath; born = $_.CreationDate.ToUniversalTime().ToString('o') } }) | ConvertTo-Json -Compress");
   return Array.isArray(result) ? result : result ? [result] : [];
 }
-async function descendants(identity) {
-  const all = await processList();
+function ownedFromSnapshot(identity, all) {
   const root = all.find(item => item.pid === identity.pid);
   if (root && (root.born !== identity.born || !samePath(root.exePath || "", identity.exePath))) throw new Error("进程标识已复用，无法确认子进程归属");
+  // 已消失的父 PID 可能被短命无关进程复用；不能据其遗留 parentPid 认领孤儿。
+  if (!root) return [];
   const owned = [identity];
   for (let i = 0; i < owned.length; i++) {
     owned.push(...all.filter(item => item.parentPid === owned[i].pid && item.pid !== owned[i].pid && Date.parse(item.born) >= Date.parse(owned[i].born) && !owned.some(known => known.pid === item.pid)));
   }
   return owned;
 }
+async function descendants(identity) { return ownedFromSnapshot(identity, await processList()); }
 async function noInstalledProcesses(installDir) {
   if ((await processList()).some(item => item.exePath && within(item.exePath, installDir))) throw new Error("应用目录仍有运行进程，保留备份等待恢复");
 }
@@ -253,6 +255,7 @@ async function runTransaction(transactionDir, adapter = nativeAdapter(transactio
     try { if (readJson(lock).transactionId === journal.transactionId) fs.unlinkSync(lock); } catch {}
   };
   let candidate;
+  let gateway;
   let mutationStarted = false;
   try {
     await verifyBackup(journal);
@@ -278,12 +281,23 @@ async function runTransaction(transactionDir, adapter = nativeAdapter(transactio
     const ackDeadline = Date.now() + (options.ackTimeoutMs || 180000);
     while (Date.now() < ackDeadline) {
       if (!await adapter.alive(candidate)) throw new Error("新版启动后退出");
+      const startupPath = path.join(transactionDir, "startup.json");
+      if (fs.existsSync(startupPath)) {
+        const record = readJson(startupPath);
+        if (record.token === journal.token && record.pid === candidate.pid && Number.isSafeInteger(record.gatewayPid)) {
+          const observed = await adapter.processInfo(record.gatewayPid);
+          if (observed && observed.parentPid !== candidate.pid) throw new Error("无法确认 Gateway 归属");
+          // 只在候选父进程仍可确认存活时记录完整身份，失败恢复不重新认领孤儿 PID。
+          if (!await adapter.alive(candidate)) throw new Error("新版启动后退出");
+          if (observed) gateway = observed;
+        }
+      }
       const ackPath = path.join(transactionDir, "ack.json");
       if (fs.existsSync(ackPath)) {
         const ack = readJson(ackPath);
         if (ack.token !== journal.token || ack.version !== journal.targetVersion || ack.pid !== candidate.pid || !samePath(ack.exePath, journal.exePath)) throw new Error("新版启动确认不匹配");
-        const gateway = await adapter.processInfo(ack.gatewayPid);
-        if (!gateway || gateway.parentPid !== candidate.pid || !await adapter.alive(gateway)) throw new Error("新版 Gateway 身份校验失败");
+        const confirmedGateway = await adapter.processInfo(ack.gatewayPid);
+        if (!confirmedGateway || confirmedGateway.parentPid !== candidate.pid || !await adapter.alive(confirmedGateway) || !await adapter.alive(candidate)) throw new Error("新版 Gateway 身份校验失败");
         update("completed"); releaseLock(); return;
       }
       await delay(options.pollMs || 250);
@@ -299,14 +313,12 @@ async function runTransaction(transactionDir, adapter = nativeAdapter(transactio
     }
     if (error.recoveryUnsafe) { update("recovery-needed", error.message); return; }
     try {
-      // Gateway 身份来自带令牌的启动记录，再核对父进程；不信任任意 PID 文件。
+      // 未在父进程存活时捕获的 Gateway 只检查是否仍存在，绝不据孤儿 parentPid 接管。
       const startupPath = path.join(transactionDir, "startup.json");
-      let gateway;
-      if (candidate && fs.existsSync(startupPath)) {
+      if (candidate && !gateway && fs.existsSync(startupPath)) {
         const record = readJson(startupPath);
         if (record.token === journal.token && record.pid === candidate.pid && Number.isSafeInteger(record.gatewayPid)) {
-          gateway = await adapter.processInfo(record.gatewayPid);
-          if (gateway && gateway.parentPid !== candidate.pid) throw new Error("无法确认 Gateway 归属");
+          if (await adapter.processInfo(record.gatewayPid)) throw new Error("未捕获 Gateway 完整身份，保留备份等待恢复");
         }
       }
       if (candidate && !await adapter.stopOwned(candidate)) throw new Error("新版进程无法停止");
@@ -319,5 +331,5 @@ async function runTransaction(transactionDir, adapter = nativeAdapter(transactio
   }
 }
 
-module.exports = { GUID, REGISTRY_KEYS, TERMINAL, readJson, atomicJson, digest, verifyInstaller, assertPlainPath, inventory, verifyBackup, validateJournal, validateRegistryExport, powershell, processInfo, alive, waitExit, stopOwned, launch, nativeAdapter, runTransaction, samePath, within, newerVersion };
+module.exports = { GUID, REGISTRY_KEYS, TERMINAL, readJson, atomicJson, digest, verifyInstaller, assertPlainPath, inventory, verifyBackup, validateJournal, validateRegistryExport, powershell, processInfo, alive, waitExit, stopOwned, launch, nativeAdapter, runTransaction, samePath, within, newerVersion, ownedFromSnapshot };
 if (require.main === module) processInfo(process.pid).then(helperIdentity => runTransaction(process.argv[2], undefined, { helperIdentity })).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
