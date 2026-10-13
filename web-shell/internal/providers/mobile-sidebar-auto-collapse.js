@@ -18,8 +18,8 @@
   const SIDEBAR_NON_THREAD_ROW_SELECTOR = "[data-app-action-sidebar-project-row],[data-app-action-sidebar-section]";
   const SIDEBAR_TOGGLE_SELECTOR = "[data-app-shell-sidebar-trigger]";
   const SIDEBAR_TOGGLE_VIEW_TRANSITION_NAME = "sidebar-trigger";
-  // 官方不同版本使用过两套“新建任务”图标，需同时兼容，避免上游换图标后点击失效。
-  const SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIXES = ["M2.6687 11.333", "M6.33325 1.88379"];
+  // 仅兼容已验证的“新建任务”图标，包括手机当前 renderer 变体，避免上游换图标后点击失效。
+  const SIDEBAR_NEW_CONVERSATION_ICON_PATH_PREFIXES = ["M2.6687 11.333", "M6.33325 1.88379", "M8.16675 2.50127"];
   const NEW_CONVERSATION_MESSAGE_TYPES = new Set(["new-chat", "new-quick-chat"]);
   const PROMOTION_ATTRIBUTE = "data-opencodex-mobile-promotion";
   const PROMOTION_SELECTOR = "header[data-app-shell-titlebar] button, [class~='group/home-composer-layout'] aside[role='status']";

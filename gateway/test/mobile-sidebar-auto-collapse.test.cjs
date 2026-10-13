@@ -219,8 +219,8 @@ test("mobile sidebar delegates touch styles to the v2 RuntimeView point", () => 
 });
 
 test("mobile sidebar collapses after clicking new task icons from supported renderer versions", () => {
-  // 旧版和当前版图标都必须触发收起，升级官方 renderer 时不能破坏移动端行为。
-  for (const iconPath of ["M2.6687 11.333 legacy", "M6.33325 1.88379 current"]) {
+  // 保留旧图标，并覆盖手机实际 renderer 的路径前缀，避免升级后新建任务不再收起抽屉。
+  for (const iconPath of ["M2.6687 11.333 legacy", "M6.33325 1.88379 previous", "M8.16675 2.50127 current"]) {
     const harness = createHarness(iconPath);
     harness.clickNewTask();
     assert.equal(harness.pendingTimerCount(), 1);
@@ -232,11 +232,14 @@ test("mobile sidebar collapses after clicking new task icons from supported rend
 });
 
 test("mobile sidebar ignores unrelated sidebar icon buttons", () => {
-  const harness = createHarness("M0 0 unrelated");
-  harness.clickNewTask();
-  assert.equal(harness.pendingTimerCount(), 0);
-  assert.equal(harness.toggleClickCount(), 0);
-  harness.dispose();
+  // 相似坐标不视作受支持图标，不能扩大成任意路径或文案匹配。
+  for (const iconPath of ["M0 0 unrelated", "M8.16675 2.50128 unrelated"]) {
+    const harness = createHarness(iconPath);
+    harness.clickNewTask();
+    assert.equal(harness.pendingTimerCount(), 0);
+    assert.equal(harness.toggleClickCount(), 0);
+    harness.dispose();
+  }
 });
 
 test("mobile sidebar skips only dragging while allowing the native long-press event to propagate", () => {
