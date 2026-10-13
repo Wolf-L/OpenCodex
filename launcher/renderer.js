@@ -138,6 +138,44 @@ function renderRuntimeUpdate(state) {
   if (failure?.state === "failed") text("runtimeRecoveryStatus", t("launcher.runtime.failed", { reason: failure.reason }));
 }
 
+function renderSelfUpdate(state) {
+  const update = state.selfUpdate || {};
+  const busy = !!update.installing || !!update.handedOff;
+  const downloading = ["downloading", "verifying"].includes(update.status);
+  const ready = update.status === "ready";
+  const downloadable = !!state.latestRelease?.downloadable && !!update.supported;
+  $("downloadUpdate").hidden = !downloadable || ready || busy;
+  $("downloadUpdate").disabled = downloading || busy;
+  $("cancelUpdate").hidden = !downloading || busy;
+  $("installUpdate").hidden = !ready || busy;
+  $("installUpdate").disabled = busy || state.runtimeUpdateBusy || state.runtimePreflightChecking;
+  const recovery = update.recovery;
+  $("recoverUpdate").hidden = recovery?.canRecover !== true || !update.supported;
+  $("recoverUpdate").disabled = busy || state.runtimeUpdateBusy || state.runtimePreflightChecking;
+  $("checkLatestRelease").disabled = !!state.latestRelease?.checking || downloading || busy;
+  // 不向界面暴露下载路径、来源 URL 或事务令牌，只展示阶段和有界进度。
+  const node = $("selfUpdateStatus");
+  const keys = { downloading: "downloading", verifying: "verifying", ready: "ready", cancelled: "cancelled", error: "error",
+    preparing: "preparing", installing: "installing", recovering: "recovering" };
+  node.hidden = false;
+  if (keys[update.status]) text("selfUpdateStatus", t(`launcher.selfUpdate.${keys[update.status]}`, {
+    percent: Math.max(0, Math.min(100, Number(update.percent ?? update.progress?.percent) || 0)).toFixed(0),
+    version: update.targetVersion || "", error: update.error || "",
+  }));
+  else if (recovery?.status && recovery.status !== "idle") {
+    const recoveryKeys = { completed: "completed", "rolled-back": "rolledBack", cancelled: "previousCancelled", "recovery-needed": "recoveryNeeded" };
+    text("selfUpdateStatus", t(`launcher.selfUpdate.${recoveryKeys[recovery.status] || "pending"}`, { error: recovery.error || "" }));
+  }
+  else if (state.latestRelease?.available && !downloadable) text("selfUpdateStatus", t("launcher.selfUpdate.manual"));
+  else node.hidden = true;
+  for (const id of ["restart", "savePort", "savePassword", "clearPassword", "choosePluginDir", "savePluginDirs", "clearPluginDirs"])
+    $(id).disabled = busy;
+  for (const id of ["preventSleepInput", "officialAutoScanUpgradeInput"]) $(id).disabled = busy;
+  if (busy) {
+    for (const input of document.querySelectorAll('input[name="hostMode"]')) input.disabled = true;
+  }
+}
+
 function formatDateTime(value) {
   if (!value) return t("common.unknown");
   const date = new Date(value);
@@ -266,6 +304,7 @@ function render(state) {
   // 无可用备份时隐藏入口，还原期间保留禁用状态以防重复操作。
   $("restoreBundleBackup").disabled = !backup.available || backup.restoring || state.runtimeUpdateBusy || state.runtimePreflightChecking;
   $("restoreBundleBackup").hidden = !backup.available;
+  renderSelfUpdate(state);
   text("codexVersion", official.version || t("common.unknown"));
   text("codexBuild", official.build || t("common.unknown"));
   text("cacheUpdatedAt", formatDateTime(official.cacheProcessedAt));
@@ -331,6 +370,15 @@ document.addEventListener("click", async (event) => {
     target.disabled = true;
     try { render(await launcher.checkLatestRelease()); }
     finally { await refresh(); }
+    return;
+  }
+  if (["downloadUpdate", "cancelUpdate", "installUpdate", "recoverUpdate"].includes(target.id)) {
+    target.disabled = true;
+    let failure;
+    try { render(await launcher[target.id]()); }
+    catch (error) { failure = error; }
+    finally { await refresh(); }
+    if (failure) { $("selfUpdateStatus").hidden = false; text("selfUpdateStatus", failure.message); }
     return;
   }
   if (target.id === "restoreBundleBackup") {

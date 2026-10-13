@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld("openCodexLauncher", {
   openAuthor: () => ipcRenderer.invoke("launcher:open-author"),
   // 更新入口不接收地址或平台参数，由主进程匹配本机版本并校验发布链接。
   checkLatestRelease: () => ipcRenderer.invoke("launcher:check-latest-release"),
+  downloadUpdate: () => ipcRenderer.invoke("launcher:download-update"),
+  cancelUpdate: () => ipcRenderer.invoke("launcher:cancel-update"),
+  installUpdate: () => ipcRenderer.invoke("launcher:install-update"),
+  recoverUpdate: () => ipcRenderer.invoke("launcher:recover-update"),
   openLatestRelease: () => ipcRenderer.invoke("launcher:open-latest-release"),
   revealPath: (targetPath) => ipcRenderer.invoke("launcher:reveal-path", targetPath),
   copy: (value) => ipcRenderer.invoke("launcher:copy", value),

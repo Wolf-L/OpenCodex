@@ -12,7 +12,7 @@ function fixture(locale = "zh-CN") {
       if (!nodes.has(id)) nodes.set(id, { hidden: false, disabled: false, textContent: "", removeAttribute() {}, setAttribute() {} });
       return nodes.get(id);
     },
-    currentMessages: require(`../../shared/i18n/locales/${locale}.json`),
+    currentMessages: require(`../../shared/i18n/locales/${locale}.json`), document: { querySelectorAll: () => [] },
   });
   // 使用真实渲染函数验证用户可见状态，DOM 夹具只提供这些函数用到的属性。
   vm.runInContext(source.slice(source.indexOf("function t("), source.indexOf("function applyI18n(")) +
@@ -62,7 +62,7 @@ test("runtime actions remain disabled throughout revalidation and restart", () =
 test("foreground and manual release checks share one request and expose a finished state", async () => {
   const source = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
   let finish, requests = 0;
-  const context = vm.createContext({ gatewayState: { latestRelease: {} }, latestReleaseCheckPromise: null,
+  const context = vm.createContext({ selfUpdateController: null, gatewayState: { latestRelease: {} }, latestReleaseCheckPromise: null,
     OPENCODEX_VERSION_LABEL: "2.1.0", broadcastState() {}, markLatestReleaseChecking: () => ({ checking: true }),
     fetchLatestReleaseState: () => { requests++; return new Promise(resolve => { finish = resolve; }); } });
   vm.runInContext(source.slice(source.indexOf("async function checkLatestRelease()"), source.indexOf("function checkLatestReleaseForForeground()")), context);
@@ -74,4 +74,24 @@ test("foreground and manual release checks share one request and expose a finish
   assert.equal(requests, 1);
   assert.equal(context.latestReleaseCheckPromise, null);
   assert.equal(context.gatewayState.latestRelease.status, "up-to-date");
+});
+
+test("Windows download, cancel and install are separate actions, with controls locked during install", () => {
+  for (const locale of ["zh-CN", "en-US"]) {
+    const { context, node } = fixture(locale);
+    const state = { latestRelease: { available: true, downloadable: true }, selfUpdate: { supported: true, status: "downloading", percent: 43, targetVersion: "2.2.0" } };
+    context.renderSelfUpdate(state);
+    assert.equal(node("cancelUpdate").hidden, false); assert.equal(node("installUpdate").hidden, true);
+    assert.match(node("selfUpdateStatus").textContent, /43/);
+    state.selfUpdate.status = "ready"; context.renderSelfUpdate(state);
+    assert.equal(node("installUpdate").hidden, false); assert.equal(node("downloadUpdate").hidden, true);
+    state.selfUpdate.status = "preparing"; state.selfUpdate.installing = true; context.renderSelfUpdate(state);
+    assert.equal(node("restart").disabled, true); assert.equal(node("cancelUpdate").hidden, true);
+    assert.equal(node("savePassword").disabled, true);
+    state.selfUpdate.status = "error"; state.selfUpdate.installing = false; state.selfUpdate.error = "test failure"; context.renderSelfUpdate(state);
+    assert.equal(node("restart").disabled, false); assert.equal(node("preventSleepInput").disabled, false);
+    assert.match(node("selfUpdateStatus").textContent, /test failure/);
+    state.latestRelease.downloadable = false; state.selfUpdate.status = "idle"; context.renderSelfUpdate(state);
+    assert.equal(node("downloadUpdate").hidden, true); assert.equal(node("selfUpdateStatus").hidden, false);
+  }
 });

@@ -1530,7 +1530,7 @@ test("launcher restore preserves either scan setting and skips only its restart"
     const events = [];
     const settings = { officialAutoScanUpgrade: autoScan };
     const context = vm.createContext({
-      gatewayStartPromise: null, gatewayRestartPromise: null,
+      gatewayStartPromise: null, gatewayRestartPromise: null, selfUpdateController: null,
       skipNextOfficialScan: false, restoringBackup: false,
       RuntimeVersionStore: class { pointer() { return null; } },
       runtimePaths: () => ({ officialBundleDir: "fixture" }),
@@ -1557,5 +1557,10 @@ test("launcher restore preserves either scan setting and skips only its restart"
     await context.restoreBundleBackup();
     assert.deepEqual(events, []);
     assert.equal(context.skipNextOfficialScan, false);
+    // 本体安装期间不能同时切换官方运行时，也不能从托盘再次重启。
+    context.selfUpdateController = { isInstalling: () => true };
+    await assert.rejects(context.restoreBundleBackup(), /本体更新/);
+    await assert.rejects(context.restartGateway(), /本体更新/);
+    assert.deepEqual(events, []);
   }
 });

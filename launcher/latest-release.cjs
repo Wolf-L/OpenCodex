@@ -21,6 +21,7 @@ function createInitialLatestReleaseState() {
     available: false,
     lastCheckedAt: null,
     error: "",
+    updateCandidate: null,
   };
 }
 
@@ -101,6 +102,22 @@ function matchingAsset(payload, tagName, platform, arch) {
   return null;
 }
 
+function windowsUpdateCandidate(release, payload, platform, arch) {
+  if (platform !== "win32" || arch !== "x64" || !release?.asset) return null;
+  const name = "opencodex-update-win32-x64.json";
+  // 清单与安装器必须来自同一 release；旧发布缺少清单时仍可手动打开发布页。
+  const manifest = payload.assets?.find(item => {
+    if (item?.name !== name || item.state !== "uploaded" || !Number.isSafeInteger(item.size) || item.size <= 0 || item.size > 65536) return false;
+    const url = trustedGithubUrl(item.browser_download_url);
+    try { return !!url && decodeURIComponent(url.pathname) === `/${repository}/releases/download/${release.tagName}/${name}`; }
+    catch { return false; }
+  });
+  if (!manifest || release.asset.size > 1024 ** 3) return null;
+  const describe = asset => ({ name: asset.name, size: asset.size, url: asset.browser_download_url,
+    sha256: /^sha256:[a-f0-9]{64}$/.test(asset.digest || "") ? asset.digest.slice(7) : undefined });
+  return { tagName: release.tagName, version: release.tagName.replace(/^v/, ""), installer: describe(release.asset), manifest: describe(manifest) };
+}
+
 function latestReleaseStateFromPayload(payload, currentVersionLabel, options = {}) {
   const localVersion = parseVersion(currentVersionLabel);
   if (!localVersion) throw new Error("invalid current application version");
@@ -113,7 +130,7 @@ function latestReleaseStateFromPayload(payload, currentVersionLabel, options = {
     const version = parseVersion(tagName);
     const htmlUrl = trustedReleaseUrl(entry.html_url, tagName);
     if (!version || !htmlUrl) return [];
-    return [{ tagName, version, htmlUrl, asset: matchingAsset(entry, tagName, platform, arch) }];
+    return [{ tagName, version, htmlUrl, asset: matchingAsset(entry, tagName, platform, arch), payload: entry }];
   }).sort((left, right) => compareVersions(right.version, left.version));
 
   const newer = releases.filter((release) => compareVersions(release.version, localVersion) > 0);
@@ -129,6 +146,7 @@ function latestReleaseStateFromPayload(payload, currentVersionLabel, options = {
     htmlUrl: candidate?.htmlUrl || "",
     assetName: candidate?.asset.name || "",
     available: !!candidate,
+    updateCandidate: candidate ? windowsUpdateCandidate(candidate, candidate.payload, platform, arch) : null,
     lastCheckedAt: new Date().toISOString(),
   };
 }

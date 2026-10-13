@@ -79,7 +79,7 @@ function updateFixture() {
   const report = { ok: true, changed: true, checkedAt: new Date().toISOString(), originIdentity: "a".repeat(64) };
   const events = [];
   // 执行真实主进程函数，以可控 worker 和重启边界验证停服顺序，不启动用户应用。
-  const context = vm.createContext({ gatewayRestartPromise: null, gatewayStartPromise: null, runtimePreflightPromise: null,
+  const context = vm.createContext({ selfUpdateController: null, gatewayRestartPromise: null, gatewayStartPromise: null, runtimePreflightPromise: null,
     runtimePreflight: { ...report }, runtimeUpdatePhase: "", isQuitting: false, expectedRuntimeIdentity: null, retryFailedRuntime: false,
     require: () => ({ preflightRuntimeUpdate: async () => { events.push("checked"); return { ...report }; } }),
     runtimePaths: () => ({ officialBundleDir: "fixture" }), broadcastState() {}, buildState: () => "state",

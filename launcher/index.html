@@ -156,8 +156,15 @@
             <button id="checkLatestRelease" class="secondary-btn" data-i18n="launcher.update.check">检查更新</button>
             <button id="openLatestRelease" class="secondary-btn" hidden disabled data-i18n="launcher.update.open">打开发布页</button>
           </div>
-          <p class="setting-desc" data-i18n="launcher.update.description">检查适用于本机的公开稳定版本，打开发布页下载安装。</p>
+          <p class="setting-desc" data-i18n="launcher.update.description">检查适用于本机的稳定版本。支持的 Windows 安装可下载校验后安装；其他情况打开发布页。</p>
           <p id="latestReleaseStatus" class="setting-desc" role="status"></p>
+          <div class="self-update-actions">
+            <button id="downloadUpdate" hidden disabled data-i18n="launcher.selfUpdate.download">下载并校验</button>
+            <button id="cancelUpdate" hidden data-i18n="launcher.selfUpdate.cancel">取消下载</button>
+            <button id="installUpdate" hidden disabled data-i18n="launcher.selfUpdate.install">安装并重启</button>
+            <button id="recoverUpdate" hidden disabled data-i18n="launcher.selfUpdate.recover">恢复上次安装</button>
+          </div>
+          <p id="selfUpdateStatus" class="setting-desc" role="status" hidden></p>
         </section>
 
         <!-- Codex 运行时 -->

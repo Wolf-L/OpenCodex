@@ -313,6 +313,9 @@ button.primary:hover {
   margin-bottom: 0;
 }
 
+/* 下载与安装分两次明确操作，不挤占运行时更新的标题操作区。 */
+.self-update-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
 /* Setting List */
 .setting-list {
   display: flex;

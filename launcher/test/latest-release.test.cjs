@@ -190,3 +190,16 @@ test("one deadline covers stalled response bodies and clears the previous target
   assert.equal(state.status, "error"); assert.match(state.error, /body timeout/);
   assert.equal(state.htmlUrl, ""); assert.equal(state.platform, "linux"); assert.equal(state.arch, "arm64");
 });
+
+test("in-app Windows update requires manifest and installer from the same stable release", () => {
+  const payload = release("v2.2.0", ["OpenCodex Setup 2.2.0.exe", "opencodex-update-win32-x64.json"]);
+  payload.assets[0].digest = "sha256:" + "a".repeat(64);
+  const candidate = select([payload]).updateCandidate;
+  assert.equal(candidate.version, "2.2.0"); assert.equal(candidate.installer.sha256, "a".repeat(64));
+  for (const patch of [{ state: "starter" }, { size: 65537 }, { browser_download_url: payload.assets[1].browser_download_url.replace("v2.2.0", "v2.3.0") }]) {
+    assert.equal(select([{ ...payload, assets: [payload.assets[0], { ...payload.assets[1], ...patch }] }]).updateCandidate, null);
+  }
+  assert.equal(select([release()]).updateCandidate, null);
+  assert.equal(select([payload], { platform: "linux", arch: "x64" }).updateCandidate, null);
+  assert.equal(markLatestReleaseChecking(select([payload])).updateCandidate, null);
+});

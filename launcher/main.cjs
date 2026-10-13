@@ -21,6 +21,8 @@ const {
   markLatestReleaseChecking,
 } = require("./latest-release.cjs");
 const { createBoundedLogWriter } = require("./log-writer.cjs");
+const selfUpdateInstall = require("./self-update-install.cjs");
+const { createSelfUpdateController } = require("./self-update-controller.cjs");
 const { openPwaOrBrowser } = require("./pwa-launcher.cjs");
 const { OPENCODEX_VERSION_LABEL } = require("../shared/app-version.cjs");
 const { DEFAULT_GATEWAY_HOST, normalizeLauncherHostMode } = require("../shared/gateway-listen.cjs");
@@ -67,6 +69,7 @@ let expectedRuntimeIdentity = null;
 let runtimePreflightPromise = null;
 let runtimePreflight = null;
 let runtimeUpdatePhase = "";
+let selfUpdateController = null;
 const gatewayLogWriter = createBoundedLogWriter();
 
 const gatewayState = {
@@ -642,6 +645,7 @@ function buildState() {
       checking: !!latestRelease.checking,
       tagName: latestRelease.tagName || "",
       available: !!latestRelease.available,
+      downloadable: !!latestRelease.updateCandidate && process.platform === "win32" && process.arch === "x64" && app.isPackaged,
       lastCheckedAt: latestRelease.lastCheckedAt || null,
       error: latestRelease.error || "",
     },
@@ -656,7 +660,8 @@ function buildState() {
     runtimePreflight,
     runtimePreflightChecking: !!runtimePreflightPromise,
     runtimeUpdatePhase,
-    runtimeUpdateBusy: !!gatewayRestartPromise || !!gatewayStartPromise,
+    runtimeUpdateBusy: !!gatewayRestartPromise || !!gatewayStartPromise || !!selfUpdateController?.isInstalling(),
+    selfUpdate: selfUpdateController?.state() || { status: "idle", supported: false },
     locale: i18n.locale,
     messages: i18n.messages,
     i18nSource: i18n.source,
@@ -682,6 +687,7 @@ function launcherText(key, values) {
 }
 
 async function checkLatestRelease() {
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中");
   if (latestReleaseCheckPromise) return latestReleaseCheckPromise;
   gatewayState.latestRelease = markLatestReleaseChecking(gatewayState.latestRelease);
   // 前台自动检查与手动检查共享同一次请求，完成前不提供旧发布页入口。
@@ -702,10 +708,11 @@ async function checkLatestRelease() {
 }
 
 function checkLatestReleaseForForeground() {
+  if (selfUpdateController?.isInstalling()) return;
   if (latestReleaseCheckedForForeground) return;
   // 同一次前台停留只检查一次；窗口失焦后会重置，下一次回到前台再查。
   latestReleaseCheckedForForeground = true;
-  void checkLatestRelease();
+  void checkLatestRelease().catch(error => appendLog(`[launcher] release check failed: ${error.message}\n`));
 }
 
 function openOpenCodexUrl() {
@@ -992,7 +999,7 @@ async function startPreparedGateway(officialRuntime, confirm, { paths, linuxArgs
       "exit",
       createGatewayExitHandler({
         // 只允许当前受管子进程请求重启；迟到的旧 child 退出事件不能影响新实例。
-        isStopping: () => isQuitting || !!gatewayStartPromise || gatewayState.child !== child,
+        isStopping: () => isQuitting || !!gatewayStartPromise || !!selfUpdateController?.isInstalling() || gatewayState.child !== child,
         onExit({ code, signal, restartRequested }) {
           const isActiveChild = gatewayState.child === child;
           appendLog(`[launcher] gateway exited: code=${code} signal=${signal}\n`, {
@@ -1019,6 +1026,9 @@ async function startPreparedGateway(officialRuntime, confirm, { paths, linuxArgs
       })
     );
 
+    // 更新助手只记录本次 Launcher 真实创建的 Gateway，不按名称终止其他 Codex 进程。
+    selfUpdateInstall.recordUpdateStartup({ userDataDir: app.getPath("userData"), exePath: process.execPath,
+      currentVersion: OPENCODEX_VERSION_LABEL, gatewayPid: child.pid });
     return child;
   };
   const result = await launchAndConfirmRuntime({ runtime: officialRuntime, spawn: spawnChild, confirm,
@@ -1040,6 +1050,7 @@ async function startPreparedGateway(officialRuntime, confirm, { paths, linuxArgs
 const startGatewaySingleFlight = createSingleFlightGatewayStarter(startGatewayOnce);
 
 async function startGateway() {
+  if (isQuitting || selfUpdateController?.isInstalling()) return buildState();
   if (gatewayState.child) return buildState();
   const currentStart = startGatewaySingleFlight();
   // 保留当前启动 Promise，让设置重启可先等待 runtime 准备结束，避免 stop/start 交叉。
@@ -1107,6 +1118,7 @@ async function restartGatewayOnce(beforeStart) {
 }
 
 async function restartGateway() {
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中");
   if (gatewayRestartPromise) return gatewayRestartPromise;
   // 托盘、窗口和设置保存都可能同时请求重启；共享一次完整 stop/start 生命周期。
   gatewayRestartPromise = restartGatewayOnce();
@@ -1118,6 +1130,7 @@ async function restartGateway() {
 }
 
 async function checkRuntimeUpdate() {
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中");
   if (runtimePreflightPromise) return runtimePreflightPromise;
   if (gatewayRestartPromise || gatewayStartPromise || isQuitting) throw new Error("服务启动、重启或退出进行中，请稍后预检");
   // 新检查立即废弃旧计划；失败后不能继续应用上一次成功结果。
@@ -1134,6 +1147,7 @@ async function checkRuntimeUpdate() {
 }
 
 async function applyRuntimeUpdate() {
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中");
   if (gatewayRestartPromise) return gatewayRestartPromise;
   if (gatewayStartPromise || isQuitting) throw new Error("服务启动或退出进行中，请稍后应用");
   // 只接受主进程最近生成的完整身份；无效日期和未来时间也必须拒绝。
@@ -1169,6 +1183,7 @@ async function applyRuntimeUpdate() {
 }
 
 async function restoreBundleBackup() {
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中");
   // 与所有服务重启共用互斥状态，避免停止期间另一次重启先占用目录。
   if (gatewayRestartPromise) return gatewayRestartPromise;
   restoringBackup = true;
@@ -1341,6 +1356,7 @@ function updateTrayMenu() {
 
   menuTemplate.push({
     label: launcherText("launcher.actions.restart"),
+    enabled: !selfUpdateController?.isInstalling(),
     click: async () => {
       await restartGateway();
       updateTrayMenu();
@@ -1391,8 +1407,18 @@ function revealPath(targetPath) {
   return true;
 }
 
+function assertSettingsNotUpdating() {
+  // 主进程同样拒绝安装期间的设置改写，不能只依赖界面按钮的禁用状态。
+  if (selfUpdateController?.isInstalling()) throw new Error("本体更新正在进行中，请等待安装结束");
+}
+
 ipcMain.handle("launcher:get-state", () => buildState());
-  ipcMain.handle("launcher:check-latest-release", async () => { await checkLatestRelease(); return buildState(); });
+ipcMain.handle("launcher:check-latest-release", async () => { await checkLatestRelease(); return buildState(); });
+// 本体更新的来源与路径留在主进程，IPC 不接收任何外部地址或安装参数。
+ipcMain.handle("launcher:download-update", async () => { await selfUpdateController.download(); return buildState(); });
+ipcMain.handle("launcher:cancel-update", () => { selfUpdateController.cancel(); return buildState(); });
+ipcMain.handle("launcher:install-update", async () => { await selfUpdateController.install(); return buildState(); });
+ipcMain.handle("launcher:recover-update", async () => { await selfUpdateController.recover(); return buildState(); });
 ipcMain.handle("launcher:check-runtime-update", () => checkRuntimeUpdate());
 ipcMain.handle("launcher:apply-runtime-update", () => applyRuntimeUpdate());
 ipcMain.handle("launcher:start", () => gatewayRestartPromise || startGateway());
@@ -1428,6 +1454,7 @@ ipcMain.handle("launcher:copy", (_event, value) => {
   return true;
 });
 ipcMain.handle("launcher:update-host-mode", async (_event, hostMode) => {
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1438,6 +1465,7 @@ ipcMain.handle("launcher:update-host-mode", async (_event, hostMode) => {
   return restartGateway();
 });
 ipcMain.handle("launcher:update-port", async (_event, port) => {
+  assertSettingsNotUpdating();
   const nextPort = normalizePort(port);
   if (!nextPort) {
     gatewayState.lastError = launcherText("launcher.error.invalidPort");
@@ -1454,6 +1482,7 @@ ipcMain.handle("launcher:update-port", async (_event, port) => {
   return restartGateway();
 });
 ipcMain.handle("launcher:update-password", async (_event, password) => {
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1461,6 +1490,7 @@ ipcMain.handle("launcher:update-password", async (_event, password) => {
   return restartGateway();
 });
 ipcMain.handle("launcher:update-plugin-dirs", async (_event, pluginDirs) => {
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1471,6 +1501,7 @@ ipcMain.handle("launcher:update-plugin-dirs", async (_event, pluginDirs) => {
   return restartGateway();
 });
 ipcMain.handle("launcher:update-prevent-sleep", async (_event, preventSleep) => {
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1483,6 +1514,7 @@ ipcMain.handle("launcher:update-prevent-sleep", async (_event, preventSleep) => 
   return buildState();
 });
 ipcMain.handle("launcher:update-official-auto-scan-upgrade", async (_event, officialAutoScanUpgrade) => {
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1494,6 +1526,7 @@ ipcMain.handle("launcher:update-official-auto-scan-upgrade", async (_event, offi
   return restartGateway();
 });
 ipcMain.handle("launcher:choose-plugin-dir", async () => {
+  assertSettingsNotUpdating();
   const dialogOptions = {
     properties: ["openDirectory"],
     title: launcherText("launcher.settings.pluginDirs.chooseDialogTitle"),
@@ -1503,6 +1536,7 @@ ipcMain.handle("launcher:choose-plugin-dir", async () => {
       ? await dialog.showOpenDialog(mainWindow, dialogOptions)
       : await dialog.showOpenDialog(dialogOptions);
   if (result.canceled || !result.filePaths || !result.filePaths[0]) return buildState();
+  assertSettingsNotUpdating();
   const paths = runtimePaths();
   ensureRuntimeLayout(paths);
   gatewayState.paths = paths;
@@ -1538,11 +1572,22 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    const identity = { userDataDir: app.getPath("userData"), exePath: process.execPath, currentVersion: OPENCODEX_VERSION_LABEL };
+    selfUpdateInstall.recordUpdateStartup(identity);
+    selfUpdateController = createSelfUpdateController({ ...identity, packaged: app.isPackaged,
+      getCandidate: () => gatewayState.latestRelease.updateCandidate,
+      canInstall: () => !isQuitting && !gatewayStartPromise && !gatewayRestartPromise && !runtimePreflightPromise,
+      stopGateway, startGateway, onState: broadcastState, quit: () => { isQuitting = true; app.quit(); } });
     createWindow();
     createLauncherTray();
     // 首次打开窗口也按“当前前台周期”检查一次，不启动任何后台定时器。
     checkLatestReleaseForForeground();
     await startGateway();
+    // 仅监督启动已通过的新版可以确认本体升级；HTTP 200 或安装器退出 0 均不够。
+    if (!gatewayState.lastError && gatewayState.officialRuntime && gatewayState.child &&
+        gatewayState.status?.officialIpc?.ready && gatewayState.status?.officialAppServer?.ready) {
+      await selfUpdateInstall.confirmWindowsUpdate({ ...identity, gatewayPid: gatewayState.child.pid });
+    }
   });
 
   app.on("activate", () => {
@@ -1555,7 +1600,10 @@ if (!gotLock) {
     updateTrayMenu();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    // 备份/移交尚未完成时防止托盘退出切断事务；真正移交后允许正常退出。
+    if (selfUpdateController && !selfUpdateController.canQuit()) { event.preventDefault(); isQuitting = false; return; }
+    selfUpdateController?.cancel();
     isQuitting = true;
     stopPreventSleepBlocker();
     stopStatusPolling();

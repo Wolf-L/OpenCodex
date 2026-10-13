@@ -183,12 +183,18 @@ jobs:
           # 安装包由后续 job 统一发布，禁止 electron-builder 在 CI 中自动上传。
           pnpm exec electron-builder --win nsis --x64 --publish never
 
+      - name: Generate Windows update manifest
+        # 从真实安装包流式计算摘要；清单用于完整性校验，不代表发布者代码签名。
+        run: node scripts/create-windows-update-manifest.cjs --directory release --commit "$env:GITHUB_SHA"
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v6
         with:
           # 外层 Artifact 名称携带完整提交哈希，内部 EXE 文件名保持不变。
           name: opencodex-windows-${{ github.sha }}
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/opencodex-update-win32-x64.json
           if-no-files-found: error
 
   build-linux:
@@ -278,6 +284,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
       - name: Download installers
         uses: actions/download-artifact@v8
         with:
@@ -292,10 +306,11 @@ jobs:
           exe_files=(release-assets/*.exe)
           deb_files=(release-assets/*-linux-*.deb)
           tar_files=(release-assets/*-linux-*.tar.gz)
+          manifest_files=(release-assets/opencodex-update-*.json)
 
           # 必须同时具备 macOS 双架构、Windows、Linux 双架构的完整产物。
-          if (( ${#dmg_files[@]} != 2 || ${#exe_files[@]} != 1 || ${#deb_files[@]} != 2 || ${#tar_files[@]} != 2 )); then
-            echo "Unexpected assets: ${#dmg_files[@]} DMG, ${#exe_files[@]} EXE, ${#deb_files[@]} DEB, ${#tar_files[@]} tar.gz" >&2
+          if (( ${#dmg_files[@]} != 2 || ${#exe_files[@]} != 1 || ${#deb_files[@]} != 2 || ${#tar_files[@]} != 2 || ${#manifest_files[@]} != 1 )); then
+            echo "Unexpected assets: ${#dmg_files[@]} DMG, ${#exe_files[@]} EXE, ${#deb_files[@]} DEB, ${#tar_files[@]} tar.gz, ${#manifest_files[@]} manifests" >&2
             exit 1
           fi
 
@@ -313,11 +328,14 @@ jobs:
             done
           done
 
+          # 下载后的安装包再次复核版本、提交、大小和摘要，不能仅凭文件数量发布。
+          node scripts/create-windows-update-manifest.cjs --directory release-assets --commit "$GITHUB_SHA" --check
+
       - name: Create or update draft release
         shell: bash
         run: |
           shopt -s nullglob
-          assets=(release-assets/*.dmg release-assets/*.exe release-assets/*-linux-*.deb release-assets/*-linux-*.tar.gz)
+          assets=(release-assets/*.dmg release-assets/*.exe release-assets/*-linux-*.deb release-assets/*-linux-*.tar.gz release-assets/opencodex-update-win32-x64.json)
 
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             # 重跑流水线时仅更新已有草稿，避免覆盖已经正式发布的 Release。
