@@ -5,6 +5,7 @@ const { ROOT, assertIsolated, assertChild, assertScenario } = require("../../scr
 const good = { username: "WDAGUtilityAccount", root: ROOT, platform: "win32", args: ["--run-isolated"], marker: { purpose: "opencodex-native-update-acceptance", isolated: true } };
 test("native acceptance requires every independent Sandbox boundary", () => {
   assert.equal(assertIsolated(good), ROOT);
+  // 使用虚构用户目录验证普通安装位置会被拒绝，不记录开发者本机路径。
   for (const override of [{ username: "TestUser" }, { root: "C:\\Users\\TestUser\\AppData\\Local\\Programs\\OpenCodex" }, { platform: "linux" }, { args: [] }, { marker: {} }]) assert.throws(() => assertIsolated({ ...good, ...override }));
 });
 test("hosted acceptance rejects local and self-hosted runners", () => {

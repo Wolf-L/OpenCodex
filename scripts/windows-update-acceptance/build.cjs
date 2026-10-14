@@ -54,7 +54,7 @@ async function build() {
   fs.mkdirSync(host, { recursive: true });
   // 外置 Electron Node 宿主使编排器不依赖来宾 Node 安装，也不会锁住待替换应用。
   for (const item of fs.readdirSync(electronDist, { withFileTypes: true })) if (item.isFile()) fs.copyFileSync(path.join(electronDist, item.name), path.join(host, item.name === "electron.exe" ? "OpenCodexAcceptanceHost.exe" : item.name));
-  for (const file of ["guest-runner.cjs", "safety.cjs"]) fs.copyFileSync(path.join(__dirname, file), path.join(inputs, file));
+  for (const file of ["guest-runner.cjs", "safety.cjs", "evidence.cjs"]) fs.copyFileSync(path.join(__dirname, file), path.join(inputs, file));
   fs.copyFileSync(path.join(repo, "launcher/self-update-helper.cjs"), path.join(inputs, "self-update-helper.cjs"));
   fs.writeFileSync(path.join(inputs, "manifest.json"), JSON.stringify(manifest, null, 2));
   console.log(JSON.stringify({ inputs, manifest: path.join(inputs, "manifest.json") }));

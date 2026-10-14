@@ -6,6 +6,7 @@ const { spawn, execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const helper = require("./self-update-helper.cjs");
 const { ROOT, assertIsolated, assertChild, assertScenario } = require("./safety.cjs");
+const { journalEvidence, sanitizeEvidence } = require("./evidence.cjs");
 const exec = promisify(execFile);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const data = path.join(ROOT, "user-data");
@@ -13,9 +14,12 @@ const install = path.join(ROOT, "OpenCodex");
 const exe = path.join(install, "OpenCodex.exe");
 const resultDir = path.join(ROOT, "results");
 const results = { startedAt: new Date().toISOString(), scenarios: [], limitations: ["Network downloader is bypassed", "Gateway is a real lightweight fixture child; official Gateway, CLI and accounts are not exercised", "Unsigned local packages, not a public release"] };
+// 跨场景保留已知令牌的脱敏集合，错误文本和最终汇总同样经过过滤。
+const evidenceSecrets = new Set();
+const publicEvidence = value => sanitizeEvidence(value, [...evidenceSecrets]);
 let active;
 const event = value => {
-  const line = JSON.stringify({ at: new Date().toISOString(), ...value });
+  const line = JSON.stringify(publicEvidence({ at: new Date().toISOString(), ...value }));
   fs.appendFileSync(path.join(resultDir, "runner.jsonl"), line + "\n");
   console.log(line);
 };
@@ -89,12 +93,13 @@ async function scenario(name, pkg, expected, sentinels) {
       const pointer = helper.readJson(path.join(data, "self-update/transactions/latest.json"));
       if (pointer.transactionId === previousLatest) return false;
       const journal = helper.readJson(path.join(data, "self-update/transactions", pointer.transactionId, "journal.json"));
+      if (typeof journal.token === "string") evidenceSecrets.add(journal.token);
       if (lastStatus !== journal.status) { lastStatus = journal.status; event({ type: "transaction-state", name, status: journal.status, error: journal.error }); }
       return ["completed", "rolled-back", "cancelled", "recovery-needed"].includes(journal.status) ? journal : false;
     } catch (error) { if (error.code === "ENOENT") return false; throw error; }
   });
-  // 先保存原始终态；即使后续验证失败，也保留安装器和助手的原生结果。
-  fs.writeFileSync(path.join(resultDir, `${name}-journal.json`), JSON.stringify(terminal, null, 2));
+  // 验证失败也保留终态诊断；仅导出字段白名单，原始事务令牌留在隔离现场。
+  fs.writeFileSync(path.join(resultDir, `${name}-journal.json`), JSON.stringify(journalEvidence(terminal), null, 2));
   if (terminal.status !== expected.status) {
     // 失败时保留两侧清单，便于区分字节损坏与进程模式差异；不导出应用或用户数据。
     try {
@@ -157,11 +162,12 @@ run().catch(error => { results.passed = false; results.error = error.stack; }).f
   if (active) try { results.finalProcessStopped = await helper.nativeAdapter("").stopOwned(active); } catch (error) { results.cleanupError = error.message; }
   results.finishedAt = new Date().toISOString();
   if (fs.existsSync(resultDir)) {
-    fs.writeFileSync(path.join(resultDir, "result.json"), JSON.stringify(results, null, 2));
-    if (fs.existsSync(path.join(data, "events.jsonl"))) fs.copyFileSync(path.join(data, "events.jsonl"), path.join(resultDir, "events.jsonl"));
+    fs.writeFileSync(path.join(resultDir, "result.json"), JSON.stringify(publicEvidence(results), null, 2));
+    // 事件文件也重新序列化，防止后续夹具添加凭据字段后直接复制进上传目录。
+    if (fs.existsSync(path.join(data, "events.jsonl"))) fs.writeFileSync(path.join(resultDir, "events.jsonl"), events().map(entry => JSON.stringify(publicEvidence(entry))).join("\n") + "\n");
     // 只复制小型证据文件到专门的映射输出，不把来宾账户或整个用户目录导出。
     if (fs.existsSync("C:\\AcceptanceOutput")) for (const file of fs.readdirSync(resultDir)) fs.copyFileSync(path.join(resultDir, file), path.join("C:\\AcceptanceOutput", file));
   }
-  console.log(JSON.stringify(results));
+  console.log(JSON.stringify(publicEvidence(results)));
   process.exitCode = results.passed ? 0 : 1;
 });

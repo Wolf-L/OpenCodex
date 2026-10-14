@@ -24,7 +24,7 @@ $env:ELECTRON_RUN_AS_NODE = '1'
 & 'C:\OpenCodexAcceptance\inputs\node-host\OpenCodexAcceptanceHost.exe' 'C:\OpenCodexAcceptance\inputs\guest-runner.cjs' --run-isolated
 ```
 
-可将专用空输出目录映射为 `C:\AcceptanceOutput`，脚本会导出小型结果、事务日志与事件文件。安装目录、备份和注册表现场留在 Sandbox 中。每个事务最多等候 15 分钟；失败时不要把 `recovery-needed` 当作通过。
+可将专用空输出目录映射为 `C:\AcceptanceOutput`，脚本会导出小型结果、事务日志与事件文件。事务日志采用字段白名单，保留状态、版本、摘要和进程身份，排除事务令牌及未知字段；事件和结果也递归排除凭据字段。原始事务日志、安装目录、备份和注册表现场留在 Sandbox 中。每个事务最多等候 15 分钟；失败时不要把 `recovery-needed` 当作通过。
 
 覆盖：损坏摘要在停服前拒绝；1.0.0 到 1.0.1 的真实升级与 ACK；1.0.2 延迟退出后的文件和注册表恢复；真实 NSIS 退出 13 的失败回退。每次回退比较完整应用清单和两个安装登记键，检查原进程退出、旧版重新运行，以及合成配置、账号、聊天哨兵未变。
 
