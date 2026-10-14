@@ -284,6 +284,10 @@ test("Auto turn is classified on the same App Server, rewritten, hidden and safe
   const modelResponse = await waitFor(() => publicMessages.find((message) => message.id === "models"));
   assert.equal(modelResponse.result.data[0].model, "auto");
   assert.equal(injectionPoints.includes("auto-model-catalog"), true);
+  // 外部首页面仅唤起一次内部完整枚举；私有回复被 transport 消费，不递归触发刷新。
+  await waitFor(() => service.modelCatalog.isComplete());
+  assert.equal(serverMessages.filter((message) => message.method === "model/list").length, 2);
+  assert.deepEqual(service.modelCatalog.models(), models);
 
   await writeRequest(fake.child.stdin, {
     id: "select-auto",

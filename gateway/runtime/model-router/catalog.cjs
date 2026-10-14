@@ -2,24 +2,30 @@ const { AUTO_MODEL_ID } = require("./constants.cjs");
 const { modelIdentifier } = require("./resolver.cjs");
 
 function createModelCatalog() {
-  const modelsByKey = new Map();
+  let modelsByKey = new Map();
   let complete = false;
   let updatedAt = 0;
 
-  function addModels(models) {
+  function copyModels(target, models) {
     for (const model of Array.isArray(models) ? models : []) {
       const key = modelIdentifier(model);
       if (!key || key.toLowerCase() === AUTO_MODEL_ID) continue;
-      modelsByKey.set(key, JSON.parse(JSON.stringify(model)));
+      target.set(key, JSON.parse(JSON.stringify(model)));
     }
+  }
+
+  function addModels(models) {
+    copyModels(modelsByKey, models);
     updatedAt = Date.now();
   }
 
-  function observePage({ cursor, result }) {
-    if (!result || !Array.isArray(result.data)) return;
-    if (!cursor) modelsByKey.clear();
-    addModels(result.data);
-    complete = result.nextCursor == null;
+  function replaceModels(models) {
+    // 完整候选先独立复制，避免分页失败或复制异常破坏最近一次可用目录。
+    const candidate = new Map();
+    copyModels(candidate, models);
+    modelsByKey = candidate;
+    complete = true;
+    updatedAt = Date.now();
   }
 
   return {
@@ -32,7 +38,7 @@ function createModelCatalog() {
     isComplete() {
       return complete;
     },
-    observePage,
+    replaceModels,
     snapshot() {
       return {
         complete,

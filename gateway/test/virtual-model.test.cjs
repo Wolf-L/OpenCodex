@@ -16,7 +16,7 @@ function setup(t, options = {}) {
   let enabled = false;
   const controller = createVirtualModelController({
     stateStore,
-    catalog,
+    onModelListFirstPage: options.onModelListFirstPage,
     isEnabled: () => enabled,
     fallbackRoute: () => ({ model: "spark", effort: "low", tier: "economy" }),
     onAutoModelInjected: options.onAutoModelInjected,
@@ -45,7 +45,11 @@ function realModel(id = "spark") {
 
 test("Auto is injected once on the first model page only while enabled", (t) => {
   let injectionCount = 0;
-  const value = setup(t, { onAutoModelInjected: () => (injectionCount += 1) });
+  let observedFirstPages = 0;
+  const value = setup(t, {
+    onAutoModelInjected: () => (injectionCount += 1),
+    onModelListFirstPage: () => (observedFirstPages += 1),
+  });
   value.controller.prepareClientMessage({ id: 1, method: "model/list", params: { cursor: null } });
   let response = value.controller.processServerMessage({ id: 1, result: { data: [realModel()], nextCursor: "next" } });
   assert.deepEqual(response.result.data.map((model) => model.model), ["spark"]);
@@ -62,6 +66,8 @@ test("Auto is injected once on the first model page only while enabled", (t) => 
   response = value.controller.processServerMessage({ id: 3, result: { data: [realModel("other")], nextCursor: null } });
   assert.deepEqual(response.result.data.map((model) => model.model), ["other"]);
   assert.equal(injectionCount, 1);
+  assert.equal(observedFirstPages, 2);
+  assert.deepEqual(value.catalog.models(), []);
 });
 
 test("config and thread protocol virtualize Auto without sending it to App Server", (t) => {

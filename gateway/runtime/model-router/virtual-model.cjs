@@ -97,7 +97,7 @@ function createVirtualModelController({
   stateStore,
   isEnabled,
   fallbackRoute,
-  catalog,
+  onModelListFirstPage,
   onAutoModelInjected,
   maxPendingRequests = 4096,
 }) {
@@ -338,7 +338,8 @@ function createVirtualModelController({
 
     let message = cloneJson(original);
     if (meta.method === "model/list") {
-      catalog.observePage({ cursor: meta.cursor, result: message.result });
+      // 只通知首页面，不把多个外部请求的分页结果混入路由目录，也不因每个续页重复刷新。
+      if (!meta.cursor && Array.isArray(message.result?.data)) onModelListFirstPage?.();
       message.result = injectAutoModel(message.result, meta.cursor);
     } else if (meta.method === "config/read") {
       observeConcreteConfig(message.result);

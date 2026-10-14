@@ -21,7 +21,7 @@ const {
 const { defaultTierDefinitions } = require("../runtime/model-router/tiers.cjs");
 const { createAutoStateStore } = require("../runtime/model-router/state-store.cjs");
 const { ROUTE_METADATA_KEY, createTurnRouteStatus } = require("../runtime/model-router/turn-route-status.cjs");
-const { __test: serviceTest } = require("../runtime/model-router/service.cjs");
+const { createSmartModelRouterService, __test: serviceTest } = require("../runtime/model-router/service.cjs");
 
 function tempFile(t, name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencodex-router-test-"));
@@ -55,6 +55,202 @@ function tiersWithCustom(patch) {
   });
   return tiers;
 }
+
+function catalogFixture(t) {
+  const requests = [];
+  const service = createSmartModelRouterService({
+    configStore: { plugin: () => ({ enabled: true, values: {} }), onChanged: () => () => {} },
+    stateFilePath: tempFile(t, "catalog-state.json"),
+    transport: {
+      isAttached: () => true,
+      request(method, params) {
+        assert.equal(method, "model/list");
+        return new Promise((resolve, reject) => requests.push({ params, resolve, reject }));
+      },
+    },
+  });
+  t.after(() => service.dispose());
+  return { service, requests };
+}
+
+const catalogTick = () => new Promise((resolve) => setImmediate(resolve));
+const catalogIds = (service) => service.modelCatalog.models().map((entry) => entry.id);
+
+test("model catalog refresh keeps the complete snapshot when a later page fails", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  service.modelCatalog.replaceModels([model("previous-good")]);
+  const previous = service.modelCatalog.snapshot();
+  const refresh = service.refreshCatalog();
+  requests[0].resolve({ data: [model("partial")], nextCursor: "second" });
+  await catalogTick();
+  assert.deepEqual(service.modelCatalog.snapshot(), previous);
+  assert.deepEqual(await service.listModels(), previous.models);
+  requests[1].reject(new Error("second page failed"));
+  assert.deepEqual(await refresh, previous.models);
+  assert.deepEqual(service.modelCatalog.snapshot(), previous);
+});
+
+test("model catalog refresh shares one request chain and atomically replaces all old models", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  service.modelCatalog.replaceModels([model("previous-good")]);
+  const first = service.refreshCatalog();
+  const second = service.refreshCatalog();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].params, { cursor: null, limit: 100, includeHidden: false });
+  requests[0].resolve({ data: [model("new-first")], nextCursor: "second" });
+  await catalogTick();
+  const third = service.refreshCatalog();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(catalogIds(service), ["previous-good"]);
+  requests[1].resolve({ data: [model("new-second"), model("auto")], nextCursor: null });
+  const results = await Promise.all([first, second, third]);
+  assert.deepEqual(catalogIds(service), ["new-first", "new-second"]);
+  assert.equal(service.modelCatalog.isComplete(), true);
+  for (const result of results) assert.deepEqual(result, service.modelCatalog.models());
+});
+
+for (const [name, result] of [
+  ["missing result", undefined],
+  ["missing data", {}],
+  ["non-array data", { data: {} }],
+  ["invalid model", { data: [null] }],
+  ["invalid identifier", { data: [{ id: 7 }] }],
+  ["empty identifier", { data: [{ id: " " }] }],
+  ["invalid cursor", { data: [model("partial")], nextCursor: 5 }],
+]) {
+  test(`model catalog rejects ${name} without replacing a complete snapshot`, async (t) => {
+    const { service, requests } = catalogFixture(t);
+    service.modelCatalog.replaceModels([model("previous-good")]);
+    const previous = service.modelCatalog.snapshot();
+    const refresh = service.refreshCatalog();
+    requests[0].resolve(result);
+    await refresh;
+    assert.deepEqual(service.modelCatalog.snapshot(), previous);
+    assert.equal(requests.length, 1);
+  });
+}
+
+for (const cursors of [["second", "second"], ["second", "third", "second"]]) {
+  test(`model catalog rejects a ${cursors.length === 2 ? "non-progressing" : "cyclic"} cursor before another request`, async (t) => {
+    const { service, requests } = catalogFixture(t);
+    service.modelCatalog.replaceModels([model("previous-good")]);
+    const refresh = service.refreshCatalog();
+    for (const [index, nextCursor] of cursors.entries()) {
+      requests[index].resolve({ data: [model(`partial-${index}`)], nextCursor });
+      await catalogTick();
+    }
+    await refresh;
+    assert.equal(requests.length, cursors.length);
+    assert.deepEqual(catalogIds(service), ["previous-good"]);
+  });
+}
+
+for (const completeAtLimit of [false, true]) {
+  test(`model catalog ${completeAtLimit ? "accepts completion" : "rejects an unfinished chain"} at page 20`, async (t) => {
+    const { service, requests } = catalogFixture(t);
+    service.modelCatalog.replaceModels([model("previous-good")]);
+    const refresh = service.refreshCatalog();
+    for (let index = 0; index < 20; index += 1) {
+      requests[index].resolve({
+        data: [model(`page-${index}`)],
+        nextCursor: completeAtLimit && index === 19 ? null : `cursor-${index + 1}`,
+      });
+      await catalogTick();
+    }
+    await refresh;
+    assert.equal(requests.length, 20);
+    assert.deepEqual(catalogIds(service), completeAtLimit ? Array.from({ length: 20 }, (_, i) => `page-${i}`) : ["previous-good"]);
+  });
+}
+
+test("an empty complete model catalog is not confused with a failed cold refresh", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  const failed = service.listModels();
+  requests[0].reject(new Error("cold start unavailable"));
+  assert.deepEqual(await failed, []);
+  assert.equal(service.modelCatalog.isComplete(), false);
+  const retry = service.listModels();
+  requests[1].resolve({ data: [], nextCursor: null });
+  assert.deepEqual(await retry, []);
+  assert.equal(service.modelCatalog.isComplete(), true);
+  assert.deepEqual(await service.listModels(), []);
+  assert.equal(requests.length, 2);
+});
+
+for (const lifecycle of ["closed", "attached", "disposed"]) {
+  test(`a ${lifecycle} lifecycle rejects old catalog pages and preserves the new single-flight owner`, async (t) => {
+    const { service, requests } = catalogFixture(t);
+    service.modelCatalog.replaceModels([model("previous-good")]);
+    const oldRefresh = service.refreshCatalog();
+    requests[0].resolve({ data: [model("old-first")], nextCursor: "second" });
+    await catalogTick();
+    if (lifecycle === "closed") service.onAppServerClosed();
+    else if (lifecycle === "attached") service.onAppServerAttached();
+    else service.dispose();
+    const currentRefresh = service.refreshCatalog();
+    requests[1].resolve({ data: [model("old-second")], nextCursor: null });
+    await oldRefresh;
+    assert.deepEqual(catalogIds(service), []);
+    const concurrentRefresh = service.refreshCatalog();
+    assert.equal(requests.length, lifecycle === "disposed" ? 2 : 3);
+    if (lifecycle !== "disposed") requests[2].resolve({ data: [model("new-lifecycle")], nextCursor: null });
+    await Promise.all([currentRefresh, concurrentRefresh]);
+    assert.deepEqual(catalogIds(service), lifecycle === "disposed" ? [] : ["new-lifecycle"]);
+  });
+}
+
+async function observeModelPage(service, id, cursor, result) {
+  await service.processClientMessage({ id, method: "model/list", params: { cursor } });
+  return service.processServerMessage({ id, result });
+}
+
+test("passive model pages cannot overwrite or interleave with the controlled catalog refresh", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  service.modelCatalog.replaceModels([model("previous-good")]);
+  const refresh = service.refreshCatalog();
+  const first = await observeModelPage(service, "external-first", null, { data: [model("external-partial")], nextCursor: "tail" });
+  assert.deepEqual(first.result.data.map((entry) => entry.id), ["auto", "external-partial"]);
+  await observeModelPage(service, "external-tail", "tail", { data: [model("external-tail")], nextCursor: null });
+  assert.equal(requests.length, 1);
+  requests[0].resolve({ data: [model("internal-first")], nextCursor: "second" });
+  await catalogTick();
+  await observeModelPage(service, "external-other", null, { data: [model("external-other")], nextCursor: null });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(catalogIds(service), ["previous-good"]);
+  requests[1].reject(new Error("controlled page failed"));
+  await refresh;
+  assert.deepEqual(catalogIds(service), ["previous-good"]);
+  await observeModelPage(service, "external-refresh", null, { data: [model("external-new")], nextCursor: null });
+  assert.equal(requests.length, 3);
+  const controlled = service.refreshCatalog();
+  requests[2].resolve({ data: [model("controlled-complete")], nextCursor: null });
+  await controlled;
+  await observeModelPage(service, "external-late-tail", "old-tail", { data: [model("late")], nextCursor: null });
+  assert.deepEqual(catalogIds(service), ["controlled-complete"]);
+  assert.equal(requests.length, 3);
+});
+
+test("passive first model page warms a cold catalog without publishing partial data", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  await observeModelPage(service, "first", null, { data: [model("external-first")], nextCursor: "next" });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(catalogIds(service), []);
+  assert.equal(service.modelCatalog.isComplete(), false);
+  const models = service.listModels();
+  requests[0].resolve({ data: [model("internal-complete")], nextCursor: null });
+  assert.deepEqual((await models).map((entry) => entry.id), ["internal-complete"]);
+  assert.equal(requests.length, 1);
+});
+
+test("a passive response from the previous connection cannot trigger a new refresh", async (t) => {
+  const { service, requests } = catalogFixture(t);
+  await service.processClientMessage({ id: "old-page", method: "model/list", params: { cursor: null } });
+  service.onAppServerAttached();
+  const late = { id: "old-page", result: { data: [model("old")], nextCursor: null } };
+  assert.equal(service.processServerMessage(late), late);
+  assert.equal(requests.length, 0);
+  assert.deepEqual(catalogIds(service), []);
+});
 
 test("model router metadata caches are bounded and refresh LRU order", () => {
   const cache = new Map();

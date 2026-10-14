@@ -31,6 +31,7 @@ const { createVirtualModelController, isAuto, requestKey } = require("./virtual-
 const MAX_HISTORY_THREADS = 128;
 const MAX_HISTORY_REVISIONS = 512;
 const MAX_EXTERNAL_REQUESTS = 4096;
+const MAX_CATALOG_PAGES = 20;
 
 function setBoundedMapEntry(map, key, value, maxEntries) {
   map.delete(key);
@@ -199,7 +200,10 @@ function createSmartModelRouterService({
     stateStore,
     isEnabled,
     fallbackRoute,
-    catalog,
+    onModelListFirstPage() {
+      // 被动分页没有统一事务身份，只触发受控完整读取；内部回复不经过虚拟层，避免递归刷新。
+      void refreshCatalog();
+    },
     onAutoModelInjected() {
       injectionHealth?.reportGateway("auto-model-catalog");
       emitModification(gatewayPoints?.virtualModel);
@@ -234,19 +238,32 @@ function createSmartModelRouterService({
     const revision = lifecycleRevision;
     const refresh = (async () => {
       let cursor = null;
-      let pages = 0;
-      do {
+      const seenCursors = new Set();
+      const candidate = [];
+      for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
         const result = await transport.request(
           "model/list",
           { cursor, limit: 100, includeHidden: false },
           { timeoutMs: deadlineAt ? remainingRouteMs(deadlineAt, 5_000) : 5_000 }
         );
         if (disposed || revision !== lifecycleRevision) return catalog.models();
-        catalog.observePage({ cursor, result });
-        cursor = result?.nextCursor || null;
-        pages += 1;
-      } while (cursor && pages < 20);
-      return catalog.models();
+        if (!Array.isArray(result?.data) || result.data.some((model) => {
+          const id = model?.model || model?.id;
+          return !model || typeof model !== "object" || Array.isArray(model) || typeof id !== "string" || !id.trim();
+        })) throw new Error("Invalid model catalog page");
+        const nextCursor = result.nextCursor;
+        if (nextCursor != null && typeof nextCursor !== "string") throw new Error("Invalid model catalog cursor");
+        for (const model of result.data) candidate.push(model);
+        if (nextCursor == null || nextCursor === "") {
+          // 所有页校验通过才替换 live；等待中的读取者仍可使用上一份完整目录。
+          catalog.replaceModels(candidate);
+          return catalog.models();
+        }
+        if (seenCursors.has(nextCursor)) throw new Error("Repeated model catalog cursor");
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+      throw new Error("Model catalog pagination limit exceeded");
     })()
       .catch((error) => {
         if (disposed || revision !== lifecycleRevision) return catalog.models();
@@ -445,7 +462,7 @@ function createSmartModelRouterService({
     try {
       const config = pluginConfig();
       const historyLimit = classificationHistoryLimit(config);
-      if (catalog.models().length === 0) await refreshCatalog(deadlineAt);
+      if (!catalog.isComplete() && catalog.models().length === 0) await refreshCatalog(deadlineAt);
       if (disposed || revision !== lifecycleRevision) return message;
       const history = await recentHistory(threadId, historyLimit, deadlineAt);
       if (disposed || revision !== lifecycleRevision) return message;
@@ -725,7 +742,7 @@ function createSmartModelRouterService({
       return route ? { ...route, displayName: modelDisplayName(route.model) } : null;
     },
     async listModels() {
-      if (catalog.models().length === 0) await refreshCatalog();
+      if (!catalog.isComplete() && catalog.models().length === 0) await refreshCatalog();
       return catalog.models();
     },
     modelCatalog: catalog,
