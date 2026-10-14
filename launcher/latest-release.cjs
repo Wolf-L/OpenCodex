@@ -1,6 +1,7 @@
 "use strict";
 
 const metadata = require("../package.json");
+const { windowsInstallerNames } = require("../shared/windows-installer-name.cjs");
 const repository = new URL(metadata.homepage).pathname.replace(/^\/|\/$/g, "");
 // 独立 Linux 发布会覆盖 GitHub 的 latest 标记；从有界发布列表中按平台和版本选择。
 const DEFAULT_RELEASE_API_URL = `https://api.github.com/repos/${repository}/releases`;
@@ -78,7 +79,7 @@ function trustedReleaseUrl(value, tagName) {
 function platformAssetNames(tagName, platform, arch) {
   const version = tagName.replace(/^v/, "");
   // 文件名匹配当前发布流水线的产物；不把未知架构或 headless 压缩包当作 Launcher 安装包。
-  if (platform === "win32" && arch === "x64") return [`OpenCodex Setup ${version}.exe`];
+  if (platform === "win32" && arch === "x64") return windowsInstallerNames(version);
   if (platform === "darwin" && ["x64", "arm64"].includes(arch)) return [`OpenCodex-${version}-${arch}.dmg`];
   if (platform === "linux" && ["x64", "arm64"].includes(arch)) return [
     `OpenCodex-${version}-linux-${arch === "x64" ? "amd64" : arch}.deb`,

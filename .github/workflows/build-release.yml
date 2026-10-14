@@ -363,7 +363,8 @@ jobs:
               exit 1
             fi
 
-            gh release edit "$RELEASE_VERSION" --title "v$RELEASE_VERSION" --draft=true
+            # 同版本修复后重建草稿时，目标提交也必须与本次产物一起更新。
+            gh release edit "$RELEASE_VERSION" --title "v$RELEASE_VERSION" --draft=true --target "$GITHUB_SHA"
             gh release upload "$RELEASE_VERSION" "${assets[@]}" --clobber
           else
             gh release create "$RELEASE_VERSION" "${assets[@]}" \

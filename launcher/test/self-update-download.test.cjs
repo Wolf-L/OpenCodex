@@ -34,6 +34,37 @@ test('streams verified package, exposes only public progress and verifies ready 
   assert.equal(f.updater.prepared().sha256, sha(f.installer));
 });
 
+test('GitHub dot-named asset downloads with the original exact build manifest and hash', async t => {
+  const f = await fixture(t);
+  f.candidate.installer.name = 'OpenCodex.Setup.2.2.0.exe';
+  f.candidate.installer.url = 'https://github.com/Wolf-L/OpenCodex/releases/download/v2.2.0/OpenCodex.Setup.2.2.0.exe';
+  assert.equal((await f.updater.download(f.candidate)).status, 'ready');
+  assert.equal(f.calls[1].url, f.candidate.installer.url);
+  assert.deepEqual(await fs.readFile(f.updater.prepared().installerPath), f.installer);
+  assert.equal((await f.updater.verifyPrepared()).sha256, sha(f.installer));
+});
+
+test('dot-name compatibility does not relax name, URL, version, size or digest validation', async t => {
+  const f = await fixture(t);
+  const candidate = structuredClone(f.candidate);
+  candidate.installer.name = 'OpenCodex.Setup.2.2.0.exe';
+  candidate.installer.url = 'https://github.com/Wolf-L/OpenCodex/releases/download/v2.2.0/OpenCodex.Setup.2.2.0.exe';
+  for (const name of ['OpenCodex.Setup.2.3.0.exe', 'OpenCodex_Setup_2.2.0.exe', '../OpenCodex.Setup.2.2.0.exe', 'opencodex.setup.2.2.0.exe']) {
+    await assert.rejects(f.updater.download({ ...candidate, installer: { ...candidate.installer, name } }));
+  }
+  await assert.rejects(f.updater.download({ ...candidate, installer: { ...candidate.installer, url: f.candidate.installer.url } }));
+  assert.equal(f.calls.length, 0);
+  for (const patch of [{ name: '../OpenCodex Setup 2.2.0.exe' }, { name: 'OpenCodex Setup 2.3.0.exe' }, { name: 'OpenCodex_Setup_2.2.0.exe' }, { size: f.installer.length + 1 }, { sha256: '0'.repeat(64) }]) {
+    const manifest = structuredClone(f.manifest);
+    Object.assign(manifest.installer, patch);
+    const bytes = Buffer.from(JSON.stringify(manifest));
+    const invalid = { ...candidate, manifest: { ...candidate.manifest, size: bytes.length, sha256: sha(bytes) } };
+    const updater = createSelfUpdateDownloader({ root: path.join(f.root, crypto.randomUUID()), currentVersion: '2.1.0', fetchImpl: async () => new Response(bytes) });
+    await assert.rejects(updater.download(invalid));
+    assert.equal(updater.prepared(), null);
+  }
+});
+
 test('rejects release identity and version confusion before making requests', async t => {
   const f = await fixture(t);
   for (const mutate of [c => c.version = '2.1.0', c => c.tagName = 'v2.3.0', c => c.installer.name = '../evil.exe',

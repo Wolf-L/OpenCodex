@@ -9,6 +9,12 @@ const { spawnSync } = require("node:child_process");
 const { createWindowsUpdateManifest, checkWindowsUpdateManifest, MANIFEST_NAME } = require("../../scripts/create-windows-update-manifest.cjs");
 
 const commit = "a".repeat(40), version = "2.3.4";
+test("rebuilding an unpublished release also updates its target commit", async () => {
+  const workflow = await fs.readFile(path.join(__dirname, "../../.github/workflows/build-release.yml"), "utf8");
+  assert.match(workflow, /gh release edit "\$RELEASE_VERSION"[^\n]*--draft=true --target "\$GITHUB_SHA"/);
+  assert.match(workflow, /is_draft.*!= "true"/);
+});
+
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "opencodex-manifest-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

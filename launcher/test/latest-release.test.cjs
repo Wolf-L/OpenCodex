@@ -40,6 +40,20 @@ test("release selection skips Linux-only latest tags and sorts compatible stable
   assert.equal(state.htmlUrl, repositoryUrl + "/releases/tag/v2.9.0");
 });
 
+test("GitHub-normalized Windows filenames still require the exact release URL and manifest", () => {
+  const name = "OpenCodex.Setup.2.2.0.exe";
+  const good = release("v2.2.0", [name, "opencodex-update-win32-x64.json"]);
+  const state = select([good]);
+  assert.equal(state.available, true);
+  assert.equal(state.assetName, name);
+  assert.equal(state.updateCandidate.installer.name, name);
+  for (const badName of ["OpenCodex.Setup.2.3.0.exe", "OpenCodex_Setup_2.2.0.exe", "opencodex.setup.2.2.0.exe", "../OpenCodex.Setup.2.2.0.exe"]) {
+    assert.equal(select([release("v2.2.0", [badName])]).available, false);
+  }
+  good.assets[0].browser_download_url = good.assets[0].browser_download_url.replace(name, "OpenCodex%20Setup%202.2.0.exe");
+  assert.equal(select([good]).available, false);
+});
+
 test("five supported native targets require their own installer or graphical archive", () => {
   const cases = [
     [windows, "OpenCodex Setup 2.2.0.exe"],

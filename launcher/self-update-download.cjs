@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const metadata = require('../package.json');
+const { windowsInstallerNames } = require('../shared/windows-installer-name.cjs');
 const repository = new URL(metadata.homepage).pathname.replace(/^\/|\/$/g, '');
 const MAX_INSTALLER = 1024 ** 3, MAX_MANIFEST = 65536;
 const HASH = /^[a-f0-9]{64}$/;
@@ -32,7 +33,8 @@ function assetUrl(value, tagName, name) {
 function validateCandidate(input, currentVersion) {
   // 再次验证主进程传入的发布身份；下载模块不接收渲染器提供的任意地址或路径。
   if (!input || !isNewer(input.version, currentVersion) || ![input.version, `v${input.version}`].includes(input.tagName)) throw new UpdateError('更新版本无效或未高于当前版本');
-  const installerName = `OpenCodex Setup ${input.version}.exe`;
+  const installerName = input.installer?.name;
+  if (!windowsInstallerNames(input.version).includes(installerName)) throw new UpdateError('更新安装包文件名无效');
   const asset = (value, name, max) => {
     if (!value || value.name !== name || !Number.isSafeInteger(value.size) || value.size < 1 || value.size > max ||
       (value.sha256 !== undefined && !HASH.test(value.sha256))) throw new UpdateError('更新发布文件或摘要无效');
@@ -46,7 +48,8 @@ function validateManifest(bytes, candidate) {
   if (!exactKeys(m, ['schemaVersion', 'appId', 'version', 'platform', 'arch', 'installer', 'commit']) ||
     m.schemaVersion !== 1 || m.appId !== 'dev.opencodex.launcher' || m.version !== candidate.version || m.platform !== 'win32' || m.arch !== 'x64' ||
     !/^[a-f0-9]{40}$/.test(m.commit) || !exactKeys(m.installer, ['name', 'size', 'sha256']) ||
-    m.installer.name !== candidate.installer.name || m.installer.size !== candidate.installer.size || !HASH.test(m.installer.sha256) ||
+    // 清单保留本地构建名，附件可能为 GitHub 的点号名；同版本精确别名仍需大小和 SHA-256 一致。
+    !windowsInstallerNames(candidate.version).includes(m.installer.name) || m.installer.size !== candidate.installer.size || !HASH.test(m.installer.sha256) ||
     (candidate.installer.sha256 && m.installer.sha256 !== candidate.installer.sha256)) throw new UpdateError('更新清单与版本、平台或安装包不一致');
   return m.installer.sha256;
 }
