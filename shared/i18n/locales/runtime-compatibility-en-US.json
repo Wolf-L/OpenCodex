@@ -301,5 +301,6 @@
   "web.runtimeCompatibility.point.static.cache.runner.macos-entry-signature.description": "Sign the copied macOS Runner entry.",
   "web.runtimeCompatibility.point.static.cache.runner.portable-layout.description": "Build the Windows and Linux Runner layout.",
   "web.runtimeCompatibility.point.static.cache.runner.gateway-asar.description": "Generate the OpenCodex Runner app.asar.",
-  "web.runtimeCompatibility.point.static.cache.runner.windows-asar-integrity.description": "Correct Windows Runner ASAR integrity resources."
+  "web.runtimeCompatibility.point.static.cache.runner.windows-asar-integrity.description": "Correct Windows Runner ASAR integrity resources.",
+  "web.runtimeCompatibility.point.static.cache.renderer.third-party-input-compat.description": "Adapt the input quota check for your own third-party API"
 }

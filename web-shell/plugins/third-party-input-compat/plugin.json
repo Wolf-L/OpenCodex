@@ -1,0 +1,12 @@
+{
+  "id": "opencodex.third-party-input-compat",
+  "name": "Third-party provider input compatibility",
+  "label": "第三方 Provider 输入兼容",
+  "labelKey": "plugin.thirdPartyInputCompat.label",
+  "desc": "仅解除自有第三方 API 被官方账号额度误加的输入限制；不增加额度，不改变鉴权。默认关闭，仅对当前浏览器和站点生效。",
+  "descKey": "plugin.thirdPartyInputCompat.desc",
+  "defaultEnabled": false,
+  "persistence": "browser",
+  "surface": "renderer",
+  "order": 50
+}

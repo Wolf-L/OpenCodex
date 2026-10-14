@@ -2,28 +2,26 @@ const { parentPort } = require("worker_threads");
 const { createCompatibilityService } = require("../compatibility/service.cjs");
 const { createStaticAssetService } = require("./static-assets.cjs");
 
-let i18nSnapshot = { locale: "en-US", messages: {} };
-// Worker 内也通过同一骨架执行纯转换，但不单独落盘，避免与主线程争写统一报告。
-let compatibilityService = null;
-try {
-  compatibilityService = createCompatibilityService();
-} catch {
-  // 诊断骨架初始化失败时继续执行原纯转换，不能让大资源 Worker 失效。
-}
-const patcher = createStaticAssetService({
-  compatibilityService,
-  getI18nSnapshot: () => i18nSnapshot,
-  // Worker 只调用纯资源改写入口，不做 URL 到官方目录的映射。
-  getOfficialBundle: () => null,
-});
-
 parentPort.on("message", (message) => {
   const id = message?.id;
+  let compatibilityService = null;
   try {
-    i18nSnapshot = {
+    const i18nSnapshot = {
       locale: String(message?.locale || "en-US"),
       messages: { "web.remoteFile.downloadFile": String(message?.downloadMessage || "Download file") },
     };
+    // 每份资源有独立的定位生命周期，避免 Worker 复用时旧失败污染新契约。
+    // 不单独落盘，主线程仍负责聚合诊断和响应缓存。
+    const patchReports = new Map();
+    try { compatibilityService = createCompatibilityService(); } catch {}
+    const patcher = createStaticAssetService({
+      compatibilityService,
+      publishStaticPoint: point => patchReports.set(point.id, point),
+      getI18nSnapshot: () => i18nSnapshot,
+      getOfficialBundle: () => null,
+    });
+    // 不回传初始化 ready 状态，以免覆盖其它资源已经产生的实际诊断。
+    patchReports.clear();
     const bytes = message.data;
     const sourceData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const data = patcher.patchOfficialAssetData(
@@ -34,8 +32,11 @@ parentPort.on("message", (message) => {
     const patched = data !== sourceData;
     const transferable =
       data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data : Buffer.from(data);
-    parentPort.postMessage({ data: transferable, id, patched }, [transferable.buffer]);
+    // 摘要定位失败与成功都回传主线程，调试页不能把 Worker 的实际结果丢成“待检测”。
+    parentPort.postMessage({ data: transferable, id, patched, patchReports: [...patchReports.values()] }, [transferable.buffer]);
   } catch (error) {
     parentPort.postMessage({ error: error instanceof Error ? error.message : String(error), id });
+  } finally {
+    compatibilityService?.dispose();
   }
 });

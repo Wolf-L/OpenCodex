@@ -27,6 +27,21 @@
 
       <section id="summaryCards" class="summary-grid" aria-live="polite"></section>
 
+      <!-- 此开关只保存当前浏览器偏好，不变更网关配置或官方账号状态。 -->
+      <section class="panel input-compat-panel" aria-labelledby="thirdPartyInputTitle">
+        <div class="panel-heading input-compat-heading">
+          <div>
+            <h2 id="thirdPartyInputTitle" data-i18n="web.runtimeCompatibility.thirdPartyInput.title">第三方 Provider 输入兼容</h2>
+            <p id="thirdPartyInputDescription" class="muted" data-i18n="web.runtimeCompatibility.thirdPartyInput.description">修复官方账号额度状态误阻止自有第三方 API 输入的问题；不增加官方额度，不改变鉴权。无法确认当前会话的 Provider 时保留原限制。</p>
+          </div>
+          <label class="auto-refresh-control input-compat-control" for="thirdPartyInputToggle">
+            <span id="thirdPartyInputStatus" aria-live="polite" data-i18n="web.runtimeCompatibility.thirdPartyInput.disabled">已关闭</span>
+            <input id="thirdPartyInputToggle" type="checkbox" role="switch" disabled aria-labelledby="thirdPartyInputTitle" aria-describedby="thirdPartyInputDescription thirdPartyInputScope thirdPartyInputStatus" />
+          </label>
+        </div>
+        <p id="thirdPartyInputScope" class="muted input-compat-scope" data-i18n="web.runtimeCompatibility.thirdPartyInput.scope">默认关闭，仅对当前浏览器和站点生效。其他已打开的会话标签页若仍使用旧版运行时，可能需要刷新。</p>
+      </section>
+
       <section class="panel">
         <div class="panel-heading filters">
           <div>
@@ -100,6 +115,7 @@
         <div id="helpDialogStatuses" class="help-status-list"></div>
       </div>
     </dialog>
+    <script src="/opencodex-plugin-system.js"></script>
     <script src="/opencodex/runtime-compatibility.js"></script>
   </body>
 </html>

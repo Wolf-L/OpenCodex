@@ -162,6 +162,93 @@
 
   const byId = (id) => document.getElementById(id);
 
+  function initializeThirdPartyInputControl() {
+    const pluginId = "opencodex.third-party-input-compat";
+    const storageKey = `plugin.${pluginId}.enabled`;
+    const toggle = byId("thirdPartyInputToggle");
+    const status = byId("thirdPartyInputStatus");
+    if (!toggle || !status) return;
+    const system = window.OpenCodexPluginSystem;
+    const manifest = runtimeConfig.thirdPartyInputCompatManifest;
+    let available = false;
+    let unsubscribe = null;
+
+    function sync() {
+      let enabled = false;
+      if (available) {
+        try {
+          enabled = system.plugins.isEnabled(pluginId) === true && system.preferences.get(storageKey) === true;
+        } catch {
+          available = false;
+        }
+      }
+      toggle.disabled = !available;
+      toggle.checked = available && enabled;
+      status.textContent = !available
+        ? t("web.runtimeCompatibility.thirdPartyInput.unavailable", "当前版本不可用")
+        : enabled
+          ? t("web.runtimeCompatibility.thirdPartyInput.enabled", "已开启")
+          : t("web.runtimeCompatibility.thirdPartyInput.disabled", "已关闭");
+    }
+
+    // 诊断页只登记这一项默认关闭的声明式插件，不加载其他插件或执行 manifest 中的入口。
+    const validManifest = manifest && typeof manifest === "object" && !Array.isArray(manifest)
+      && manifest.id === pluginId && manifest.defaultEnabled === false
+      && manifest.persistence === "browser" && manifest.surface === "renderer"
+      && (!manifest.enableStorageKey || manifest.enableStorageKey === storageKey)
+      && !manifest.defaultEnabledPolicy && !manifest.entry && !manifest.feature
+      && !manifest.activate && (!manifest.settings || (Array.isArray(manifest.settings) && manifest.settings.length === 0));
+    if (validManifest && typeof system?.registerPlugin === "function"
+      && typeof system.plugins?.isEnabled === "function" && typeof system.plugins?.setEnabled === "function"
+      && typeof system.preferences?.get === "function"
+      && typeof system.events?.on === "function") {
+      try {
+        // 只传递展示字段与固定的作用域，避免畸形声明注入设置项或覆盖其他偏好。
+        system.registerPlugin({
+          id: pluginId,
+          name: String(manifest.name || pluginId),
+          label: String(manifest.label || "第三方 Provider 输入兼容"),
+          labelKey: "plugin.thirdPartyInputCompat.label",
+          desc: String(manifest.desc || ""),
+          descKey: "plugin.thirdPartyInputCompat.desc",
+          builtin: manifest.builtin === true,
+          defaultEnabled: false,
+          enableStorageKey: storageKey,
+          persistence: "browser",
+          surface: "renderer",
+        });
+        available = true;
+        unsubscribe = system.events.on("plugin:enabled-changed", (event) => {
+          if (event?.id === pluginId) sync();
+        });
+      } catch {
+        available = false;
+      }
+    }
+    sync();
+    toggle.addEventListener("change", () => {
+      if (available) {
+        try {
+          system.plugins.setEnabled(pluginId, toggle.checked === true);
+        } catch {
+          available = false;
+        }
+      }
+      // 以插件系统读回结果为准，存储受限时不虚报已保存。
+      sync();
+    });
+    function onStorage(event) {
+      if (event.key === null || event.key === system?.SETTINGS_STORAGE_KEY) sync();
+    }
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pagehide", (event) => {
+      // 进入往返缓存时保留监听，普通离页再释放，恢复页面无需重新执行脚本。
+      if (event.persisted) return;
+      if (typeof unsubscribe === "function") unsubscribe();
+      window.removeEventListener?.("storage", onStorage);
+    });
+  }
+
   function applyI18n() {
     document.documentElement.lang = locale;
     for (const node of document.querySelectorAll("[data-i18n]")) {
@@ -612,6 +699,7 @@
   }
 
   applyI18n();
+  initializeThirdPartyInputControl();
   byId("autoRefreshToggle").checked = state.autoRefresh;
   byId("autoRefreshToggle").addEventListener("change", (event) => {
     setAutoRefresh(event.currentTarget.checked, { refreshImmediately: true });

@@ -25,6 +25,7 @@ const { runtimeCompatibilityMessagesForLocale } = require("../../../shared/i18n/
 const { createHostModificationRuntime } = require("../modification/production-runtime.cjs");
 const { CUE_SOUNDS_TOKEN, patchDictationCueSounds } = require("./dictation-cue-sounds.cjs");
 const { MOBILE_NAVIGATION_TOKEN, patchMobileNavigationDefaults } = require("./mobile-navigation-defaults.cjs");
+const { THIRD_PARTY_INPUT_TOKEN, THIRD_PARTY_INPUT_PLUGIN, patchThirdPartyInputCompat } = require("./third-party-input-compat.cjs");
 const { PAGE_MENU_TOKEN, POINTER_SENSOR_TOKEN, ASYNC_MENU_TOKEN, DOM_TRIGGER_TOKEN, patchContextMenuCompatibility } = require("./context-menu-compat.cjs");
 
 const configuredPatchedAssetCacheMaxBytes = Number(
@@ -36,7 +37,7 @@ const PATCHED_ASSET_CACHE_MAX_BYTES = Math.max(
     ? configuredPatchedAssetCacheMaxBytes
     : 96 * 1024 * 1024
 );
-const PATCHED_ASSET_PATCH_REVISION = "17";
+const PATCHED_ASSET_PATCH_REVISION = "18";
 const ASYNC_PATCH_MIN_BYTES = 512 * 1024;
 const OFFICIAL_ASSET_PATCH_WORKER_IDLE_MS = 30_000;
 const OFFICIAL_ASSET_PATCH_WORKER_PATH = path.join(__dirname, "official-asset-patch-worker.cjs");
@@ -212,7 +213,7 @@ function currentOfficialAssetPatchWorker() {
     } else {
       const bytes = message.data;
       const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      job.resolve({ data, patched: message.patched === true });
+      job.resolve({ data, patched: message.patched === true, patchReports: message.patchReports });
     }
     // 没有待处理资源时不让空闲 worker 阻止测试进程或 gateway 正常退出。
     releaseOfficialAssetPatchWorkerWhenIdle(worker);
@@ -311,11 +312,13 @@ function createStaticAssetService({
   compatibilityService,
   getI18nSnapshot,
   getOfficialBundle,
+  publishStaticPoint,
   patchedAssetCacheMaxBytes = PATCHED_ASSET_CACHE_MAX_BYTES,
 }) {
   const staticModificationRuntime = createHostModificationRuntime({
     host: "static",
     compatibilityService,
+    publish: publishStaticPoint,
   });
   const staticPoints = staticModificationRuntime.points.staticRenderer;
   const modificationCoordinator = staticModificationRuntime.coordinator;
@@ -346,6 +349,7 @@ function createStaticAssetService({
   const patchedOfficialPrefixes = Array.from(
     new Set([
       PATCHED_OFFICIAL_PREFIX,
+      "/official-patched-v11/",
       "/official-patched-v10/",
       "/official-patched-v9/",
       "/official-patched-v8/",
@@ -393,6 +397,7 @@ function createStaticAssetService({
     [staticPoints.applicationMenu, patchApplicationMenuCapabilityCheck],
     [staticPoints.appServerRequestScheduling, patchAppServerRequestScheduling],
     [staticPoints.dictationCueSounds, patchDictationCueSoundsCompatibleSource],
+    [staticPoints.thirdPartyInputCompat, patchThirdPartyInputCompatibleSource],
     [staticPoints.pluginImageLazyLoad, patchPluginSummaryImageInlining],
     [staticPoints.openInFolderLocale, patchOpenInFolderLocaleMessage],
     ...dynamicHtmlPoints.map((point) => [point, () => undefined]),
@@ -423,6 +428,7 @@ function createStaticAssetService({
   const patchApplicationMenuCompatible = capabilityFor(staticPoints.applicationMenu);
   const patchRequestSchedulingCompatible = capabilityFor(staticPoints.appServerRequestScheduling);
   const patchCueSoundsCompatible = capabilityFor(staticPoints.dictationCueSounds);
+  const patchThirdPartyInputCompatible = capabilityFor(staticPoints.thirdPartyInputCompat);
   const patchPluginImageCompatible = capabilityFor(staticPoints.pluginImageLazyLoad);
   const patchOpenInFolderLocaleCompatible = capabilityFor(staticPoints.openInFolderLocale);
 
@@ -537,6 +543,11 @@ function createStaticAssetService({
             locale: variant.locale,
             reqPath,
           });
+          // 仅接收受信 Worker 的静态资源修改点，不把浏览器或其它宿主的状态混入此批报告。
+          for (const point of result.patchReports || []) {
+            if (!Object.values(staticPoints).some(ref => ref.id === point?.id)) continue;
+            try { compatibilityService?.registry?.ingestKernelPoint(point.id, point); } catch {}
+          }
           return storePatchedAssetEntry(key, result.data, result.patched);
         } catch (error) {
           if (!hasWarnedPatchWorkerFailure) {
@@ -1208,8 +1219,9 @@ function createStaticAssetService({
     });
   }
 
-  function webShellBootstrapScript(i18n) {
+  function webShellBootstrapScript(i18n, extra = {}) {
     const publicConfig = {
+      ...extra,
       locale: i18n.locale,
       localeSource: i18n.source || "",
       localeMode: i18n.mode || "",
@@ -1529,6 +1541,12 @@ ${pluginGatewayStateBootstrapScript()}
     });
   }
 
+  function patchThirdPartyInputCompatibleSource(source) {
+    return patchThirdPartyInputCompat(source, () => {
+      failCompatibilityPoint(staticPoints.thirdPartyInputCompat, "Official local composer/provider contract did not match; original quota gate retained");
+    });
+  }
+
   function patchPluginSummaryImageInlining(source) {
     /**
      * 官方 Pii() 会在插件列表返回后把每个插件的三张摘要图全部读成 base64，即使当前页面完全不可见。
@@ -1564,6 +1582,7 @@ ${pluginGatewayStateBootstrapScript()}
       data.includes(APPLICATION_MENU_TOKEN) ||
       data.includes(APP_SERVER_REQUEST_CLIENT_DISPATCH_ERROR) ||
       data.includes(CUE_SOUNDS_TOKEN) ||
+      data.includes(THIRD_PARTY_INPUT_TOKEN) ||
       data.includes(MOBILE_NAVIGATION_TOKEN) ||
       data.includes(PAGE_MENU_TOKEN) ||
       data.includes(POINTER_SENSOR_TOKEN) ||
@@ -1586,6 +1605,8 @@ ${pluginGatewayStateBootstrapScript()}
     let patched = isHistorySignalsChunk
       ? patchHistorySignalsCompatible(source)
       : source;
+    // 先校验未经其它响应补丁修改的官方组件；开关和 Provider 条件在每次浏览器渲染时计算。
+    patched = patchThirdPartyInputCompatible(patched);
     patched = patchApplicationMenuCompatible(patched);
     patched = patchRequestSchedulingCompatible(patched);
     patched = patchCueSoundsCompatible(patched);
@@ -1714,7 +1735,9 @@ ${pluginGatewayStateBootstrapScript()}
         },
       };
       let html = patchHtmlLang(readText(file), pageI18n.locale);
-      const bootstrap = webShellBootstrapScript(pageI18n);
+      // 调试页只注册这一份声明式浏览器偏好，不运行其它插件，也不暴露网关配置。
+      const inputManifest = listPluginEntries().find(entry => entry.manifest?.id === THIRD_PARTY_INPUT_PLUGIN)?.manifest || null;
+      const bootstrap = webShellBootstrapScript(pageI18n, { thirdPartyInputCompatManifest: inputManifest });
       // 调试页公开可读，但语言必须与认证页来自同一快照；动态 HTML 不参与静态文件 ETag。
       html = html.includes("<!-- opencodex-runtime-config -->")
         ? html.replace("<!-- opencodex-runtime-config -->", bootstrap)

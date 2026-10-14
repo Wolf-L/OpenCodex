@@ -53,6 +53,7 @@ export const BUILTIN_PLUGINS = Object.freeze({
   mobileSidebarAutoCollapse: definePlugin({ id: "opencodex.mobile-sidebar-auto-collapse", name: "移动端侧栏优化" }),
   mobileKeyboardOptimization: definePlugin({ id: "opencodex.mobile-keyboard-optimization", name: "移动端软键盘优化" }),
   iosFix: definePlugin({ id: "opencodex.ios-fix", name: "iOS兼容修复" }),
+  thirdPartyInputCompat: definePlugin({ id: "opencodex.third-party-input-compat", name: "第三方 Provider 输入兼容" }),
 });
 
 function terminal<THost extends ModificationHost>(
@@ -392,6 +393,7 @@ export const POINT_DEFINITIONS = Object.freeze([
   point("static.cache.renderer.application-menu", "适配 Web 环境 Application Menu 能力", "renderer-cache", G.rendererUi, A.officialRendererPatch),
   point("static.cache.renderer.app-server-request-scheduling", "调整 App Server 后台请求调度", "renderer-cache", G.backgroundEfficiency, A.officialRendererPatch),
   point("static.cache.renderer.dictation-cue-sounds", "关闭 Web 听写提示音", "renderer-cache", G.backgroundEfficiency, A.officialRendererPatch),
+  pluginPoint("static.cache.renderer.third-party-input-compat", "适配自有第三方 API 的输入额度判断", "renderer-cache", G.rendererUi, P.thirdPartyInputCompat, A.officialRendererPatch),
   point("static.cache.renderer.plugin-image-lazy-load", "延迟加载插件图片", "renderer-cache", G.rendererResources, A.officialRendererPatch),
   point("static.cache.renderer.open-in-folder-locale", "把打开文件夹文案改为远端下载", "renderer-cache", G.remoteFiles, A.officialRendererPatch),
   point("static.cache.runner.macos-background-bundle", "生成 macOS 后台 Runner Bundle", "runner-cache", G.runnerPackaging, A.runnerArtifact),

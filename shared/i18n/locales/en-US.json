@@ -174,5 +174,14 @@
   "launcher.runtime.blocked": "Preflight blocked: check write permission and disk space. Estimated need: {required} GiB; available: {available} GiB.",
   "launcher.runtime.retry": " This source failed startup previously. Apply retries it once.",
   "launcher.runtime.unchanged": " Source contents match the current version.",
-  "launcher.runtime.failed": "The last candidate failed startup verification: {reason}. Automatic scans skip that source; preview to retry."
+  "launcher.runtime.failed": "The last candidate failed startup verification: {reason}. Automatic scans skip that source; preview to retry.",
+  "plugin.thirdPartyInputCompat.label": "Third-party provider input compatibility",
+  "plugin.thirdPartyInputCompat.desc": "Removes input restrictions incorrectly applied to your own third-party API by official account quota. Does not grant quota or change authentication. Off by default; applies only to this browser and site.",
+  "web.runtimeCompatibility.thirdPartyInput.title": "Third-party provider input compatibility",
+  "web.runtimeCompatibility.thirdPartyInput.description": "Fixes official account quota incorrectly blocking input for your own third-party API. Does not grant official quota or change authentication. Original restrictions remain when the current conversation's provider cannot be confirmed.",
+  "web.runtimeCompatibility.thirdPartyInput.scope": "Off by default; applies only to this browser and site. Other open conversation tabs may need a refresh if they are still using an older runtime.",
+  "web.runtimeCompatibility.thirdPartyInput.unavailable": "Unavailable in this version",
+  "web.runtimeCompatibility.thirdPartyInput.enabled": "On",
+  "web.runtimeCompatibility.thirdPartyInput.disabled": "Off",
+  "web.runtimeCompatibility.point.static.cache.renderer.third-party-input-compat.description": "Adapt the input quota check for your own third-party API"
 }

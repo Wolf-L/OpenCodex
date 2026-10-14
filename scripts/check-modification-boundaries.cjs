@@ -123,14 +123,14 @@ const catalogPath = path.join(projectRoot, "gateway", "dist", "modification", "c
 if (!fs.existsSync(catalogPath)) throw new Error("缺少已编译的虚拟骨架目录");
 const catalog = require(catalogPath);
 // 新增独立的文字草稿保护修改点后，同步检查目录、目标和迁移矩阵的完整性。
-if (catalog.POINT_DEFINITIONS.length !== 106) throw new Error("修改点迁移矩阵不是 106 项");
-if (catalog.POINT_TARGETS.length !== 106 || new Set(catalog.POINT_TARGETS).size !== 106) {
-  throw new Error("106 个修改点没有各自独立的强类型语义目标");
+if (catalog.POINT_DEFINITIONS.length !== 107) throw new Error("修改点迁移矩阵不是 107 项");
+if (catalog.POINT_TARGETS.length !== 107 || new Set(catalog.POINT_TARGETS).size !== 107) {
+  throw new Error("107 个修改点没有各自独立的强类型语义目标");
 }
-if (catalog.MIGRATION_MATRIX.length !== 106 || catalog.MIGRATION_MATRIX.some((entry) => {
+if (catalog.MIGRATION_MATRIX.length !== 107 || catalog.MIGRATION_MATRIX.some((entry) => {
   return entry.migrationStatus !== "migrated" || !entry.groupId || !entry.targetId || !entry.host;
 })) {
-  throw new Error("106 点迁移矩阵仍有 legacy 或 unassigned 项");
+  throw new Error("107 点迁移矩阵仍有 legacy 或 unassigned 项");
 }
 if (catalog.POINT_DEFINITIONS.some((point) => !point.group || point.contributions.length === 0)) {
   throw new Error("存在未分组或没有适配器的修改点");

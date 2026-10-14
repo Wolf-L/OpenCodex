@@ -174,5 +174,14 @@
   "launcher.runtime.blocked": "预检未通过：请检查目录写入权限与磁盘空间。预计需要 {required} GiB，可用 {available} GiB。",
   "launcher.runtime.retry": " 此来源上次启动失败，应用将明确重试一次。",
   "launcher.runtime.unchanged": " 来源内容与当前版本一致。",
-  "launcher.runtime.failed": "上次候选版本未通过启动确认：{reason}。自动扫描将跳过该来源，可预检后重试。"
+  "launcher.runtime.failed": "上次候选版本未通过启动确认：{reason}。自动扫描将跳过该来源，可预检后重试。",
+  "plugin.thirdPartyInputCompat.label": "第三方 Provider 输入兼容",
+  "plugin.thirdPartyInputCompat.desc": "仅解除自有第三方 API 被官方账号额度误加的输入限制；不增加额度，不改变鉴权。默认关闭，仅对当前浏览器和站点生效。",
+  "web.runtimeCompatibility.thirdPartyInput.title": "第三方 Provider 输入兼容",
+  "web.runtimeCompatibility.thirdPartyInput.description": "修复官方账号额度状态误阻止自有第三方 API 输入的问题；不增加官方额度，不改变鉴权。无法确认当前会话的 Provider 时保留原限制。",
+  "web.runtimeCompatibility.thirdPartyInput.scope": "默认关闭，仅对当前浏览器和站点生效。其他已打开的会话标签页若仍使用旧版运行时，可能需要刷新。",
+  "web.runtimeCompatibility.thirdPartyInput.unavailable": "当前版本不可用",
+  "web.runtimeCompatibility.thirdPartyInput.enabled": "已开启",
+  "web.runtimeCompatibility.thirdPartyInput.disabled": "已关闭",
+  "web.runtimeCompatibility.point.static.cache.renderer.third-party-input-compat.description": "适配自有第三方 API 的输入额度判断"
 }

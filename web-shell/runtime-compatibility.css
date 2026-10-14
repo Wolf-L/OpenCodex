@@ -53,6 +53,15 @@ button:not(.secondary):not(.help-button):not(.help-dialog-close) { border-color:
 .summary-card--overall[data-status="disabled"] { --summary-accent: #7b818b; }
 .panel { min-width: 0; margin-top: 18px; padding: 22px 24px 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 
+/* 浏览器级兼容开关复用现有控件，但长说明与移动端点击区域保持独立。 */
+.input-compat-heading { align-items: center; }
+.input-compat-heading > div { min-width: 0; }
+.input-compat-heading p { max-width: 880px; margin: 8px 0 0; font-size: 13px; line-height: 1.6; }
+.input-compat-control { flex: none; min-height: 44px; }
+.input-compat-control:has(input:disabled) { opacity: .65; cursor: not-allowed; }
+.input-compat-control input:disabled { cursor: not-allowed; }
+.input-compat-scope { margin: 12px 0 0; font-size: 12px; line-height: 1.6; }
+
 .filters { align-items: end; }
 .filters > div:first-child { max-width: 680px; }
 .filters > div:first-child p { margin-bottom: 0; }

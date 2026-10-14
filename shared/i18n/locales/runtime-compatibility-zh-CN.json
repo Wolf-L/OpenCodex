@@ -115,5 +115,6 @@
   "web.runtimeCompatibility.legacySuffix": " · 旧版报告（只读）",
   "web.runtimeCompatibility.runtimeIdentity": "Codex {version} · build {build} · 报告 {time}{legacy}",
   "web.runtimeCompatibility.invalidResponse": "无效的兼容性响应",
-  "web.runtimeCompatibility.readFailed": "兼容性状态读取失败：{error}"
+  "web.runtimeCompatibility.readFailed": "兼容性状态读取失败：{error}",
+  "web.runtimeCompatibility.point.static.cache.renderer.third-party-input-compat.description": "适配自有第三方 API 的输入额度判断"
 }
