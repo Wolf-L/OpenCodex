@@ -97,6 +97,35 @@ test("settings keep native horizontally scrollable categories and readable wrapp
   assert.match(css, /\[class~="@container\/settings-row"\] > :first-child\s*\{[^}]*flex: 1 1 100%;[^}]*overflow-wrap: anywhere/s);
 });
 
+test("phone settings dropdown escapes official non-Windows clipping only on its marked navigation chain", () => {
+  // overflow:visible 和 z-index 不能穿过 clip-path；同时覆盖 nav 自身和带圆角的外层 sidebar。
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  const overrides = rules.filter((rule) => rule[1].includes('[data-opencodex-phone-settings="true"]') && /clip-path:\s*none\s*!important/.test(rule[2]));
+  assert.equal(overrides.length, 1);
+  assert.deepEqual(overrides[0][1].split(",").map(selector => selector.trim()), [
+    '.app-shell-left-panel:has(nav[data-opencodex-phone-settings="true"])',
+    '.app-shell-left-panel :has(nav[data-opencodex-phone-settings="true"])',
+    'nav[data-opencodex-phone-settings="true"]',
+  ]);
+  assert.match(overrides[0][2], /overflow:\s*visible\s*!important/);
+  assert.match(overrides[0][2], /contain:\s*none\s*!important/);
+  assert.match(css, /\[data-opencodex-settings-expanded="true"\][^{]*\{[^}]*overflow-y: auto;[^}]*touch-action: pan-y pinch-zoom/s);
+});
+
+test("settings browser fixture retains Linux clipping and loads the current production adapter", () => {
+  const fixture = fs.readFileSync(path.join(__dirname, "fixtures/mobile-settings/index.html"), "utf8");
+  // 浏览器验收必须包含会裁切弹层的官方祖先，不能只画一个没有 overflow 的理想化导航。
+  assert.match(fixture, /data-codex-os="linux"/);
+  assert.match(fixture, /\.sidebar-navigation:not\(\.sidebar-navigation \*\)/);
+  assert.match(fixture, /clip-path: inset\(0 calc\(-1 \* var\(--radius-xl-base\)\) 0 0 round var\(--radius-xl-base\)\)/);
+  assert.match(fixture, /\.fixture-sidebar-content, nav, \.fixture-nav-inner\s*\{[^}]*overflow: hidden/s);
+  assert.match(fixture, /fetch\("\.\.\/\.\.\/\.\.\/\.\.\/web-shell\/internal\/providers\/mobile-sidebar-auto-collapse\.js"\)/);
+  assert.match(fixture, /params\.get\("shape"\) === "nav-only"/);
+  const script = fixture.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  assert.equal(transformSync(script, { loader: "js", target: "chrome120" }).warnings.length, 0);
+});
+
 test("chat drawer account spacing and column transforms never compress settings categories", () => {
   // 设置沿用 112px 双行导航；不能再被聊天账户的 56px 底部留白挤成一行。
   const drawerRules = [...css.matchAll(/([^{}]+)\{([^{}]+)\}/g)]

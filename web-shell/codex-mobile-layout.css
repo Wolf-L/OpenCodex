@@ -211,9 +211,12 @@
   .opencodex-settings-sections[aria-expanded="true"]::after { content: "⌃"; }
 
   .app-shell-left-panel:has(nav[data-opencodex-phone-settings="true"]),
-  .app-shell-left-panel :has(nav[data-opencodex-phone-settings="true"]) {
+  .app-shell-left-panel :has(nav[data-opencodex-phone-settings="true"]),
+  nav[data-opencodex-phone-settings="true"] {
+    /* Linux/macOS 官方侧栏的圆角 clip-path 仍会裁掉下拉网格；只取消手机设置导航链的裁切。 */
     overflow: visible !important;
     contain: none !important;
+    clip-path: none !important;
     z-index: 60;
   }
 

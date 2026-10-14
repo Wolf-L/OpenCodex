@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN" data-codex-os="linux">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mobile settings clipping regression</title>
+  <style>
+    /* 只保留官方布局所需的几何结构；账户、网络请求和真实设置均不参与此测试。 */
+    :root { --radius-xl-base: 16px; --app-shell-titlebar-height: 52px; --color-surface-secondary: #fafafa; --color-background-secondary-soft-alpha: #eee; --color-border: #ddd; --color-text: #202020; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #202020; }
+    button, input { font: inherit; }
+    button { cursor: pointer; background: white; color: inherit; }
+    [data-app-shell-frame] { display: flex; position: relative; width: 100%; height: 100dvh; overflow: hidden; }
+    [data-app-shell-titlebar] { position: absolute; inset: 0 0 auto; height: 52px; padding: 6px 12px; display: flex; gap: 8px; align-items: center; background: #f5f5f5; }
+    [data-app-shell-titlebar] button { font-size: 13px; }
+    .app-shell-left-panel { position: relative; flex: 0 0 280px; margin-top: 52px; overflow: hidden; }
+    .fixture-sidebar-content, nav, .fixture-nav-inner { display: flex; flex: 1; min-height: 0; flex-direction: column; height: 100%; overflow: hidden; }
+    .fixture-header { padding: 12px; flex: 0 0 auto; }
+    .fixture-header h1 { margin: 0 0 12px; }
+    [data-sidebar-header-search] { display: flex; align-items: center; }
+    #settings-search { width: 100%; height: 44px; border: 0; border-radius: 24px; padding: 8px 12px; background: #eee; }
+    .fixture-category-scroll { min-height: 0; flex: 1; overflow-y: auto; padding: 8px; }
+    [class~="group/nav-list"] { display: flex; flex-direction: column; gap: 4px; }
+    [class~="group/nav-list"] button { padding: 10px; text-align: start; border: 0; }
+    [class~="group/nav-section-title"] { margin: 8px; color: #666; }
+    [data-app-shell-main-surface] { position: relative; z-index: 1; flex: 1; min-width: 0; margin-top: 52px; padding: 32px 16px; overflow: auto; background: white; }
+    [data-app-shell-main-surface] h1 { font-size: 28px; }
+    .fixture-card { padding: 20px; margin-block: 20px; border: 1px solid #ddd; border-radius: 16px; }
+    .fixture-result { position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; padding: 2px 6px; font-size: 11px; background: #edf3ff; pointer-events: none; }
+    /* Linux 26.1007.21434 的真实裁切规则；Windows 明确不应用此规则。 */
+    ._PageSurfaceLayout_yl8z4_2:not(._ApplicationMenuPageSurfaceLayout_yl8z4_2):not(:where(:root[data-codex-os=win32] *)) ._LeftPanel_yl8z4_2:not([data-slate-sidebar-peeking=true]) .sidebar-navigation:not(.sidebar-navigation *) {
+      clip-path: inset(0 calc(-1 * var(--radius-xl-base)) 0 0 round var(--radius-xl-base));
+      border-radius: 0;
+    }
+  </style>
+  <link rel="stylesheet" href="../../../../web-shell/codex-mobile-layout.css">
+  <style>
+    /* baseline=1 只撤回此次修复的 clip-path 覆盖，方便验证矩形存在但命中失败的旧故障。 */
+    @media (max-width: 767px), (max-width: 960px) and (max-height: 500px) {
+      html[data-fixture-baseline="true"] .sidebar-navigation:not(.sidebar-navigation *) {
+        clip-path: inset(0 calc(-1 * var(--radius-xl-base)) 0 0 round var(--radius-xl-base)) !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="_PageSurfaceLayout_yl8z4_2" data-app-shell-frame data-app-shell-feature-navigation="true" data-app-shell-sidebar-open="false">
+    <header data-app-shell-titlebar>
+      <span>设置</span>
+      <button type="button" id="fixture-enabled">禁用适配</button>
+      <button type="button" id="fixture-baseline">切到旧版裁切</button>
+    </header>
+    <aside class="app-shell-left-panel _LeftPanel_yl8z4_2">
+      <div class="fixture-sidebar-content sidebar-navigation" data-slate-sidebar-content>
+        <nav class="sidebar-navigation flex min-h-0 flex-1 flex-col select-none">
+          <div class="fixture-nav-inner flex min-h-0 flex-1 flex-col">
+            <div class="fixture-header">
+              <div><h1>设置</h1></div>
+              <div><div data-sidebar-header-search><input id="settings-search" type="search" placeholder="搜索" aria-label="搜索设置"></div></div>
+            </div>
+            <div id="fixture-categories" class="fixture-category-scroll min-h-0 flex-1 overflow-y-auto pb-2">
+              <div class="group/nav-section">
+                <div class="group/nav-section-title">设置分类</div>
+                <div class="group/nav-list"></div>
+              </div>
+            </div>
+          </div>
+        </nav>
+      </div>
+    </aside>
+    <main data-app-shell-main-surface class="group/settings">
+      <h1 id="fixture-selected">常规</h1>
+      <div class="fixture-card">这是原生设置正文占位。打开“设置分类”后，按钮应覆盖此区域且可点击。</div>
+      <div class="fixture-card">最后一个分类验证滚动可达。搜索、选择、Escape 和外部点击均调用生产适配器。</div>
+      <button id="fixture-outside" type="button">正文按钮（关闭分类）</button>
+    </main>
+  </div>
+  <output class="fixture-result" id="fixture-result">Loading production helper…</output>
+  <script type="module">
+    const params = new URLSearchParams(location.search);
+    const root = document.documentElement;
+    if (params.get("os") === "win32") root.dataset.codexOs = "win32";
+    if (params.get("shape") === "nav-only") document.querySelector(".fixture-sidebar-content").classList.remove("sidebar-navigation");
+    root.dataset.fixtureBaseline = String(params.get("baseline") === "1");
+    let enabled = params.get("disabled") !== "1";
+    let selections = 0;
+    const media = matchMedia("(max-width: 767px), (max-width: 960px) and (max-height: 500px)");
+    const search = document.querySelector("#settings-search");
+    const list = document.querySelector('[class~="group/nav-list"]');
+    const labels = ["常规", "外观", "快捷键", "通知", "个性化", "模型", "连接器", "MCP 服务器", "技能", "自动化", "工作区", "项目", "Git", "终端", "浏览器", "网络与代理", "隐私", "高级设置", "开发者", "运行时兼容性（最后一项）"];
+    const result = document.querySelector("#fixture-result");
+    const report = () => {
+      result.textContent = `${media.matches ? "phone" : "desktop"} · ${enabled ? "enabled" : "disabled"} · ${root.dataset.fixtureBaseline === "true" ? "baseline" : "fixed"} · native selections: ${selections}`;
+    };
+    // 保留这些模拟原生按钮的对象和回调，增强层只能添加分类入口及标记。
+    labels.forEach((label, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.settingsPanelSlug = `section-${index}`;
+      button.id = `fixture-category-${index}`;
+      if (index === 0) button.setAttribute("aria-current", "page");
+      const span = document.createElement("span");
+      span.className = "truncate";
+      span.textContent = label;
+      button.append(span);
+      button.addEventListener("click", () => {
+        list.querySelector('[aria-current="page"]')?.removeAttribute("aria-current");
+        button.setAttribute("aria-current", "page");
+        document.querySelector("#fixture-selected").textContent = label;
+        selections += 1;
+        queueMicrotask(refresh);
+      });
+      list.append(button);
+    });
+    // 与 Node 回归测试相同，从当前生产文件取函数，不复制实现，以免样例与实际适配器漂移。
+    const source = await fetch("../../../../web-shell/internal/providers/mobile-sidebar-auto-collapse.js").then(response => {
+      if (!response.ok) throw new Error(`Provider unavailable: ${response.status}`);
+      return response.text();
+    });
+    const start = source.indexOf("  function createMobilePanelLayout()");
+    const end = source.indexOf("\n  registerPlugin({", start);
+    if (start < 0 || end <= start) throw new Error("Production panel helper not found");
+    const panels = new Function("w", "document", `${source.slice(start, end)}\nreturn createMobilePanelLayout();`)(window, document);
+    function refresh() { panels.refresh(enabled && media.matches); report(); }
+    document.addEventListener("click", event => { if (enabled && media.matches) panels.click(event); }, true);
+    document.addEventListener("keydown", event => { if (enabled && media.matches) panels.keydown(event); }, true);
+    search.addEventListener("input", () => {
+      const value = search.value.trim();
+      // 用 inline display 模拟 React 实际移除不匹配条目，不让移动端 button 规则覆盖 hidden。
+      for (const button of list.children) button.style.display = !value || button.textContent.includes(value) ? "" : "none";
+      refresh();
+    });
+    document.querySelector("#fixture-enabled").addEventListener("click", event => {
+      enabled = !enabled;
+      event.target.textContent = enabled ? "禁用适配" : "启用适配";
+      refresh();
+    });
+    document.querySelector("#fixture-baseline").addEventListener("click", event => {
+      root.dataset.fixtureBaseline = String(root.dataset.fixtureBaseline !== "true");
+      event.target.textContent = root.dataset.fixtureBaseline === "true" ? "切到修复版" : "切到旧版裁切";
+      report();
+    });
+    media.addEventListener("change", refresh);
+    addEventListener("pagehide", () => panels.dispose(), { once: true });
+    refresh();
+    root.dataset.fixtureReady = "true";
+  </script>
+</body>
+</html>

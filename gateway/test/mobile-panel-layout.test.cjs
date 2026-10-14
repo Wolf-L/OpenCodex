@@ -138,6 +138,25 @@ function addContextMenu(harness, labelId = null) {
   return { wrapper, menu, action };
 }
 
+function addSettings(harness) {
+  // 复现官方 Linux 的双层 sidebar-navigation 和 nav > inner > header + scroll 布局。
+  const panel = harness.node("aside", { class: "app-shell-left-panel" });
+  const sidebar = harness.node("div", { class: "sidebar-navigation", "data-slate-sidebar-content": "", style: "overflow: hidden; clip-path: inset(0 -12px 0 0 round 12px);" }, panel);
+  const nav = harness.node("nav", { class: "sidebar-navigation" }, sidebar);
+  const inner = harness.node("div", {}, nav);
+  const header = harness.node("div", {}, inner);
+  const headerInner = harness.node("div", {}, header);
+  const searchRow = harness.node("div", { "data-sidebar-header-search": "" }, headerInner);
+  const search = harness.node("input", { id: "settings-search" }, searchRow);
+  const scroll = harness.node("div", { class: "min-h-0 flex-1 overflow-y-auto pb-2" }, inner);
+  const section = harness.node("div", { class: "group/nav-section" }, scroll);
+  const categoryGroup = harness.node("div", { class: "group/nav-list" }, section);
+  const category = harness.node("button", { "aria-current": "page", "aria-label": "常规", "data-settings-panel-slug": "general" }, categoryGroup);
+  const label = harness.node("span", { class: "truncate" }, category);
+  label.textContent = "常规";
+  return { panel, sidebar, nav, inner, header, search, scroll, categoryGroup, category, label };
+}
+
 test("context submenus keep native actions and delegate Back and Close to Radix keys", () => {
   const harness = createHarness();
   const rootMenu = addContextMenu(harness);
@@ -221,13 +240,7 @@ test("account dropdown stays separate from context panels and ordinary dropdown 
 
 test("settings search reveals native categories, selection and Escape close them", () => {
   const harness = createHarness();
-  const nav = harness.node("nav");
-  const header = harness.node("div", {}, nav);
-  const headerInner = harness.node("div", {}, header);
-  const searchRow = harness.node("div", { "data-sidebar-header-search": "" }, headerInner);
-  const search = harness.node("input", { id: "settings-search" }, searchRow);
-  const categoryGroup = harness.node("div", { class: "group/nav-list" }, nav);
-  const category = harness.node("button", { "aria-current": "page", "aria-label": "常规", "data-settings-panel-slug": "general" }, categoryGroup);
+  const { nav, header, search, category, label } = addSettings(harness);
   harness.panels.refresh(true);
   const toggle = header.children.at(-1);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
@@ -237,7 +250,9 @@ test("settings search reveals native categories, selection and Escape close them
   search.value = "theme";
   harness.panels.refresh(true);
   assert.equal(nav.getAttribute("data-opencodex-settings-expanded"), "true");
-  harness.click(category);
+  const selection = harness.click(label);
+  assert.equal(selection.event.prevented, false);
+  assert.equal(selection.event.stopped, false);
   assert.equal(nav.getAttribute("data-opencodex-settings-expanded"), "false");
   harness.click(toggle);
   const outside = harness.node("button");
@@ -251,6 +266,39 @@ test("settings search reveals native categories, selection and Escape close them
   harness.panels.dispose();
   assert.equal(header.children.includes(toggle), false);
   assert.equal(nav.getAttribute("data-opencodex-phone-settings"), null);
+});
+
+test("settings outside click, disable and desktop transition keep original nodes and clipping styles", () => {
+  const harness = createHarness();
+  const { sidebar, nav, inner, header, scroll, categoryGroup, category } = addSettings(harness);
+  const officialClip = sidebar.getAttribute("style");
+  harness.panels.refresh(true);
+  const toggle = header.children.at(-1);
+  harness.click(toggle);
+  assert.equal(nav.getAttribute("data-opencodex-settings-expanded"), "true");
+  const outside = harness.node("main");
+  const click = harness.click(outside);
+  assert.equal(click.handled, false);
+  assert.equal(click.event.prevented, false);
+  assert.equal(nav.getAttribute("data-opencodex-settings-expanded"), "false");
+  harness.click(toggle);
+
+  // 插件关闭或媒体查询回到桌面都使用 refresh(false)，撤掉标记后官方样式自动恢复。
+  harness.panels.refresh(false);
+  assert.equal(nav.getAttribute("data-opencodex-phone-settings"), null);
+  assert.equal(nav.getAttribute("data-opencodex-settings-expanded"), null);
+  assert.equal(header.children.includes(toggle), false);
+  assert.equal(sidebar.getAttribute("style"), officialClip);
+  assert.equal(nav.parentElement, sidebar);
+  assert.equal(scroll.parentElement, inner);
+  assert.equal(category.parentElement, categoryGroup);
+  assert.equal(categoryGroup.children[0], category);
+  harness.panels.refresh(true);
+  const nextToggle = header.children.at(-1);
+  assert.notEqual(nextToggle, toggle);
+  assert.equal(nextToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(header.children.filter(node => node.getAttribute("data-opencodex-settings-toggle") !== null).length, 1);
+  harness.panels.dispose();
 });
 
 test("closed, disconnected, and disabled panels release their own markers", () => {
