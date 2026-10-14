@@ -120,6 +120,28 @@ test("Linux runtime keeps sandboxing enabled by default and flags are explicit o
   assert.deepEqual(linuxRuntimeArgs({ ...options, env: { OPENCODEX_LINUX_DISABLE_GPU: "1", OPENCODEX_LINUX_DISABLE_DEV_SHM: "1" } }), ["--disable-gpu", "--disable-dev-shm-usage"]);
 });
 
+test("Linux password store is explicit, validated, and does not silently replace the keyring", () => {
+  const warnings = [];
+  const options = { platform: "linux", getuid: () => 1000, warn: (...args) => warnings.push(args) };
+  for (const env of [{}, { OPENCODEX_LINUX_PASSWORD_STORE: "auto" }, { OPENCODEX_LINUX_HEADLESS: "1" }]) {
+    assert.deepEqual(linuxRuntimeArgs({ ...options, env }), []);
+  }
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(linuxRuntimeArgs({ ...options, env: { OPENCODEX_LINUX_PASSWORD_STORE: "basic" } }), ["--password-store=basic"]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /disables desktop keyring protection/);
+  assert.equal(warnings[0][1], "password-store-opt-out");
+  for (const value of ["", "true", "BASIC", " basic ", "basic --no-sandbox"]) {
+    assert.throws(() => linuxRuntimeArgs({ ...options, env: { OPENCODEX_LINUX_PASSWORD_STORE: value } }), /must be auto or basic/);
+  }
+  for (const platform of ["win32", "darwin"]) {
+    assert.deepEqual(linuxRuntimeArgs({ ...options, platform, env: { OPENCODEX_LINUX_PASSWORD_STORE: "basic" } }), []);
+  }
+  assert.equal(warnings.length, 1);
+  // 密码存储选项不授权 root 绕过既有沙箱检查。
+  assert.throws(() => linuxRuntimeArgs({ ...options, getuid: () => 0, env: { OPENCODEX_LINUX_PASSWORD_STORE: "basic" } }), /non-root/);
+});
+
 test("Linux runtime rejects root instead of silently weakening Chromium sandboxing", () => {
   assert.throws(() => linuxRuntimeArgs({ platform: "linux", env: {}, getuid: () => 0 }), /non-root.*OPENCODEX_LINUX_NO_SANDBOX=1/);
 });

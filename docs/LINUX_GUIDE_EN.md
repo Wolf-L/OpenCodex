@@ -191,6 +191,7 @@ Do not start with the example `your-password` placeholder. For automated initial
 | Wayland only | Use X11/XWayland or force Xvfb. Wayland variables alone do not establish X11 readiness. |
 | GPU/EGL startup errors | Explicitly try `OPENCODEX_LINUX_DISABLE_GPU=1`; Android GPU acceleration is not guaranteed. |
 | Small or unavailable `/dev/shm` | Explicitly use `OPENCODEX_LINUX_DISABLE_DEV_SHM=1` for Chromium's temporary-file fallback; ensure a writable temporary directory and enough space. |
+| Existing deployment without a usable desktop keyring | Explicitly select `OPENCODEX_LINUX_PASSWORD_STORE=basic`; the default `auto` retains system keyring selection, including on headless/Android hosts. |
 | uid 0 | Startup is rejected by default; prefer an ordinary user and a supported kernel. |
 | PRoot / namespace / seccomp failures | Not simply a missing npm dependency; an ordinary user may still lack the required kernel features. Prefer a host with working sandbox support. |
 
@@ -199,6 +200,10 @@ Do not start with the example `your-password` placeholder. For automated initial
 The scripts do not enable this switch automatically or modify system user namespaces, AppArmor, or setuid configuration. This switch also does **not** disable Codex's command-execution sandbox or change approval policy. The two sandbox layers have separate kernel requirements; tasks may fail even if the page opens. Understand the risks and isolate data before experimenting in a constrained environment. Do not make sandbox bypass the default for a publicly exposed service.
 
 Ctrl-C stops the foreground service, forwards termination to the separate process group, and cleans up Xvfb, D-Bus, and child processes. Processes that refuse to exit are forcibly terminated after a grace period. You may run it manually in tmux, but Android power management can still terminate the entire Kali session; automatic background survival is not guaranteed.
+
+`OPENCODEX_LINUX_PASSWORD_STORE` is a built-in option shared by the graphical Launcher and headless runner. Only `auto` and `basic` are accepted. `basic` removes desktop keyring protection and emits a launch/doctor warning; use it only for an intentionally configured deployment and protect its private data directory. It does not change account credentials, the Web password, or command approvals. Persist an existing phone's choice in its service environment file outside the release directory (for example its existing `~/.config/opencodex/server.env`), not by editing `run-gateway.cjs` after each upgrade.
+
+The audited 26.1007.21434 ARM64 community source and its optimized form are included in the startup-cache adapter's exact fingerprint allowlist. Unknown sources remain unsupported. After upgrades, check both `officialStartupCache.coverage.desktop` and `preauth` in `/api/health`, not merely `supported` or overall `ok`, and verify the home/settings UI in an actual browser. This cache still requires a valid account and genuine warmed responses; offline startup is not guaranteed.
 
 ## 7. Access from phones and other devices
 

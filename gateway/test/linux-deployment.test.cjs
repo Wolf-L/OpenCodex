@@ -29,6 +29,19 @@ test("deployment defaults allow LAN and retain private XDG state without changin
   assert.equal(env.OPENCODEX_LINUX_NO_SANDBOX, undefined);
 });
 
+test("persistent password-store configuration reaches the runner and has a distinct diagnostic", (t) => {
+  // 模拟外置服务配置经过部署环境与启动计划，不启动桌面、不读取真实钥匙环。
+  const env = deploymentEnvironment({ OPENCODEX_LINUX_PASSWORD_STORE: "basic", DISPLAY: ":1" }, fixture(t));
+  assert.equal(buildLaunchPlan(env).env.OPENCODEX_LINUX_PASSWORD_STORE, "basic");
+  const report = collectDiagnostics({ env, platform: "linux", arch: "arm64", uid: 1000, glibc: "2.41", appRoot: fixture(t), lookup: () => "" });
+  assert.equal(report.checks.find((entry) => entry.id === "password-store-opt-out").status, "warn");
+  assert.equal(report.checks.some((entry) => entry.id === "sandbox-opt-out"), false);
+  env.OPENCODEX_LINUX_PASSWORD_STORE = "invalid-private-value";
+  const invalid = collectDiagnostics({ env, platform: "linux", arch: "arm64", uid: 1000, glibc: "2.41", appRoot: fixture(t), lookup: () => "" });
+  assert.equal(invalid.checks.find((entry) => entry.id === "password-store").status, "error");
+  assert.equal(JSON.stringify(invalid).includes("invalid-private-value"), false);
+});
+
 test("LAN binding is passed to the child and explicit loopback remains available", () => {
   // 验证传入子进程的配置，不启动服务或在测试机开放网络端口。
   for (const host of [undefined, "127.0.0.1", "192.168.1.10"]) {

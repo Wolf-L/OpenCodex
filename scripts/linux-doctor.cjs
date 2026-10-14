@@ -57,10 +57,11 @@ function collectDiagnostics({
   }
   if (traced || env.PROOT_TMP_DIR || env.PROOT_LOADER) add("proot", "warn", "存在 ptrace/PRoot 线索（也可能是调试器），不是已确认的原生隔离环境；不依赖 systemd/FUSE");
   try {
-    const args = linuxRuntimeArgs({ platform, env, getuid: () => uid, warn: (message) => add("sandbox-opt-out", "warn", message) });
+    // 密码存储与沙箱各自报告，避免把钥匙环兼容选项误标为关闭沙箱。
+    const args = linuxRuntimeArgs({ platform, env, getuid: () => uid, warn: (message, id = "sandbox-opt-out") => add(id, "warn", message) });
     add("sandbox", "ok", env.OPENCODEX_LINUX_NO_SANDBOX === "1" ? "已显式选择 Chromium 无沙箱模式；非生产建议" : "未关闭 Chromium 沙箱；内核是否允许启动仍须实测");
     if (args.includes("--disable-dev-shm-usage")) add("shared-memory", "info", "已选择 Chromium 临时文件替代 /dev/shm，需要可写且有空间的临时目录");
-  } catch (error) { add("sandbox", "error", error.message); }
+  } catch (error) { add(error.code === "INVALID_LINUX_PASSWORD_STORE" ? "password-store" : "sandbox", "error", error.message); }
   try { add("display", "ok", `显示模式：${displayPlan(env, lookup).mode}（不在诊断阶段连接或启动显示服务）`); }
   catch (error) { add("display", "error", error.message); }
   add("dbus", env.DBUS_SESSION_BUS_ADDRESS || lookup("dbus-run-session") ? "ok" : "warn", env.DBUS_SESSION_BUS_ADDRESS ? "使用现有 D-Bus 会话" : lookup("dbus-run-session") ? "启动时创建临时 D-Bus 会话，无需 systemd" : "缺少 dbus-run-session；建议安装 dbus 包");

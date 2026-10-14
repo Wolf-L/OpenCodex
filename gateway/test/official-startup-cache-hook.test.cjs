@@ -67,6 +67,53 @@ test("only exact path with unique full source fingerprint gets a local lexical a
   assert.equal(h.delegated[0].receiver, h.loader);
 });
 
+test("Linux community runtime fingerprints are part of the production allowlist", () => {
+  const source = SOURCES.find((entry) => entry.file === "main-39FdJ_vp.js");
+  assert.deepEqual(source.verifiedVariants, [{
+    hash: "d56e46803c6f922ba67f426e18144d63c34aa634a95055c817df6e6f8b9536ca",
+    optimizedHash: "a49f6f50368aeb1c5ac2a791769001a5870cb6499164f6e80882456f3546619b",
+  }]);
+});
+
+test("base and verified variant fingerprints retain exact source cache identities", () => {
+  // 使用可编译的合成完整源码，不提交或执行厂商代码。
+  const sources = [fixture, `${fixture}\n// optimized`, `${fixture}\n// variant`, `${fixture}\n// optimized variant`];
+  const descriptor = { file: "main-39FdJ_vp.js", surface: "desktop", hash: digest(sources[0]),
+    optimizedHash: digest(sources[1]), verifiedVariants: [{ hash: digest(sources[2]), optimizedHash: digest(sources[3]) }] };
+  for (const source of sources) {
+    let settings;
+    const h = harness({ source, sourceFile: descriptor.file, sources: [descriptor], onCreateCache(value) { settings = value; } });
+    h.activate();
+    assert.equal(h.hook.status().reason, "patched");
+    assert.deepEqual(h.hook.status().coverage, { desktop: true, preauth: false });
+    assert.equal(h.compiled.length, 1);
+    new vm.Script(h.compiled[0].code);
+    assert.equal(settings.buildId, `native-startup-v1:test-version:test-build:${digest(source)}`);
+  }
+  const h = harness({ source: `${sources[2]}\n// unverified change`, sourceFile: descriptor.file, sources: [descriptor] });
+  h.activate();
+  assert.equal(h.hook.status().reason, "unsupported-source-hash");
+  assert.equal(h.compiled.length, 0);
+  assert.equal(h.delegated.length, 1);
+  assert.equal(h.counts().cacheCreations, 0);
+});
+
+test("verified variants cannot bypass full-context anchors or the exact filename", () => {
+  for (const source of [fixture.replace(CONTEXT_ANCHOR, "let e"), fixture + CONTEXT_ANCHOR, fixture + BINDING]) {
+    const h = harness({ source, sources: [{ file: MAIN_FILE, hash: "unmatched", surface: "desktop", verifiedVariants: [{ hash: digest(source) }] }] });
+    h.activate();
+    assert.equal(h.hook.status().reason, "unsupported-source-anchor");
+    assert.equal(h.compiled.length, 0);
+    assert.equal(h.delegated.length, 1);
+    assert.equal(h.counts().cacheCreations, 0);
+  }
+  const h = harness({ sources: [{ file: "another-main.js", hash: "unmatched", surface: "desktop", verifiedVariants: [{ hash: digest(fixture) }] }] });
+  h.activate();
+  assert.deepEqual(h.counts(), { sourceReads: 0, cacheCreations: 0 });
+  assert.equal(h.compiled.length, 0);
+  assert.equal(h.delegated.length, 1);
+});
+
 test("disabled, unreadable settings, and already loaded modules never install or create a cache", () => {
   for (const options of [
     { settings: { enabled: false, reason: "disabled" } },
@@ -465,9 +512,10 @@ test("verified Linux official files transform and compile without executing vend
 }, () => {
   for (const descriptor of SOURCES.filter((source) => source.file !== MAIN_FILE)) {
     const source = fs.readFileSync(path.join(process.env.OPENCODEX_LINUX_CACHE_FIXTURE_DIR, descriptor.file));
-    assert.equal(digest(source), descriptor.hash);
+    const verified = [descriptor, ...(descriptor.verifiedVariants || [])].find((entry) => digest(source) === entry.hash);
+    assert.ok(verified, "Fixture must be an exact verified original source");
     const variants = [source];
-    if (descriptor.optimizedHash) {
+    if (verified.optimizedHash) {
       const { OfficialRuntimeOptimizer } = require("../dist/official/OfficialRuntimeOptimizer.js");
       let optimized = source.toString("utf8");
       // 使用项目自己的静态变换，不运行官方模块，也不修改原始样本。
@@ -477,7 +525,7 @@ test("verified Linux official files transform and compile without executing vend
         writeFile: (_, value) => { optimized = value; },
       } });
       optimizer.optimize("synthetic-official-bundle");
-      assert.equal(digest(optimized), descriptor.optimizedHash);
+      assert.equal(digest(optimized), verified.optimizedHash);
       variants.push(optimized);
     }
     for (const variant of variants) {

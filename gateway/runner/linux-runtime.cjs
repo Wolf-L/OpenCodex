@@ -68,6 +68,18 @@ function linuxRuntimeArgs({ platform = process.platform, env = process.env, getu
     throw new Error("Refusing to launch Electron as root without its Chromium sandbox. Prefer a non-root user on a supported Linux kernel. PRoot/Android may not support Chromium sandboxing. Only after accepting the security risk, explicitly set OPENCODEX_LINUX_NO_SANDBOX=1; this is not recommended for production.");
   }
   const args = [];
+  // 无钥匙环的既有部署可显式保留 basic；不能按无头、root 或 Android 自动降级。
+  // 使用固定枚举而非透传命令行，拼写错误必须在启动前报错。
+  const passwordStore = env.OPENCODEX_LINUX_PASSWORD_STORE ?? "auto";
+  if (!["auto", "basic"].includes(passwordStore)) {
+    const error = new Error("OPENCODEX_LINUX_PASSWORD_STORE must be auto or basic. Keep auto for the system keyring; basic is an explicit opt-in for deployments without a desktop keyring.");
+    error.code = "INVALID_LINUX_PASSWORD_STORE";
+    throw error;
+  }
+  if (passwordStore === "basic") {
+    warn("[launcher] WARNING: OPENCODEX_LINUX_PASSWORD_STORE=basic disables desktop keyring protection for Electron's password store. Use only when intentionally preserving a deployment without a keyring; protect its private data directory. This does not change account credentials or Codex command approvals.", "password-store-opt-out");
+    args.push("--password-store=basic");
+  }
   if (env.OPENCODEX_LINUX_DISABLE_GPU === "1") args.push("--disable-gpu");
   if (env.OPENCODEX_LINUX_DISABLE_DEV_SHM === "1") args.push("--disable-dev-shm-usage");
   if (noSandbox) {

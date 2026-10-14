@@ -15,7 +15,13 @@ const SOURCES = Object.freeze([
   { file: MAIN_FILE, hash: SOURCE_HASH, surface: "desktop" },
   { file: "main-39FdJ_vp.js", hash: "78ffc19681d7605d0b48c8cbfdc185211a58d218c4512647de567519dd5ca3bc",
     // 同一原厂文件经当前项目优化器处理后的完整指纹；不是放宽为只匹配局部锚点。
-    optimizedHash: "3f4f022ecb9fd0ee2f6fa7aa48c1411b627e20c97f8e4509654f7fce1102bf33", surface: "desktop" },
+    optimizedHash: "3f4f022ecb9fd0ee2f6fa7aa48c1411b627e20c97f8e4509654f7fce1102bf33", surface: "desktop",
+    // 已审核的 26.1007.21434 ARM64 社区包仅增加 quit-confirmation-focus 修正。
+    // 原始与优化源码均按完整指纹准入，仍须通过下方唯一上下文与原生账号校验。
+    verifiedVariants: Object.freeze([Object.freeze({
+      hash: "d56e46803c6f922ba67f426e18144d63c34aa634a95055c817df6e6f8b9536ca",
+      optimizedHash: "a49f6f50368aeb1c5ac2a791769001a5870cb6499164f6e80882456f3546619b",
+    })]) },
   { file: "bootstrap-Du6FqCuH.js", hash: "7c8665efb642d0683d42bb0c2b4ac6c80bfd3c19eecd0fa0ee5a8a9934fa17c4", surface: "preauth" },
 ]);
 const SETTINGS_REASONS = new Set(["enabled", "disabled", "missing", "invalid", "unreadable", "symlink", "non-regular", "oversize", "changed"]);
@@ -116,7 +122,8 @@ function createOfficialStartupCacheHook(options = {}) {
         const actualHash = sourceHash(bytes);
         const anchor = surface === "preauth" ? PREAUTH_ANCHOR : CONTEXT_ANCHOR;
         // 磁盘源码不变；完整指纹与唯一词法上下文必须同时通过。
-        if (actualHash !== sourceInfo.hash && actualHash !== sourceInfo.optimizedHash) state.reason = "unsupported-source-hash";
+        const verified = [sourceInfo, ...(sourceInfo.verifiedVariants || [])];
+        if (!verified.some((source) => actualHash === source.hash || actualHash === source.optimizedHash)) state.reason = "unsupported-source-hash";
         else if (source.split(anchor).length !== 2 || source.includes(BINDING)) state.reason = "unsupported-source-anchor";
         else {
           const binding = `const ${BINDING}=require(${JSON.stringify(adapterPath)});`;

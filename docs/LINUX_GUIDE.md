@@ -200,12 +200,17 @@ export OPENCODEX_LINUX_DATA_DIR="$HOME/.local/state/opencodex-kali"
 | 只有 Wayland | 当前部署入口优先 X11/XWayland，或强制 Xvfb；不把 Wayland 变量当作 X11 已就绪 |
 | GPU / EGL 初始化失败 | 可显式设置 `OPENCODEX_LINUX_DISABLE_GPU=1` 后重试，不保证 Android GPU 加速 |
 | `/dev/shm` 太小或不可用 | 可显式设置 `OPENCODEX_LINUX_DISABLE_DEV_SHM=1`，使用 Chromium 临时文件后备；需可写临时目录和足够空间 |
+| 无可用桌面钥匙环的既有部署 | 可显式设置 `OPENCODEX_LINUX_PASSWORD_STORE=basic`；默认 `auto` 保留系统钥匙环选择，不按无头或 Android 自动降级 |
 | uid 0 | 默认拒绝启动；优先使用普通用户和支持的内核 |
 | PRoot / namespace / seccomp 失败 | 不是“缺一个 npm 包”；普通用户也未必能解决，建议迁移到支持沙箱的主机 |
 
 **无头不等于需要关闭沙箱。** `OPENCODEX_LINUX_NO_SANDBOX=1` 是单次显式的高风险兼容开关，会把 `--no-sandbox` 传给隐藏 Electron，并输出警告；不建议生产使用。它降低恶意页面/依赖攻击时的进程隔离，不能将 Xvfb、PRoot 或普通密码认证变成替代沙箱。[Electron 官方沙箱说明](https://www.electronjs.org/docs/latest/tutorial/sandbox/)
 
 脚本不会自动打开该开关、修改系统 user namespace / AppArmor / setuid 配置，也**不会**因此关闭 Codex 命令执行沙箱或更改审批策略。两层沙箱分别受内核能力限制；即便页面启动，执行任务仍可能失败。若必须在受限环境尝试，先理解风险并隔离数据，不要把禁用沙箱作为公开服务的默认配置。
+
+`OPENCODEX_LINUX_PASSWORD_STORE` 是正式启动配置，图形 Launcher 和无头 runner 均使用同一实现，仅接受 `auto` / `basic`。`basic` 不使用桌面钥匙环保护，启动和 doctor 会给出警告；只用于明确选择该方式的部署，保护好私有数据目录。它不更改账号凭据、访问密码或命令审批。已有手机部署应把选择写入版本目录之外的服务环境配置（例如其既有 `~/.config/opencodex/server.env`），无需再修改 `run-gateway.cjs`；升级时保留该配置即可。
+
+已审核的 26.1007.21434 ARM64 社区源码指纹已内置于启动缓存适配器，包括优化前后两份完整指纹。未知源码仍拒绝适配；不按平台或版本号宽泛放行。升级验收必须检查 `/api/health` 的 `officialStartupCache.coverage.desktop` 与 `preauth`，不能只看 `supported` 或整体 `ok`，并在实际浏览器确认首页与设置可用。启动缓存仍需有效账号和真实响应预热，不保证离线启动。
 
 按 Ctrl-C 停止前台服务，会向独立进程组转发退出信号，并清理 Xvfb / D-Bus / 子进程；拒绝退出的进程会在宽限期后强制终止。可手动放到 tmux 内运行，但 Android 的省电/后台杀进程策略仍可能结束整个 Kali 会话，不承诺自动保活。
 
