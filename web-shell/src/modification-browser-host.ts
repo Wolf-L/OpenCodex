@@ -107,6 +107,7 @@ interface BrowserKernelTransport {
   readonly clientId: string;
   beginGeneration?(): void;
   ingestSnapshot(snapshot: ReturnType<ModificationRuntime["snapshot"]>): void;
+  ingestPoints?(points: readonly ReturnType<ModificationRuntime["snapshotPoint"]>[]): void;
 }
 
 interface BrowserProviderInstaller {
@@ -950,6 +951,9 @@ function createBrowserProviderRegistry() {
   let activeRuntime: Awaited<ReturnType<ModificationRuntime["activate"]>> | null = null;
   let activationPromise: Promise<void> | null = null;
   let snapshotScheduled = false;
+  let fullSnapshotPending = false;
+  const dirtyPointIds = new Set<string>();
+  const selectedPoints = new Map<string, (typeof POINT_DEFINITIONS)[number]>();
   let pageGeneration = 0;
 
   for (const definition of BROWSER_PROVIDER_DEFINITIONS) {
@@ -994,12 +998,34 @@ function createBrowserProviderRegistry() {
     return value && typeof value.ingestSnapshot === "function" ? value : null;
   }
 
-  function publishSnapshot(): void {
-    if (!runtime || snapshotScheduled) return;
+  function publishSnapshot(full = true): void {
+    if (!runtime) return;
+    fullSnapshotPending ||= full;
+    if (snapshotScheduled) return;
+    const scheduledRuntime = runtime;
+    const scheduledGeneration = pageGeneration;
     snapshotScheduled = true;
     queueMicrotask(() => {
+      // 旧页面的 microtask 不得发布新页状态，也不能清除新页已经排队的脏点。
+      if (scheduledRuntime !== runtime || scheduledGeneration !== pageGeneration) return;
       snapshotScheduled = false;
-      if (runtime) transport()?.ingestSnapshot(runtime.snapshot());
+      const reporter = transport();
+      if (!reporter) {
+        // 上报器可能稍后加载，届时首个事件必须补齐全页状态，不能只发送该事件的变化点。
+        fullSnapshotPending = true;
+        return;
+      }
+      const fullSnapshot = fullSnapshotPending || !reporter.ingestPoints;
+      const points = [...dirtyPointIds];
+      fullSnapshotPending = false;
+      dirtyPointIds.clear();
+      if (fullSnapshot) reporter.ingestSnapshot(scheduledRuntime.snapshot());
+      else if (points.length > 0) {
+        reporter.ingestPoints?.(points.flatMap((pointId) => {
+          const definition = selectedPoints.get(pointId);
+          return definition ? [scheduledRuntime.snapshotPoint(definition)] : [];
+        }));
+      }
     });
   }
 
@@ -1007,7 +1033,10 @@ function createBrowserProviderRegistry() {
     const increment = Math.max(1, Math.trunc(Number(count) || 1));
     hitTotalsByPointId.set(pointId, (hitTotalsByPointId.get(pointId) || 0) + increment);
     for (const callback of callbacksByPointId.get(pointId) || []) callback(increment);
-    publishSnapshot();
+    // 语义命中立即计数，只合并展示投影；跨 Provider 的未注册 effect 不进入 Kernel 快照。
+    if (!selectedPoints.has(pointId)) return;
+    dirtyPointIds.add(pointId);
+    publishSnapshot(false);
   }
 
   function scopeFor(state: BrowserProviderState): BrowserProviderScope {
@@ -1016,7 +1045,11 @@ function createBrowserProviderRegistry() {
     const effects = Object.fromEntries(
       Object.entries(pointByAlias).map(([alias, pointId]) => [
         alias,
-        Object.freeze<BrowserProviderEffect>({ emit: (count = 1) => emit(pointId, count) }),
+        Object.freeze<BrowserProviderEffect>({
+          emit(count = 1) {
+            if (state.scope === scope) emit(pointId, count);
+          },
+        }),
       ]),
     );
     const scope: BrowserProviderScope = Object.freeze({
@@ -1121,9 +1154,14 @@ function createBrowserProviderRegistry() {
     return Object.freeze({
       adapter,
       compile(contributions: readonly BoundContribution[]) {
+        const providerGeneration = pageGeneration;
         const managedContributions = new Map<symbol, ManagedBrowserContribution>();
+        const assertCurrentGeneration = () => {
+          if (providerGeneration !== pageGeneration) throw new Error("浏览器 Provider 页面代际已结束");
+        };
         return {
           locate(reporter: AdapterExecutionReporter) {
+            assertCurrentGeneration();
             for (const contribution of contributions) {
               const state = stateByPointId.get(contribution.point.id);
               if (!state || state.installers.length === 0) {
@@ -1132,6 +1170,7 @@ function createBrowserProviderRegistry() {
             }
           },
           apply(contribution: BoundContribution, reporter: AdapterExecutionReporter) {
+            assertCurrentGeneration();
             const state = stateByPointId.get(contribution.point.id);
             if (!state) throw new Error(`修改点没有浏览器 Provider：${contribution.point.id}`);
             ensureInstalled(state);
@@ -1158,12 +1197,14 @@ function createBrowserProviderRegistry() {
             reporter.applied(contribution);
           },
           verify(contribution: BoundContribution, reporter: AdapterExecutionReporter) {
+            assertCurrentGeneration();
             const state = stateByPointId.get(contribution.point.id);
             if (!state?.installed || state.failure) throw state?.failure || new Error("浏览器 Provider 安装后验证失败");
             managedContributions.get(contribution.key)?.verify();
             reporter.verified(contribution);
           },
           activate(contribution: BoundContribution, reporter: AdapterExecutionReporter) {
+            assertCurrentGeneration();
             const state = stateByPointId.get(contribution.point.id);
             if (!state) throw new Error(`修改点没有浏览器 Provider：${contribution.point.id}`);
             let callbacks = callbacksByPointId.get(contribution.point.id);
@@ -1187,10 +1228,11 @@ function createBrowserProviderRegistry() {
             };
           },
           rollback(contribution: BoundContribution) {
-            const state = stateByPointId.get(contribution.point.id);
-            if (!state) return;
             managedContributions.get(contribution.key)?.dispose();
             managedContributions.delete(contribution.key);
+            if (providerGeneration !== pageGeneration) return;
+            const state = stateByPointId.get(contribution.point.id);
+            if (!state) return;
             state.applications.delete(contribution.key);
             // 同一 Provider 可被多个修改点和多个底层适配器共享，最后一个引用回滚时才释放真实资源。
             if (state.applications.size === 0) releaseStateResources(state);
@@ -1198,10 +1240,12 @@ function createBrowserProviderRegistry() {
           dispose() {
             const affectedStates = new Set<BrowserProviderState>();
             for (const contribution of contributions) {
-              const state = stateByPointId.get(contribution.point.id);
-              if (!state) continue;
               managedContributions.get(contribution.key)?.dispose();
               managedContributions.delete(contribution.key);
+              // 托管实例属于旧计划，仍需销毁；共享 Provider 状态则已经可能属于新页。
+              if (providerGeneration !== pageGeneration) continue;
+              const state = stateByPointId.get(contribution.point.id);
+              if (!state) continue;
               state.applications.delete(contribution.key);
               affectedStates.add(state);
             }
@@ -1263,6 +1307,10 @@ function createBrowserProviderRegistry() {
     if (pageRoot === root) return;
     if (pageRoot) transport()?.beginGeneration?.();
     pageGeneration += 1;
+    snapshotScheduled = false;
+    fullSnapshotPending = false;
+    dirtyPointIds.clear();
+    selectedPoints.clear();
     pageRoot = root;
     window.OpenCodexPluginSystem?.beginPage?.(root);
     void activeRuntime?.dispose().catch((error) => {
@@ -1305,16 +1353,26 @@ function createBrowserProviderRegistry() {
     const selectedPointIds = new Set(
       registrationOrder.flatMap((state) => Object.values(state.definition.points)),
     );
+    for (const definition of POINT_DEFINITIONS) {
+      if (selectedPointIds.has(definition.id)) selectedPoints.set(definition.id, definition);
+    }
     runtime = createModificationRuntime();
+    fullSnapshotPending = true;
     registerModificationCatalog(runtime, { pointIds: selectedPointIds });
     for (const adapter of Object.values(BASE_ADAPTERS)) {
       runtime.provide(createManagedProvider(adapter as AdapterRef<unknown>));
     }
+    const activatingRuntime = runtime;
+    const activatingGeneration = pageGeneration;
     activationPromise = runtime.activate(runtime.compile()).then((active) => {
+      if (runtime !== activatingRuntime || pageGeneration !== activatingGeneration) {
+        // 页面替换后才完成的激活只能释放旧实例，不能覆盖新页 activeRuntime。
+        return active.dispose();
+      }
       activeRuntime = active;
       publishSnapshot();
     }, (error) => {
-      publishSnapshot();
+      if (runtime === activatingRuntime && pageGeneration === activatingGeneration) publishSnapshot();
       throw error;
     });
     return activationPromise;

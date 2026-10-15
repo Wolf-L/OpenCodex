@@ -44,9 +44,12 @@ class EventTargetStub {
   }
 }
 
-function createHarness() {
+function createHarness({ manualMicrotasks = false, instrumentProjections = false } = {}) {
   const mutationObservers = [];
   const scheduledCallbacks = new Map();
+  const microtasks = [];
+  const projections = { fullSnapshots: 0, pointIds: [] };
+  let instrumentedEmit = null;
   let schedulerSequence = 0;
   class MutationObserverStub {
     constructor(callback) {
@@ -91,17 +94,38 @@ function createHarness() {
     return element;
   };
   window.window = window;
-  vm.runInNewContext(BUNDLE, {
+  let bundle = BUNDLE;
+  if (instrumentProjections) {
+    // 仅在测试 VM 注入计数器，直接度量 Kernel 投影次数，不给产品增加调试入口或计时开销。
+    const hooks = [
+      [/function snapshot\(\) \{/g, "$& __countFullSnapshot();"],
+      [/function snapshotPoint\((\w+)\) \{/g, "$& __countPointSnapshot($1.id);"],
+      [/function emit\(pointId, count = 1\) \{/g, "__captureProviderEmit(emit); $&"],
+    ];
+    for (const [pattern, replacement] of hooks) {
+      assert.equal([...bundle.matchAll(pattern)].length, 1, `missing unique instrumentation hook: ${pattern}`);
+      bundle = bundle.replace(pattern, replacement);
+    }
+  }
+  vm.runInNewContext(bundle, {
     console,
     document,
     MutationObserver: MutationObserverStub,
-    queueMicrotask,
+    queueMicrotask: manualMicrotasks ? (callback) => microtasks.push(callback) : queueMicrotask,
+    __countFullSnapshot() { projections.fullSnapshots += 1; },
+    __countPointSnapshot(pointId) { projections.pointIds.push(pointId); },
+    __captureProviderEmit(emit) { instrumentedEmit = emit; },
     window,
   });
   return {
     document,
     host: window.__OpenCodexAdapterHost,
     mutationObservers,
+    microtasks,
+    projections,
+    emitPoint(pointId, count) { instrumentedEmit(pointId, count); },
+    flushMicrotask() { microtasks.shift()?.(); },
+    flushMicrotasks() { while (microtasks.length > 0) microtasks.shift()(); },
     scheduledCallbacks,
     flushScheduled(handle) {
       const callback = scheduledCallbacks.get(handle);
@@ -406,6 +430,177 @@ test("browser providers execute through Kernel and emit Contribution-level snaps
   point = snapshots.at(-1).points.find((item) => item.id === "web.runtime.dom.offscreen-animation");
   assert.equal(point.status, "active");
   assert.equal(point.contributions[0].hitCount, 1);
+});
+
+test("built-in providers project only dirty selected points while preserving every semantic hit", async () => {
+  const harness = createHarness({ manualMicrotasks: true, instrumentProjections: true });
+  const fullSnapshots = [];
+  const pointUpdates = [];
+  harness.window.OpenCodexRuntimeCompatibility = {
+    clientId: "browser_dirty_points",
+    ingestSnapshot(snapshot) { fullSnapshots.push(snapshot); },
+    ingestPoints(points) { pointUpdates.push(points); },
+  };
+  let firstScope;
+  let secondScope;
+  harness.host.providers.register("offscreen-animation", () => {
+    firstScope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  harness.host.providers.register("tooltip-dismiss", () => {
+    secondScope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  await harness.host.providers.activate();
+  harness.flushMicrotasks();
+  const firstId = "web.runtime.dom.offscreen-animation";
+  const secondId = "web.runtime.dom.tooltip-dismiss";
+  assert.equal(harness.projections.fullSnapshots, 1);
+  assert.deepEqual(harness.projections.pointIds.slice().sort(), Array.from(fullSnapshots[0].points, (point) => point.id).sort());
+  assert.equal(fullSnapshots[0].points.some((point) => point.id === firstId), true);
+  assert.equal(fullSnapshots[0].points.some((point) => point.id === secondId), true);
+  harness.projections.pointIds.length = 0;
+
+  for (let index = 0; index < 100; index += 1) firstScope.effects.primary.emit();
+  assert.equal(harness.microtasks.length, 1);
+  assert.deepEqual(harness.projections.pointIds, []);
+  harness.flushMicrotasks();
+  assert.equal(harness.projections.fullSnapshots, 1);
+  assert.deepEqual(harness.projections.pointIds, [firstId]);
+  assert.equal(pointUpdates.length, 1);
+  assert.equal(pointUpdates[0][0].contributions[0].hitCount, 100);
+
+  harness.projections.pointIds.length = 0;
+  firstScope.effects.primary.emit(2);
+  secondScope.effects.primary.emit(3);
+  firstScope.effects.primary.emit();
+  // 私有测试入口覆盖未知及已知但未选中的 effect，产品公开 effect 对象仍保持冻结。
+  assert.doesNotThrow(() => harness.emitPoint("web.runtime.test.unknown", 9));
+  assert.doesNotThrow(() => harness.emitPoint("web.runtime.workspace.root-picker", 5));
+  harness.flushMicrotasks();
+  assert.deepEqual(harness.projections.pointIds, [firstId, secondId]);
+  assert.equal(harness.projections.fullSnapshots, 1);
+  assert.deepEqual(Array.from(pointUpdates[1], (point) => point.contributions[0].hitCount), [103, 3]);
+
+  firstScope.setEnabled(false, "测试关闭");
+  harness.flushMicrotasks();
+  assert.equal(harness.projections.fullSnapshots, 2);
+  assert.equal(fullSnapshots.at(-1).points.find((point) => point.id === firstId).status, "disabled");
+  firstScope.setEnabled(true);
+  harness.flushMicrotasks();
+  assert.equal(harness.projections.fullSnapshots, 3);
+  assert.equal(fullSnapshots.at(-1).points.find((point) => point.id === firstId).status, "ready");
+});
+
+test("old queued projections cannot publish or clear the replacement page's pending snapshot", async () => {
+  const harness = createHarness({ manualMicrotasks: true, instrumentProjections: true });
+  const snapshots = [];
+  const partials = [];
+  let reporterGeneration = 1;
+  harness.window.OpenCodexRuntimeCompatibility = {
+    clientId: "browser_dirty_generation",
+    beginGeneration() { reporterGeneration += 1; },
+    ingestSnapshot(snapshot) { snapshots.push({ generation: reporterGeneration, snapshot }); },
+    ingestPoints(points) { partials.push(points); },
+  };
+  let oldScope;
+  harness.host.providers.register("offscreen-animation", () => {
+    oldScope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  await harness.host.providers.activate();
+  harness.flushMicrotasks();
+  oldScope.effects.primary.emit(7);
+  assert.equal(harness.microtasks.length, 1);
+
+  harness.host.providers.beginPage(new EventTargetStub());
+  let newScope;
+  harness.host.providers.register("tooltip-dismiss", () => {
+    newScope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  await harness.host.providers.activate();
+  assert.equal(harness.microtasks.length, 2);
+  harness.flushMicrotask();
+  assert.equal(harness.projections.fullSnapshots, 1);
+  assert.equal(partials.length, 0);
+  oldScope.effects.primary.emit(9);
+  newScope.effects.primary.emit(2);
+  assert.equal(harness.microtasks.length, 1);
+  harness.flushMicrotasks();
+  assert.equal(harness.projections.fullSnapshots, 2);
+  assert.deepEqual(snapshots.map((entry) => entry.generation), [1, 2]);
+  const points = snapshots[1].snapshot.points;
+  assert.equal(points.some((point) => point.id === "web.runtime.dom.offscreen-animation"), false);
+  assert.equal(points.find((point) => point.id === "web.runtime.dom.tooltip-dismiss").contributions[0].hitCount, 2);
+  newScope.effects.primary.emit();
+  harness.flushMicrotasks();
+  assert.equal(partials[0][0].contributions[0].hitCount, 3);
+});
+
+test("a superseded activation cannot dispose or publish the new page's providers", async () => {
+  const harness = createHarness({ manualMicrotasks: true });
+  const snapshots = [];
+  const updates = [];
+  harness.window.OpenCodexRuntimeCompatibility = {
+    clientId: "browser_activation_generation",
+    ingestSnapshot(snapshot) { snapshots.push(snapshot); },
+    ingestPoints(points) { updates.push(points); },
+  };
+  harness.host.providers.register("offscreen-animation", () => {});
+  const firstActivation = harness.host.providers.activate();
+  harness.host.providers.beginPage(new EventTargetStub());
+  let newScope;
+  harness.host.providers.register("tooltip-dismiss", () => {
+    newScope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  await Promise.all([firstActivation, harness.host.providers.activate()]);
+  harness.flushMicrotasks();
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].points.some((point) => point.id === "web.runtime.dom.offscreen-animation"), false);
+  assert.equal(newScope.active(), true);
+  newScope.effects.primary.emit();
+  harness.flushMicrotasks();
+  assert.equal(updates[0][0].contributions[0].hitCount, 1);
+});
+
+test("provider activation failures retain a full diagnostic snapshot", async () => {
+  const harness = createHarness({ manualMicrotasks: true, instrumentProjections: true });
+  const snapshots = [];
+  harness.window.OpenCodexRuntimeCompatibility = {
+    clientId: "browser_failed_full_snapshot",
+    ingestSnapshot(snapshot) { snapshots.push(snapshot); },
+    ingestPoints() { assert.fail("activation failures must use a full snapshot"); },
+  };
+  harness.host.providers.register("offscreen-animation", () => { throw new Error("synthetic install failure"); });
+  await harness.host.providers.activate();
+  harness.flushMicrotasks();
+  assert.equal(harness.projections.fullSnapshots, 1);
+  const failedPoint = snapshots[0].points.find((point) => point.id === "web.runtime.dom.offscreen-animation");
+  assert.equal(failedPoint.status, "unavailable");
+  assert.match(failedPoint.contributions[0].reason, /synthetic install failure/);
+});
+
+test("a late compatibility reporter receives the complete initial state before partial updates", async () => {
+  const harness = createHarness({ manualMicrotasks: true });
+  let scope;
+  harness.host.providers.register("offscreen-animation", () => {
+    scope = harness.window.__OpenCodexCurrentProviderScope;
+  });
+  harness.host.providers.register("tooltip-dismiss", () => {});
+  await harness.host.providers.activate();
+  harness.flushMicrotasks();
+  const snapshots = [];
+  const updates = [];
+  harness.window.OpenCodexRuntimeCompatibility = {
+    clientId: "browser_late_reporter",
+    ingestSnapshot(snapshot) { snapshots.push(snapshot); },
+    ingestPoints(points) { updates.push(points); },
+  };
+  scope.effects.primary.emit();
+  harness.flushMicrotasks();
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].points.some((point) => point.id === "web.runtime.dom.tooltip-dismiss"), true);
+  assert.equal(updates.length, 0);
+  scope.effects.primary.emit();
+  harness.flushMicrotasks();
+  assert.equal(updates[0][0].contributions[0].hitCount, 2);
 });
 
 test("mobile sidebar touch scrolling is a separate v2 point owned by the plugin lifecycle", async () => {

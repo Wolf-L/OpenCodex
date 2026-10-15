@@ -306,6 +306,44 @@ test("browser Kernel reporter replays an external plugin catalog with its latest
   assert.equal(calls[1].reportEpoch, reportEpoch);
 });
 
+test("partial built-in updates retain unchanged points for complete epoch recovery", async () => {
+  const calls = [];
+  let epoch = "";
+  const { context } = createContext(async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    calls.push(payload);
+    return { ok: true, status: 200, async json() { return { reportEpoch: epoch }; } };
+  });
+  const reporter = context.OpenCodexRuntimeCompatibility;
+  const firstId = "web.runtime.test.partial-a";
+  const secondId = "web.runtime.test.partial-b";
+  reporter.ingestSnapshot({ points: [pointSnapshot({ id: firstId }), pointSnapshot({ id: secondId })] });
+  await reporter.flush();
+  epoch = "gateway_after_partial_reset:1";
+  reporter.ingestPoints([pointSnapshot({ id: firstId, active: true, hitCount: 7 })]);
+  await reporter.flush();
+  assert.deepEqual(calls[1].reports.map((report) => report.point.id), [firstId]);
+  await reporter.flush();
+  const restored = calls[2].reports;
+  assert.deepEqual(restored.map((report) => report.point.id), [firstId, secondId]);
+  assert.deepEqual(restored.map((report) => report.point.contributions[0].hitCount), [7, 0]);
+  assert.equal(calls[2].reportEpoch, epoch);
+  assert.equal(calls.every((call) => call.catalogs.length === 0), true);
+
+  const before = calls.length;
+  reporter.ingestPoints([
+    pointSnapshot({ id: firstId, active: true, hitCount: 7 }),
+    pointSnapshot({ id: "example.external-plugin.mount" }),
+  ]);
+  await reporter.flush();
+  assert.equal(calls.length, before, "identical states and external plugin points cannot enter the partial queue");
+  reporter.beginGeneration();
+  reporter.ingestPoints([pointSnapshot({ id: firstId })]);
+  await reporter.flush();
+  await reporter.flush();
+  assert.equal(calls.slice(before).every((call) => call.reports.every((report) => report.point.id === firstId)), true);
+});
+
 test("browser Kernel reporter moves its visibility listener to the replacement document", () => {
   const harness = createContext(async () => ({ ok: true, status: 200 }));
   assert.equal(harness.documentListeners.has("visibilitychange"), true);
@@ -335,7 +373,7 @@ test("failed Kernel delivery preserves a newer snapshot queued while the request
   const reporter = harness.context.OpenCodexRuntimeCompatibility;
   reporter.ingestSnapshot({ points: [pointSnapshot()] });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  reporter.ingestSnapshot({ points: [pointSnapshot({ active: true, hitCount: 1 })] });
+  reporter.ingestPoints([pointSnapshot({ active: true, hitCount: 1 })]);
   harness.context.document.visibilityState = "hidden";
   rejectFirst(new Error("offline"));
   await new Promise((resolve) => setTimeout(resolve, 0));

@@ -283,9 +283,17 @@
         catalogQueue.set(pluginCatalog.plugin.id, entry);
       }
     }
-    for (const value of Array.isArray(snapshot?.points) ? snapshot.points : []) {
+    ingestPointStates(snapshot?.points, pluginCatalog?.plugin.id || "", options);
+  }
+
+  // 内建目录由 Gateway 持有，变化点可独立合并；外部插件仍经完整快照注册目录。
+  function ingestPoints(points) {
+    ingestPointStates(points, "");
+  }
+
+  function ingestPointStates(points, pluginId, options = {}) {
+    for (const value of Array.isArray(points) ? points : []) {
       let point = normalizedPoint(value);
-      const pluginId = pluginCatalog?.plugin.id || "";
       if (pluginId ? point.plugin?.id !== pluginId : !point.id.startsWith("web.runtime.")) continue;
       if (point.contributions.length === 0) continue;
       if (pluginId && options.disabled === true) point = disabledPoint(point, options.reason);
@@ -327,6 +335,7 @@
     clientId,
     beginGeneration,
     ingestSnapshot,
+    ingestPoints,
     flush,
   });
   Object.defineProperty(w, "OpenCodexRuntimeCompatibility", {
